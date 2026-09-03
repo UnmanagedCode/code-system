@@ -9,6 +9,10 @@ Durable knowledge about this project: gotchas, decisions, glossary. Read this fi
 - [gotchas/no-remote-discovery.md](gotchas/no-remote-discovery.md) — no `listRemotes` frame; the plugin UI is the only catalog; `remoteId` is a stable hand-off contract
 - [gotchas/active-registration.md](gotchas/active-registration.md) — registering a System row is an active handshake with its own preconditions
 - [gotchas/host-environment.md](gotchas/host-environment.md) — two host-side failure modes: `BASH_RULES_NOT_ENFORCEABLE` and stale plugin state until restart
+- [gotchas/host-kind-and-conformance.md](gotchas/host-kind-and-conformance.md) — the `host` kind is the only way to run cc's conformance suite; what that suite demands beyond its own docs; why `docker`/`ssh` can never pass its core configs
+- [gotchas/file-ops-over-exec.md](gotchas/file-ops-over-exec.md) — `readFile`/`writeFile` are derived over `exec`, not `docker cp`/`scp`; the far side normalises its errors to `strerror` tails
+- [gotchas/no-persistent-shell.md](gotchas/no-persistent-shell.md) — `docker`/`ssh` advertise `persistentShell:false`; cwd persists across commands, exports and background jobs do not
+- [gotchas/baseline-probe-two-tier.md](gotchas/baseline-probe-two-tier.md) — the tooling probe is cached on a reachability fingerprint; check the flag not the binary; busybox `stat` succeeds and is wrong
 
 ## Decisions
 
@@ -19,3 +23,6 @@ Durable knowledge about this project: gotchas, decisions, glossary. Read this fi
 - **System** (cc concept) — a transport row in cc's config; this plugin registers one per provider KIND (`docker`, `ssh`), not one per remote.
 - **remote / `remoteId`** — the actual target machine or container. Config is stored per `remoteId`. This is the real "remote system"; the cc System is just how cc reaches it.
 - **provider** — this plugin's code for one KIND of transport (`docker` or `ssh`), running on cc's host.
+- **kind** — one transport implementation behind the `Transport` seam (`src/launcher/kinds/`): it builds argv and nothing else. `docker`, `ssh`, and `host` (the never-registered conformance vehicle).
+- **launcher** — the process cc spawns per System row (`src/launcher/main.mjs`). Owns the protocol for every kind.
+- **baseline** — a per-remote verdict (`ok` / `unsupported` / `unknown`) on whether the target has the GNU tooling cc's derived operations need.
