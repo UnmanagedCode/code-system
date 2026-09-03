@@ -1,0 +1,19 @@
+{
+  "name": "code-system",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "code-conductor plugin: Docker and SSH System providers, run entirely from cc's host",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test \"tests/*.test.mjs\"",
+    "conformance": "node tests/conformance.mjs"
+  },
+  "dependencies": {
+    "express": "^4.22.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "AGPL-3.0-or-later"
+}

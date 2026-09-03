@@ -2,7 +2,7 @@
 
 A code-conductor plugin that lets [Claude Code](https://claude.com/claude-code) (`cc`) reach remote development targets — Docker containers and SSH hosts — without installing anything on the target itself.
 
-**Status: pre-implementation.** This repository currently contains only workspace scaffolding (conventions, this README, the project wiki). No provider code, launcher, config store, or UI exists yet — those land in later cards. This document describes what the project will become and the architecture decisions already locked in, so implementation work has a stable target to build toward.
+The skeleton is in place: the plugin manifest, the backend, the per-`remoteId` config store, auto-registration of the two cc System rows, and the launcher every provider kind plugs into. The `docker` and `ssh` transports themselves (cards 2026-0003 and 2026-0004) and the card UI (card 2026-0005) land next; each is one file dropped into an existing seam.
 
 ## Functional description
 
@@ -10,10 +10,12 @@ A code-conductor plugin that lets [Claude Code](https://claude.com/claude-code) 
 
 `code-system` ships two System providers for cc:
 
-- **`docker`** — reaches a target container via `docker exec` (running commands) and `docker cp` (moving files), from the host machine that has Docker access.
-- **`ssh`** — reaches a target host via `ssh` (running commands) and `scp` (moving files), from the host machine that has SSH access.
+- **`docker`** — reaches a target container via `docker exec`, from the host machine that has Docker access.
+- **`ssh`** — reaches a target host via `ssh`, from the host machine that has SSH access.
 
 Both providers run entirely on cc's **host** machine. Neither installs an agent, a shell, or any other tooling on the target — they only ever reach it through the transport (`docker exec`/`ssh`) already available from the host.
+
+**File transfer rides the same `exec` channel**, rather than `docker cp` / `scp`: the target must satisfy cc's POSIX/GNU tooling baseline anyway (cc's own derived operations are `exec` commands against that toolchain), so `base64` is already required on every supported target and a copy primitive would buy no capability — only a second code path with its own semantics to keep correct. cc's own docker sanity check maps `readFile`/`writeFile` to `cat` / `cat >` with a companion `stat` for the same reason. `docker cp` / `scp` remain available as a possible later bulk-transfer optimisation, not as the primitive.
 
 Alongside the providers, the plugin ships a **card-based UI**: each card represents one configured remote (one container, or one SSH host). The UI is where a user adds, edits, and removes remotes, and where a project's cc *Remote* field gets its value from.
 
@@ -21,50 +23,66 @@ Alongside the providers, the plugin ships a **card-based UI**: each card represe
 
 Users running cc against development environments that live outside their local machine — a container on a dev box, a VM reached over SSH — who want cc to operate on that environment directly rather than through a locally-checked-out copy.
 
-### How to use it (once implemented)
+### How to use it
 
 1. Install the plugin.
-2. In the plugin's card UI, add a remote: pick `docker` or `ssh`, then supply the connection details (container name, or host/user/key).
+2. In the plugin's card UI, add a remote: pick `docker` or `ssh`, then supply the connection details (container name, or host/user).
 3. Point a cc project's *Remote* field at that remote's `remoteId`.
 4. cc registers the corresponding System row (`docker` or `ssh`) and spawns the provider to handshake; once connected, cc operates against the remote target for that project.
+
+See [`docs/features.md`](docs/features.md) for what a card tells you and what the providers do and don't support.
 
 ## Technical description
 
 ### Stack
 
-Node/TypeScript plugin for code-conductor. No dependencies are pinned yet — `package.json` doesn't exist until a later card.
+Plain ESM JavaScript (`.mjs`), Node ≥ 20, no build step. Not TypeScript, for one hard reason: cc spawns the launcher with `spawn(argv[0], argv.slice(1))` and no shell, so running `.ts` directly would depend on the *host* node's type-stripping support — and that node is cc's, not ours. `node main.mjs` works on every Node ≥ 18 with no flags. The backend depends on `express`; **the launcher has zero dependencies** — it is spawned per System row, so a dependency tree there is startup cost on every reconnect.
+
+### Quick start
+
+```sh
+npm install
+npm start                 # backend on $PORT, default 4310
+npm test                  # deterministic: no docker, no ssh, no network
+CC_CHECKOUT=/path/to/code-conductor npm run conformance
+```
+
+### Top-level subsystems
+
+| Component | Owns |
+|---|---|
+| **Launcher** (`src/launcher/`) | the System protocol: frames, ids, routing, chunking, error codes, timeouts, killing children |
+| **Config store** (`src/store.mjs`) | per-`remoteId` connection config, one JSON file per remote |
+| **Backend** (`server.mjs`, `src/api.mjs`) | the REST API, the card UI, auto-registration, the tooling-baseline probe |
+| `conductor.plugin.json` | the plugin manifest (`backend` + `frontend`, deliberately no `mcp` block) |
+
+The launcher and the backend share **no in-memory state**: the launcher reads the store fresh on every request frame, and the backend is the only writer.
 
 ### Architecture decisions (locked)
 
-These are settled ahead of implementation; see [`.wiki/decisions/architecture-shape.md`](.wiki/decisions/architecture-shape.md) for the source of truth and rationale.
+See [`.wiki/decisions/architecture-shape.md`](.wiki/decisions/architecture-shape.md) for the source of truth and rationale.
 
 - **One cc System row per provider KIND, not per remote.** Two rows total — `docker` and `ssh` — each advertising `remotes:true`. cc has no `listRemotes` frame, so this plugin's own UI is the only catalog of remotes.
 - **System is a transport, not the remote system.** The cc System row is just how cc reaches a target. The real unit of identity is the remote/`remoteId`, and config is stored per `remoteId`.
-- **Ownership split:** the **launcher** owns execution (spawning `docker exec`/`ssh`, relaying I/O, killing children on shutdown); the **backend** owns config storage and the UI.
-- **Attach-only connect toggle.** Connecting to a remote in the UI never starts or stops a container — it only attaches to one already running.
-- **No MCP surface in v1.** Functionality is exposed only through the System providers and the card UI.
+- **Ownership split:** the **launcher** owns execution; the **backend** owns config storage and the UI.
+- **Attach-only connect toggle.** Connecting to a remote never starts or stops a container.
+- **No MCP surface in v1.**
 
-### Key components (planned)
+### Docs
 
-| Component | Owns | Status |
-|---|---|---|
-| `docker` provider | `docker exec`/`docker cp` transport, child-process lifecycle | not started |
-| `ssh` provider | `ssh`/`scp` transport, child-process lifecycle | not started |
-| Launcher | Spawning and killing provider child processes | not started |
-| Config store | Per-`remoteId` connection config | not started |
-| Card UI | Remote catalog (add/edit/remove), project hand-off via `remoteId` | not started |
-| `conductor.plugin.json` | Plugin manifest registering the two System rows | not started |
-
-### Project wiki
-
-Durable gotchas and decisions live in [`.wiki/`](.wiki/index.md), reviewed and merged like code. Read `.wiki/index.md` before starting implementation work on any later card.
+- [`docs/features.md`](docs/features.md) — user-facing behaviour: cards, the baseline verdict, registration states.
+- [`docs/protocol.md`](docs/protocol.md) — interface contracts: the handshake per kind, `remoteId` routing, the derived file operations, registration, the REST surface.
+- [`docs/architecture.md`](docs/architecture.md) — internals: the `Transport` seam and how to add a kind, the store and its migration, the shutdown/reap contract, test patterns.
+- [`.wiki/`](.wiki/index.md) — durable gotchas and decisions, reviewed and merged like code.
 
 ### Testing
 
-No test suite yet — none of the code it would cover exists. When implementation starts, follow the workspace testing conventions (deterministic, fast, fakes for external systems like `docker`/`ssh`, no live network in the default suite).
+`npm test` is deterministic and needs no docker, no ssh and no network; every test gets its own temp store. `npm run conformance` runs **code-conductor's own conformance suite** — the definition of a valid provider — against this launcher's `host` kind, gated on `CC_CHECKOUT` and skipping cleanly without it.
 
 ## Known limitations
 
-- **Target tooling baseline.** Running the providers on cc's host does not make the target toolless. cc derives `readDir`/`stat`/etc. by sending `exec` frames with GNU-specific argv (e.g. `find ... -printf`, `stat -L -c`). Busybox `find` (Alpine) lacks `-printf`, so Alpine targets break `readDir`; distroless/scratch targets have no shell at all and won't work. See [`.wiki/gotchas/tooling-baseline.md`](.wiki/gotchas/tooling-baseline.md).
+- **Target tooling baseline.** Running the providers on cc's host does not make the target toolless: cc derives `readDir`/`stat`/etc. by sending commands with GNU-specific argv. Alpine/busybox targets break `readDir` and `realpath`, and silently lose sub-second `stat` precision; distroless/scratch targets have no shell at all. The plugin probes for this and refuses such a target by name rather than half-working. See [`.wiki/gotchas/tooling-baseline.md`](.wiki/gotchas/tooling-baseline.md).
+- **No persistent shell.** `docker` and `ssh` advertise `persistentShell: false`, so cc runs every redirected shell command as a one-shot: **cwd persists, but exports, shell functions and background jobs do not.** See [`.wiki/gotchas/no-persistent-shell.md`](.wiki/gotchas/no-persistent-shell.md) and `docs/features.md`.
+- **Registration is refused (400) when the projects root is inside a git repository.** cc will not place session roots under a `.git` ancestor, and it checks this *before* spawning the provider — so registration fails in a devcontainer whose projects root is itself a repo. The plugin surfaces cc's own message, which names the directory and the fix. See [`.wiki/gotchas/active-registration.md`](.wiki/gotchas/active-registration.md).
 - **`BASH_RULES_NOT_ENFORCEABLE`.** If the user's `~/.claude/settings.json` has any `Bash(...)` entry under `permissions.deny`/`permissions.ask`, every remote spawn from this plugin is refused. This is host configuration, not a provider bug. See [`.wiki/gotchas/host-environment.md`](.wiki/gotchas/host-environment.md).
-- **Plugin must live on the `local` system (`PLUGIN_BACKEND_LOCAL_ONLY`).** The plugin backend itself is not relocatable to a remote System — it must run on cc's local/host system.
+- **Plugin must live on the `local` system (`PLUGIN_BACKEND_LOCAL_ONLY`).** The plugin backend itself is not relocatable to a remote System.
