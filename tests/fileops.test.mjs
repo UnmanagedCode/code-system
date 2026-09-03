@@ -9,7 +9,8 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { CHUNK_BYTES, MAX_FILE_BYTES } from '../src/launcher/protocol.mjs';
-import { buildReadScript, buildWriteScript, readFileOp, writeFileOp } from '../src/launcher/fileops.mjs';
+import { buildReadScript, buildWriteScript, makeNonce, readFileOp, writeFileOp } from '../src/launcher/fileops.mjs';
+import { PROBE_SCRIPT } from '../src/baseline.mjs';
 import { makeRunner } from '../src/launcher/run.mjs';
 import { createHostTransport } from '../src/launcher/kinds/host.mjs';
 import { FAKE_TRANSPORT, Launcher, record, tempStore, writeRecord } from './helpers.mjs';
@@ -261,7 +262,11 @@ test('exclusive refuses EEXIST and leaves the existing file byte-identical', asy
   const dir = await withDir(t);
   const p = path.join(dir, 'raced.txt');
   const racing = async (req) => {
-    // The target appears after the caller decided to write it.
+    // NOT a race simulation: this creates the target before the script runs, so
+    // it is the `[ -e "$p" ]` PRE-CHECK that fires. The real window — a writer
+    // appearing between that check and the redirect — is microseconds wide and
+    // is covered structurally by the two tests above. See docs/protocol.md →
+    // "What `exclusive` does and does not guarantee".
     await fs.writeFile(p, 'WINNER');
     return run(req);
   };
@@ -315,4 +320,72 @@ test('the tag is stripped from the stderr we report to cc', async (t) => {
       assert.match(e.stderr, /No such file or directory/, 'but the POSIX tail is kept');
       return true;
     });
+});
+
+// PINS THE SCRIPT-GENERATION ESCAPE, which is load-bearing for the nonce
+// mechanism and easy to break invisibly.
+//
+// A `\n` written with one backslash inside a JS template literal is a REAL
+// newline, so the generated `printf` format ends up spanning lines. `sh` treats
+// the two forms identically, so every behavioural test still passes — but the
+// tag line stops being a line, and a reader cannot see which form is in the
+// source. (This regressed once during development and nothing caught it.)
+test('no generated script puts a raw newline inside a printf format', () => {
+  const scripts = [
+    ['read', buildReadScript({ path: '/tmp/x', nonce: 'n1' })],
+    ['read-ranged', buildReadScript({ path: '/tmp/x', offset: 4, length: 9, nonce: 'n1' })],
+    ['write-plain', buildWriteScript({ path: '/tmp/x', nonce: 'n1' })],
+    ['write-mode', buildWriteScript({ path: '/tmp/x', mode: 0o100644, nonce: 'n1' })],
+    ['write-atomic', buildWriteScript({ path: '/tmp/x', atomic: true, mode: 0o100755, tmpPath: '/tmp/x.tmp', nonce: 'n1' })],
+    ['write-exclusive', buildWriteScript({ path: '/tmp/x', exclusive: true, nonce: 'n1' })],
+    ['probe', PROBE_SCRIPT],
+  ];
+  for (const [name, script] of scripts) {
+    // A single-quoted format string that never closes before end-of-line.
+    for (const line of script.split('\n')) {
+      const opens = (line.match(/printf '/g) ?? []).length;
+      if (opens === 0) continue;
+      const quotes = (line.match(/'/g) ?? []).length;
+      assert.equal(quotes % 2, 0,
+        `${name}: a printf format is left open at end of line — that is a raw newline inside it:\n${line}`);
+    }
+    assert.equal(/printf '[^']*\n/.test(script), false,
+      `${name}: a printf format contains a raw newline`);
+  }
+
+  // NEGATIVE CONTROL: the same predicate against the broken form, so this test
+  // proves it DISCRIMINATES rather than merely passing. The first is what the
+  // bug produced; the second is what the fixed source produces.
+  // Both forms are derived from the REAL builder, so there is no hand-written
+  // escaping here to get wrong.
+  const fixed = buildReadScript({ path: '/tmp/x', nonce: 'n1' })
+    .split('\n').find(l => l.includes("printf 'CCERR"));
+  assert.ok(fixed, 'the read script emits a tagged refusal line');
+  // The broken form is that same line with its \n escapes turned into real
+  // newlines — exactly what the one-backslash template-literal bug produced.
+  const broken = fixed.split(String.raw`\n`).join('\n');
+  assert.notEqual(broken, fixed, 'the two controls really differ');
+  assert.equal(/printf '[^']*\n/.test(broken), true, 'the predicate catches a raw newline');
+  assert.equal(/printf '[^']*\n/.test(fixed), false, 'and passes the escaped form');
+  assert.equal((broken.split('\n')[0].match(/'/g) ?? []).length % 2, 1,
+    'and the unbalanced-quote check catches it too');
+});
+
+// PINS THE PROPERTY THAT MAKES THE TAG UNFORGEABLE, which is otherwise
+// accidental. A path cannot contain a nonce that did not exist when the path was
+// chosen — cc fixes the path in its request frame, and the nonce is generated
+// per call afterwards. The mechanism becomes forgeable the moment a nonce is
+// reused across calls or hoisted to module scope.
+test('the nonce is fresh per call and never reused', () => {
+  const seen = new Set();
+  for (let i = 0; i < 500; i++) {
+    const n = makeNonce();
+    assert.match(n, /^[0-9a-f]{12}$/, 'hex, and long enough that guessing is infeasible');
+    assert.equal(seen.has(n), false, 'a repeated nonce would make the tag forgeable');
+    seen.add(n);
+  }
+  // And the builders really do default to a fresh one rather than a constant.
+  const a = buildReadScript({ path: '/tmp/x' });
+  const b = buildReadScript({ path: '/tmp/x' });
+  assert.notEqual(a, b, 'two builds of the same request must not share a nonce');
 });

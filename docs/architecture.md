@@ -185,6 +185,19 @@ not the core.
 **Do not add a flag to docker or ssh to fake `remotes:false`.** That would be a
 test-only divergence in the one field cc negotiates on.
 
+**Two obligations that land on those cards specifically:**
+
+1. **Every config field that becomes an argv operand must reject a leading `-`**
+   (`src/launcher/kinds/config.mjs`). `container`, `host` and `user` already do.
+   A leading dash turns an operand into an option — `container: "-v /:/host"` is
+   argument injection against `docker` — and the refusal belongs in
+   `validateConfig`, not in `spawnPlan`, so a bad value never reaches the store.
+2. **`exclusive`'s atomicity depends on the TARGET's shell honouring `set -C`.**
+   Our canary only measures cc's own `/bin/sh`. A target whose shell ignores
+   noclobber silently converts an exclusive write into a truncating one, and
+   nothing shipped today detects it — see `docs/protocol.md` →
+   "What `exclusive` does and does not guarantee".
+
 ## The config store
 
 **Location:** `$CODE_SYSTEM_STORE`, else `<os.homedir()>/.code-system`.
@@ -249,12 +262,26 @@ us after `DEFAULT_SHUTDOWN_GRACE_MS = 2000`
 or cc kills us mid-reap and the orphans survive anyway.
 
 `close` on one id takes the same kill-then-reap path for that id alone and emits
-**no further frames** for it. It also **aborts an in-flight derived file
-operation** — those bodies run detached so one round trip does not serialise
-every other id, so dropping the bookkeeping alone would leave the far-side
-`sh -c` running. §5 is explicit that close means "kill the command (hard)", and
-cc's `readFile`/`writeFile` backstop works *by* sending close, so this is the one
-place its kill instruction could have been ignored.
+**no further frames** for it. It also **cancels an in-flight derived file
+operation, and reaps it** — those bodies run detached so one round trip does not
+serialise every other id, so dropping the bookkeeping alone would leave the far
+side running. §5 is explicit that close means "kill the command (hard)", and cc's
+`readFile`/`writeFile` backstop works *by* sending close, so this is the one place
+its kill instruction could have been ignored.
+
+**A derived operation is killed BY PROCESS GROUP, and that is not incidental.**
+The read script's payload stage is a pipeline (`tail | head | base64 | tr`) whose
+members are the shell's *grandchildren*. `child_process`'s `signal` option kills
+only the direct pid, which reparents the pipeline to PID 1 still blocked — the
+first version of this fix did exactly that, and a full `npm test` left two live
+quartets behind. So `run.mjs` spawns `detached: true` and kills `-pid`. A test
+that watches only direct children **cannot see this failure**, because killing
+the shell moves its children out of a `ppid` query; `tests/launcher-shutdown.test.mjs`
+therefore asserts on the whole process group.
+
+A file operation also carries the same `(config, handle)` pair an `exec` does, so
+a kind's `reap` is called for it. For docker and ssh that is the difference
+between a far-side pipeline being reaped and being abandoned.
 
 **A command that exited on its own is NOT reaped, and that is deliberate.** §5
 gives `exit` as a terminal frame with no cleanup obligation attached; MUST 3

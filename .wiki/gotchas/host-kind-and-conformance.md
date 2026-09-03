@@ -60,6 +60,12 @@ something to work around.
   because the suite's core configurations pass no flags; see
   `docs/architecture.md` → "The `host` kind" for the deviation and its residual
   risk.
+- **Every config field that becomes an argv operand must reject a leading `-`.**
+  `container`, `host` and `user` do (`src/launcher/kinds/config.mjs`). A leading
+  dash turns an operand into an option — `container: "-v /:/host"` is argument
+  injection against `docker` — so the refusal lives in `validateConfig`, at the
+  store's front door, not in `spawnPlan`. Any new field a kind adds gets the
+  same treatment.
 - What makes this acceptable is the seam: the codec, the frame loop and fileops
   are kind-agnostic and `spawnPlan` is pure, so **`host` passing the core suite
   proves the core for every kind.** The per-kind residue is argv construction

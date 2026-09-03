@@ -36,7 +36,7 @@ async function cardFor(entry, { probe = true } = {}) {
   return { ...out, reachability: reach };
 }
 
-async function projectsNaming(remoteId, { conductorUrl = process.env.CONDUCTOR_URL, fetchImpl = globalThis.fetch } = {}) {
+export async function projectsNaming(remoteId, { conductorUrl = process.env.CONDUCTOR_URL, fetchImpl = globalThis.fetch } = {}) {
   if (!conductorUrl) return [];
   try {
     // Bounded on both axes: Node's fetch has no default timeout, and this runs
@@ -55,6 +55,10 @@ async function projectsNaming(remoteId, { conductorUrl = process.env.CONDUCTOR_U
     return out;
   } catch { return []; }
 }
+
+// Exported under a test-facing alias so the abort-signal wiring can be pinned
+// without standing up a DELETE round trip.
+export { projectsNaming as projectsNamingForTest };
 
 export function createApi(deps = {}) {
   const r = express.Router();

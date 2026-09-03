@@ -27,7 +27,7 @@ const PLACEHOLDER_CWD = '/';
  * instruction would be the one this launcher ignores, leaving a far-side
  * process nobody reaps.
  */
-export function makeRunner(transport, config, remoteId = null) {
+export function makeRunner(transport, config, remoteId = null, { token = null, onSpawn = null } = {}) {
   return ({ script, stdinData = null, signal = null }) => new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('operation was closed by the client')); return; }
     const req = {
@@ -37,7 +37,7 @@ export function makeRunner(transport, config, remoteId = null) {
       env: null,
       stdinMode: stdinData ? 'pipe' : 'ignore',
       remoteId,
-      token: randomBytes(12).toString('hex'),
+      token: token ?? randomBytes(12).toString('hex'),
     };
     let plan;
     try { plan = transport.spawnPlan(config ?? {}, req); }
@@ -49,19 +49,40 @@ export function makeRunner(transport, config, remoteId = null) {
         cwd: plan.cwd,
         env: plan.env ?? undefined,
         stdio: [req.stdinMode, 'pipe', 'pipe'],
-        // SIGKILL rather than the default SIGTERM: `close` is a hard kill.
-        ...(signal ? { signal, killSignal: 'SIGKILL' } : {}),
+        // DETACHED, so the child LEADS ITS OWN PROCESS GROUP — and we kill that
+        // group by hand rather than using node's `signal` option.
+        //
+        // node's `signal` kills only the direct pid. The read script's payload
+        // stage is a PIPELINE (`tail | head | base64 | tr`) whose members are
+        // the shell's GRANDCHILDREN: killing `sh` alone reparents them to PID 1
+        // still blocked on the far side, forever. Measured — before this, a
+        // full `npm test` left two live quartets behind.
+        detached: true,
       });
     } catch (e) { reject(e); return; }
+    onSpawn?.(child);
+
+    // The whole group, because that is the point of `detached` above.
+    const killGroup = () => {
+      if (!child.pid) return;
+      try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ }
+    };
+    const onAbort = () => killGroup();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const settle = (fn) => (...args) => {
+      signal?.removeEventListener('abort', onAbort);
+      fn(...args);
+    };
 
     const out = [];
     const err = [];
     child.stdout?.on('data', b => out.push(b));
     child.stderr?.on('data', b => err.push(b));
-    child.on('error', reject);
-    child.on('close', (code) => {
+    child.on('error', settle(reject));
+    child.on('close', settle((code) => {
+      if (signal?.aborted) { reject(new Error('operation was closed by the client')); return; }
       resolve({ code: code ?? 1, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString('utf8') });
-    });
+    }));
     if (stdinData && child.stdin) {
       // A far side that exits before draining its stdin is not our error to
       // report — the exit code and stderr already say what happened.

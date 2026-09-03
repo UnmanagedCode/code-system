@@ -2,6 +2,8 @@
 // handshake-complete shell it drops into. See docker.mjs for why a stub kind is
 // still registration-complete.
 
+import { asObject, operand } from './config.mjs';
+
 const NOT_YET = 'the ssh transport lands in card 2026-0004';
 
 export function createSshTransport() {
@@ -23,11 +25,14 @@ export function createSshTransport() {
     remoteDescriptors: false,
 
     validateConfig(raw) {
-      const o = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-      const host = typeof o.host === 'string' ? o.host.trim() : '';
-      if (!host) return { ok: false, error: "ssh config needs a non-empty 'host'" };
-      const user = typeof o.user === 'string' ? o.user.trim() : '';
-      return { ok: true, config: { host, ...(user ? { user } : {}) } };
+      const o = asObject(raw);
+      // Both become ARGV OPERANDS (`ssh <user>@<host>`), so a leading `-` would
+      // make either an option — see kinds/config.mjs.
+      const host = operand(o.host, 'host');
+      if (!host.ok) return { ok: false, error: `ssh config: ${host.error}` };
+      const user = operand(o.user, 'user', { required: false });
+      if (!user.ok) return { ok: false, error: `ssh config: ${user.error}` };
+      return { ok: true, config: { host: host.value, ...(user.value ? { user: user.value } : {}) } };
     },
 
     spawnPlan() { throw new Error(NOT_YET); },

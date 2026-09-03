@@ -298,3 +298,43 @@ test('an oversized error body is truncated rather than buffered whole', async (t
     `kept ${state.rows[0].message.length} bytes of a ${huge.length}-byte body`);
   assert.ok(state.rows[0].message.length > 0, 'but still shows the user what came back');
 });
+
+// PINS THAT PRODUCTION ATTACHES THE TIMEOUT, not just that a timeout works.
+// The stall test above injects its own fetchImpl carrying its own signal, so it
+// stays green even if every withTimeout() call were deleted from the source.
+// This one records what the production code actually passes.
+test('every request registration makes carries an abort signal', async (t) => {
+  const cc = await fakeConductor((req) => {
+    if (req.method === 'GET') {
+      return systemsBody([{ ...DOCKER, launch: ['/stale/node', '/stale/main.mjs', '--kind', 'docker'] }]);
+    }
+    return { status: 201, body: {} };
+  });
+  t.after(() => cc.close());
+
+  const seen = [];
+  const recording = (input, init = {}) => {
+    seen.push({ url: String(input), method: init.method ?? 'GET', signal: init.signal ?? null });
+    return fetch(input, init);
+  };
+
+  await register({ conductorUrl: cc.url, fetchImpl: recording });
+  // A GET, a PATCH (drifted argv) and a POST (missing row) — all three.
+  assert.ok(seen.length >= 3, `saw ${seen.length} requests`);
+  for (const r of seen) {
+    assert.ok(r.signal, `${r.method} ${r.url} was sent with no abort signal`);
+    assert.equal(typeof r.signal.aborted, 'boolean', 'and it is a real AbortSignal');
+  }
+});
+
+test('the delete-warning lookup in the API also carries an abort signal', async (t) => {
+  const { projectsNamingForTest } = await import('../src/api.mjs');
+  const seen = [];
+  const recording = async (input, init = {}) => {
+    seen.push(init.signal ?? null);
+    return { ok: true, body: null, text: async () => JSON.stringify({ systems: [] }) };
+  };
+  await projectsNamingForTest('anything', { conductorUrl: 'http://127.0.0.1:9', fetchImpl: recording });
+  assert.equal(seen.length, 1);
+  assert.ok(seen[0], 'a DELETE runs inside a user request and must not be able to wedge it');
+});

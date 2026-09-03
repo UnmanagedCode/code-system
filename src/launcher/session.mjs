@@ -45,10 +45,12 @@ export class Session {
 
   #execs = new Map();
   #writes = new Map();
-  // id → AbortController for an IN-FLIGHT derived file operation. It is both the
-  // "is this id still live" check and the kill handle `close` needs: the body
-  // runs detached so one round trip does not serialise every other id, so
-  // dropping bookkeeping alone would leave the far-side command running.
+  // id → {ac, config, handle} for an IN-FLIGHT derived file operation. It is the
+  // "is this id still live" check, the kill handle `close` needs, AND the
+  // (config, handle) pair `reap` needs: the body runs detached so one round trip
+  // does not serialise every other id, so dropping bookkeeping alone would
+  // leave the far-side command running. A file operation is as much a far-side
+  // process as an `exec` is, so it gets the same reap treatment.
   #fileOps = new Map();
   #greeted = false;
   #chain = Promise.resolve();
@@ -322,11 +324,10 @@ export class Session {
       void this.#reap(state);
     }
     this.#writes.delete(id);
-    // `close` means cc has stopped listening: kill the command HARD. Without
-    // this the derived `sh -c` keeps running — and on docker/ssh it becomes a
-    // far-side process nobody reaps.
-    this.#fileOps.get(id)?.abort();
-    this.#fileOps.delete(id);
+    // `close` means cc has stopped listening: kill the command HARD, then let
+    // the kind reap whatever it left on the far side. Without this the derived
+    // `sh -c` and its whole pipeline keep running.
+    this.#cancelFileOp(id);
   }
 
   async #reap(state) {
@@ -336,24 +337,46 @@ export class Session {
 
   // ── the internal exec runner fileops rides on ──────────────────────
 
-  #runner(remote) {
-    return makeRunner(this.#transport, remote?.config ?? {}, remote?.remoteId ?? null);
+  // Registers the operation and returns the runner bound to it. The handle is
+  // MUTATED with the child's pid as soon as it spawns, so `reap` is handed the
+  // real far-side identity rather than a placeholder.
+  #openFileOp(id, remote) {
+    const token = randomBytes(12).toString('hex');
+    const handle = { pid: null, token, remoteId: remote?.remoteId ?? null };
+    const ac = new AbortController();
+    const op = { ac, config: remote?.config ?? {}, handle };
+    this.#fileOps.set(id, op);
+    const runner = makeRunner(this.#transport, op.config, handle.remoteId, {
+      token,
+      onSpawn: (child) => { handle.pid = child.pid ?? null; },
+    });
+    return { op, runner };
+  }
+
+  // Drop the operation and take the far side with it. Returns whether there was
+  // one, so `close` can stay quiet about ids it never had.
+  #cancelFileOp(id) {
+    const op = this.#fileOps.get(id);
+    if (!op) return false;
+    this.#fileOps.delete(id);
+    op.ac.abort();
+    void this.#reap(op);
+    return true;
   }
 
   // ── readFile ───────────────────────────────────────────────────────
 
   #readFileOpen(f, remote) {
     const id = String(f.id);
-    const ac = new AbortController();
-    this.#fileOps.set(id, ac);
+    const { op, runner } = this.#openFileOp(id, remote);
     // Detached on purpose: a round trip to a container must not serialise every
     // other id behind it.
-    void this.#readFileBody(f, remote, id, ac.signal);
+    void this.#readFileBody(f, id, runner, op.ac.signal);
   }
 
-  async #readFileBody(f, remote, id, signal) {
+  async #readFileBody(f, id, runner, signal) {
     try {
-      const res = await readFileOp(this.#runner(remote), {
+      const res = await readFileOp(runner, {
         path: String(f.path),
         offset: typeof f.offset === 'number' ? f.offset : 0,
         length: typeof f.length === 'number' ? f.length : null,
@@ -415,14 +438,13 @@ export class Session {
     if (!w) return;
     this.#writes.delete(id);
     if (w.failed) return;
-    const ac = new AbortController();
-    this.#fileOps.set(id, ac);
-    void this.#writeEndBody(w, id, ac.signal);
+    const { op, runner } = this.#openFileOp(id, w.remote);
+    void this.#writeEndBody(w, id, runner, op.ac.signal);
   }
 
-  async #writeEndBody(w, id, signal) {
+  async #writeEndBody(w, id, runner, signal) {
     try {
-      await writeFileOp(this.#runner(w.remote), {
+      await writeFileOp(runner, {
         path: w.path,
         data: Buffer.concat(w.chunks),
         mode: w.mode,
@@ -482,8 +504,12 @@ export class Session {
     }
     this.#execs.clear();
     this.#writes.clear();
-    // A derived file operation is a live child too — MUST 3 takes it with us.
-    for (const [, ac] of this.#fileOps) ac.abort();
+    // A derived file operation is a live child too — MUST 3 takes it with us,
+    // reap included.
+    for (const [, op] of this.#fileOps) {
+      op.ac.abort();
+      pending.push(this.#reap(op));
+    }
     this.#fileOps.clear();
     if (pending.length === 0) return;
     await Promise.race([Promise.allSettled(pending), sleep(this.#reapDeadlineMs)]);

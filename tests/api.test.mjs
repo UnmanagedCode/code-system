@@ -145,3 +145,20 @@ test('registration state is served, and the retry route is the only retry', asyn
   assert.equal(retried.body.rows[0].message, 'placement refused', "cc's own words");
   assert.equal((await call('GET', '/registration')).body.state, 'blocked', 'and the state is remembered');
 });
+
+test('the API refuses an option-shaped config rather than storing it', async (t) => {
+  const { call } = await withApi(t);
+  const bad = await call('POST', '/remotes', {
+    remoteId: 'evil', kind: 'docker', config: { container: '-v /:/host' },
+  });
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /must not start with/);
+  assert.deepEqual((await call('GET', '/remotes')).body.remotes, [], 'nothing was written');
+
+  // And an edit cannot smuggle one in later.
+  await call('POST', '/remotes', { remoteId: 'ok', kind: 'ssh', config: { host: 'box' } });
+  const patched = await call('PATCH', '/remotes/ok', { config: { host: '-oProxyCommand=evil' } });
+  assert.equal(patched.status, 400);
+  const still = (await call('GET', '/remotes')).body.remotes[0];
+  assert.equal(still.config.host, 'box', 'the stored value is unchanged');
+});

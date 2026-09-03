@@ -53,6 +53,18 @@ const STAT_TAG = 'CCSTAT';
 // is the right reader for text we did not write.
 const ERR_TAG = 'CCERR';
 
+// TWO PROPERTIES MAKE THE TAG UNFORGEABLE, and both are easy to destroy by
+// accident. Neither is decoration:
+//
+//  1. GENERATED PER CALL, AFTER THE PATH IS KNOWN. cc fixes the path in its
+//     request frame before this runs, so a pre-existing filename cannot contain
+//     a nonce that did not exist when the file was named. Hoisting this to
+//     module scope, or memoising it per remote, makes forgery possible.
+//  2. NEVER REUSED, and wide enough that guessing is infeasible (48 bits per
+//     call). A repeated nonce is a nonce an attacker has already seen.
+//
+// Pinned by tests/fileops.test.mjs → "the nonce is fresh per call and never
+// reused".
 export function makeNonce() {
   return randomBytes(6).toString('hex');
 }

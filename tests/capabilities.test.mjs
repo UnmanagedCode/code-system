@@ -69,6 +69,35 @@ test('docker and ssh validate their own config, and the store never inspects it'
   assert.equal(ssh.validateConfig({ user: 'me' }).ok, false);
 });
 
+// PINS THE ARGV/OPTION BOUNDARY. These values become operands — `docker exec
+// <container>`, `ssh <user>@<host>` — so a leading `-` makes the far-side binary
+// read them as OPTIONS instead. Refused at the store's front door, because
+// cards 2026-0003 and 2026-0004 build argv from them and the rule has to hold
+// before either exists.
+test('an option-shaped config value is refused, not stored', () => {
+  const docker = createTransport('docker');
+  for (const container of ['-v /:/host', '--privileged', '-it', '-']) {
+    const r = docker.validateConfig({ container });
+    assert.equal(r.ok, false, `docker container ${JSON.stringify(container)} must be refused`);
+    assert.match(r.error, /must not start with/);
+  }
+  // Trimming happens first, so whitespace cannot smuggle one past.
+  assert.equal(docker.validateConfig({ container: '   -v /:/host' }).ok, false);
+
+  const ssh = createTransport('ssh');
+  for (const host of ['-oProxyCommand=evil', '-D8080', '--']) {
+    assert.equal(ssh.validateConfig({ host }).ok, false, `ssh host ${JSON.stringify(host)} must be refused`);
+  }
+  for (const user of ['-oProxyCommand=evil', '-l']) {
+    const r = ssh.validateConfig({ host: 'box', user });
+    assert.equal(r.ok, false, `ssh user ${JSON.stringify(user)} must be refused`);
+    assert.match(r.error, /user/);
+  }
+  // A dash INSIDE the value is ordinary and must still be accepted.
+  assert.equal(docker.validateConfig({ container: 'my-app-1' }).ok, true);
+  assert.equal(ssh.validateConfig({ host: 'build-box-2', user: 'ci-runner' }).ok, true);
+});
+
 test('the docker and ssh transports fail LOUDLY where their card has not landed', async () => {
   for (const [kind, card] of [['docker', '2026-0003'], ['ssh', '2026-0004']]) {
     const t = createTransport(kind);

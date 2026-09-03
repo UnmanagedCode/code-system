@@ -8,6 +8,8 @@
 // real handshake against an empty store, so the handshake must be answerable
 // before any container can be reached.
 
+import { asObject, operand } from './config.mjs';
+
 const NOT_YET = 'the docker transport lands in card 2026-0003';
 
 export function createDockerTransport() {
@@ -55,10 +57,12 @@ export function createDockerTransport() {
     // extends this — the `config` object is opaque to the store, so a new field
     // needs no migration.
     validateConfig(raw) {
-      const o = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-      const container = typeof o.container === 'string' ? o.container.trim() : '';
-      if (!container) return { ok: false, error: "docker config needs a non-empty 'container' (name or id)" };
-      return { ok: true, config: { container } };
+      const o = asObject(raw);
+      // `container` becomes an ARGV OPERAND (`docker exec <container>`), so a
+      // leading `-` would make it an option — see kinds/config.mjs.
+      const container = operand(o.container, 'container');
+      if (!container.ok) return { ok: false, error: `docker config: ${container.error}` };
+      return { ok: true, config: { container: container.value } };
     },
 
     spawnPlan() { throw new Error(NOT_YET); },
