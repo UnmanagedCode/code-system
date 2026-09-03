@@ -19,7 +19,7 @@ import {
 } from './protocol.mjs';
 import { FlagRemoteSource, StoreRemoteSource } from './remotes.mjs';
 import { createTransport, isKnownKind } from './kinds/index.mjs';
-import { hostKindRefusal } from './kinds/host.mjs';
+import { hostKindRefusal, hostUnfencedRefusal } from './kinds/host.mjs';
 import { Session } from './session.mjs';
 
 const VERSION = '0.1.0';
@@ -108,6 +108,10 @@ async function resolveTransport(opts) {
     // machine.
     const refusal = hostKindRefusal();
     if (refusal) throw new UsageError(refusal);
+    // Two seams, because they fail differently: one says "this is a test
+    // vehicle", the other says "and even then it is scoped to a named root".
+    const unfenced = hostUnfencedRefusal(opts.remotes.size);
+    if (unfenced) throw new UsageError(unfenced);
   }
   return createTransport(opts.kind, {
     persistentShell: opts.persistentShell,
@@ -148,9 +152,6 @@ export async function runLauncher(argv, { stdin = process.stdin, stdout = proces
   // NOTHING BUT FRAMES GOES TO STDOUT (MUST 1). Everything diagnostic goes to
   // stderr, of which cc keeps a bounded tail and which it never parses.
   const write = (frame) => { stdout.write(encodeFrame(frame)); };
-  // EPIPE means cc is gone and there is nobody left to tell.
-  stdout.on('error', () => process.exit(0));
-
   let exiting = false;
   const finish = async (code) => {
     if (exiting) return;
@@ -158,6 +159,12 @@ export async function runLauncher(argv, { stdin = process.stdin, stdout = proces
     await session.shutdown();
     process.exit(code);
   };
+
+  // EPIPE means cc is gone and there is nobody left to tell — but it is still a
+  // DISCONNECTION, so it takes the same shutdown path as stdin EOF. Exiting
+  // straight from here would skip MUST 3 and leave live children behind
+  // whenever cc dies reader-end-first.
+  stdout.on('error', () => { void finish(0); });
 
   const session = new Session({
     transport,

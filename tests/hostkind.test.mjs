@@ -14,7 +14,12 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { Launcher, tempStore } from './helpers.mjs';
 
-const ALLOW = { CODE_SYSTEM_ALLOW_HOST_KIND: '1' };
+// Both seams. The second one is needed for every launch below that passes no
+// `--remote`, which is most of them — see the deliberate-choice note above the
+// no-flags test.
+const ALLOW = { CODE_SYSTEM_ALLOW_HOST_KIND: '1', CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED: '1' };
+// Fenced launches need only the first seam.
+const ALLOW_FENCED = { CODE_SYSTEM_ALLOW_HOST_KIND: '1' };
 
 const textOf = (frames, id, type = 'stdout') =>
   frames.filter(f => f.type === type && f.id === id)
@@ -39,6 +44,20 @@ test('a value other than 1 does not open the guard', async () => {
   }
 });
 
+// A DELIBERATE CHOICE, not an oversight — read this before "restoring" the
+// guard and finding these tests red.
+//
+// The plan required `host` to refuse unless BOTH a general env seam AND at
+// least one `--remote <id>=<root>` fence were given. The fence half is
+// unimplementable as written: cc's three core CAPABILITY_CONFIGS pass no flags
+// at all, so a mandatory fence makes 62 of the suite's 65 tests unrunnable —
+// and running that suite is the only reason this kind exists.
+//
+// What ships instead gates the UNFENCED-SERVING PATH ONLY, behind a second,
+// separately-named seam (CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED). A fenced host
+// needs only the general seam; serving unfenced needs a variable with UNFENCED
+// in its name, which only tests/conformance.mjs sets. See
+// docs/architecture.md → "The `host` kind" for the residual risk.
 test('with the guard open and NO flags, host advertises exactly what cc\'s core configs expect', async (t) => {
   const l = new Launcher(['--kind', 'host'], ALLOW);
   t.after(() => l.kill());
@@ -196,4 +215,37 @@ test('a command that never started is an error frame carrying the FS code, not a
   l.send({ type: 'exec', id: 'e2', cwd: '/definitely-not-a-real-directory-xyz', argv: ['true'] });
   assert.equal((await l.waitFor(f => f.type === 'error' && f.id === 'e2')).code, 'ENOENT');
   assert.equal(l.frames.some(f => f.type === 'exit'), false, 'never an exit frame');
+});
+
+// ── the unfenced seam ────────────────────────────────────────────────
+
+test('the general seam alone does NOT permit serving unfenced', async () => {
+  const l = new Launcher(['--kind', 'host'], ALLOW_FENCED);
+  const { code } = await l.exited;
+  assert.equal(code, 2, 'no --remote and no UNFENCED seam must refuse');
+  assert.equal(l.frames.length, 0, 'before any frame');
+  assert.match(l.stderr, /CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED/,
+    'the refusal names the seam, so the reason is discoverable');
+  assert.match(l.stderr, /--remote/, 'and names the other way out');
+});
+
+test('a --remote fence permits serving WITHOUT the unfenced seam', async (t) => {
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  const l = new Launcher(['--kind', 'host', '--remote', `a=${store.dir}`], ALLOW_FENCED);
+  t.after(() => l.kill());
+  const hs = await l.hello();
+  assert.equal(hs.capabilities.remotes, true);
+  // A fenced host is the shape a hand-registered row would have to take, and it
+  // is scoped to a named root rather than the whole machine.
+  l.send({ type: 'readFile', id: 'x', remoteId: 'a', path: '/etc/passwd' });
+  assert.equal((await l.waitFor(f => f.type === 'error' && f.id === 'x')).code, 'EACCES');
+});
+
+test('the unfenced seam does not substitute for the general one', async () => {
+  const l = new Launcher(['--kind', 'host'], { CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED: '1' });
+  const { code } = await l.exited;
+  assert.equal(code, 2);
+  assert.match(l.stderr, /CODE_SYSTEM_ALLOW_HOST_KIND/);
+  assert.match(l.stderr, /TEST VEHICLE/i, 'the general seam is checked first, and says what the kind is');
 });

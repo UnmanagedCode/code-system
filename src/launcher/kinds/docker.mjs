@@ -15,7 +15,7 @@ export function createDockerTransport() {
     kind: 'docker',
 
     // The contract's `shell` exec form is defined as `bash -lc`
-    // (docs/systems-protocol.md:329), so bash is already assumed of the far
+    // (systems-protocol.md §5), so bash is already assumed of the far
     // side. Not probeable: cc's handshake budget is 10 s and the handshake
     // happens with zero remotes configured.
     defaultShell: '/bin/bash',
@@ -25,7 +25,7 @@ export function createDockerTransport() {
     // absent-behaviour: every redirected shell command becomes a one-shot
     // `exec` of the same framing, with `cwd` passed explicitly and `$PWD` read
     // back from the sentinel to carry into the next call. cc gates `stdin` /
-    // `stdinClose` on the capability (src/systems/providerSystem.ts:628) and so
+    // `stdinClose` on the capability (src/systems/providerSystem.ts, the persistentShell gate) and so
     // never sends them here; session.mjs refuses one EUNSUPPORTED, id-addressed,
     // if it ever arrives. The `exec` frame's own `stdin?` field is unaffected —
     // one-shot stdin stays.
@@ -35,7 +35,7 @@ export function createDockerTransport() {
     persistentShell: false,
 
     // FALSE until the transport actually does setsid inside the container, pgid
-    // discovery and `kill -- -<pgid>` (docs/systems-protocol.md:667). The core
+    // discovery and `kill -- -<pgid>` (systems-protocol.md §11, item 2). The core
     // then sets `descendantsMaySurvive: true` on every exit it terminated,
     // which is the documented fallback. Card 2026-0003 raises it, or does not.
     processGroupSignal: false,
@@ -43,7 +43,7 @@ export function createDockerTransport() {
     // ALWAYS TRUE, never derived from store contents: cc memoises the handshake
     // per connection generation, so a capability that flapped as remotes were
     // added would be memoised wrong. One row serves every container
-    // (docs/systems-protocol.md:646-649).
+    // (systems-protocol.md §11).
     remotes: true,
 
     // v1 answers no mirror advertisement: the session root images the project

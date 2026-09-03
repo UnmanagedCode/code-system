@@ -18,7 +18,7 @@ connection must not die with it.
 
 cc spawns the launcher with `spawn(argv[0], argv.slice(1))`, **no shell**,
 carrying the **orchestrator's** environment and no reliable cwd
-(`src/systems/providerConnection.ts:157-159`; `SystemRecord` carries no `env` or
+(the provider spawn in `src/systems/providerConnection.ts`; `SystemRecord` carries no `env` or
 `cwd`). Everything the launcher needs is therefore on its argv or computed from
 an absolute path — which is what forces the store location below.
 
@@ -74,23 +74,57 @@ kind that needs it puts it on the far side inside its own `spawnPlan`.
 *is* the definition of a valid provider, and it "builds its fixtures with node's
 own `fs` and then asks the provider about them, so it verifies a provider that
 reaches **the same filesystem as the test process**"
-(`tests/referenceProviderHarness.mjs:58-62`). A docker or ssh target does not
+(the third-party NOTE in `tests/referenceProviderHarness.mjs`). A docker or ssh target does not
 share that filesystem. **Nothing but a host kind can run cc's suite against this
 code**, so removing it removes the only check on the frame loop, the routing,
 `fileops.mjs` and the shutdown path. It is exercised by a real caller —
 `npm run conformance` — which is the YAGNI bar.
 
-**The guard.** "We never register it" is not a fence: a row registered by hand
-with `--kind host` is an unfenced arbitrary-exec provider on cc's own machine,
-reachable by any project pointed at it. cc gates its own equivalent
-(`CC_LOCAL_SYSTEM_PROVIDER`) behind an env var for the same reason
-(`src/systems/registry.ts:58-71`). `host` refuses to start unless
-**`CODE_SYSTEM_ALLOW_HOST_KIND=1`** is in the launcher's environment; because cc
-spawns the launcher with the *orchestrator's* env, a hand-registered row cannot
-inherit a variable nobody exported into the orchestrator process. Failure is
-**stderr + exit 2 before any frame**, so cc's registration answers 502 quoting
-it, which `registration.mjs` surfaces verbatim. Pinned by
-`tests/hostkind.test.mjs`.
+**The guard, and a DEVIATION FROM THE PLAN.** "We never register it" is not a
+fence: a row registered by hand with `--kind host` is an unfenced arbitrary-exec
+provider on cc's own machine, reachable by any project pointed at it. cc gates
+its own equivalent (`CC_LOCAL_SYSTEM_PROVIDER`) behind an env var for the same
+reason (`CC_LOCAL_SYSTEM_PROVIDER` in `src/systems/registry.ts`).
+
+The plan required **two** conditions: an env seam **and** at least one mandatory
+`--remote <id>=<absolute root>` fence. **The mandatory fence is unimplementable
+as written**, and this is the reason: cc's three core `CAPABILITY_CONFIGS` pass
+no flags at all, so a `host` that refused without a fence makes **62 of the
+suite's 65 tests unrunnable** — and running that suite is the only reason the
+kind exists.
+
+What ships is two seams that split along the *risk* instead:
+
+| Launch | Needs |
+|---|---|
+| `--kind host --remote a=/some/root` | `CODE_SYSTEM_ALLOW_HOST_KIND=1` |
+| `--kind host` (serves unfenced) | that **plus** `CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED=1` |
+
+Only `tests/conformance.mjs` sets the second one. So a hand-registered row now
+needs someone to have deliberately exported a variable **with `UNFENCED` in its
+name** into the orchestrator's environment, rather than merely the general test
+var — which is most of what the plan's mandatory fence was buying.
+
+**Residual risk, stated rather than implied.** With both variables exported into
+the orchestrator, a hand-registered `host` row still serves arbitrary exec on
+cc's machine. Neither seam is a capability check; they are speed bumps that make
+the dangerous configuration require a deliberate, self-describing act. The real
+protection is that `host` is absent from `REGISTERED_KINDS`, so nothing this
+plugin does ever creates such a row.
+
+Failure is **stderr + exit 2 before any frame**, so cc's registration answers 502
+quoting it, which `registration.mjs` surfaces verbatim. Both seams are pinned by
+`tests/hostkind.test.mjs`, which carries a note saying the single-condition guard
+is deliberate — so an attempt to "restore" the plan's version reads the reasoning
+instead of just a red test.
+
+**The `--remote` fence is LEXICAL, not containment.** It is `path.relative`
+against the root with no `realpath`, so a symlink inside the root points wherever
+it likes and is not refused. This is deliberate and not worth fixing: on `host`,
+`exec` is arbitrary by design (`cat` reads the same file), and the fence exists
+only for the test vehicle — production `docker`/`ssh` remotes carry no root at
+all. **Cards 2026-0003 and 2026-0004 must not treat it as a containment
+primitive.**
 
 **Its capabilities are DERIVED FROM ITS FLAGS, and that is load-bearing.**
 
@@ -102,9 +136,9 @@ it, which `registration.mjs` surfaces verbatim. Pinned by
 | `remoteDescriptors` | at least one `--mirror` or `--exclude` given |
 
 This is the shape cc's own reference provider uses (`remotes:
-this.#opts.remotes.size > 0`, `referenceProvider.ts:194`), and the suite's
-assertion message states the intent: *"the flags the provider was launched with
-are what it advertises"*. It is what makes the suite runnable at all — its three
+this.#opts.remotes.size > 0`, the hello capabilities block in
+`referenceProvider.ts`), and the suite's assertion message states the intent:
+*"the flags the provider was launched with are what it advertises"*. It is what makes the suite runnable at all — its three
 core `CAPABILITY_CONFIGS` pass **no** flags and **deep-equal**
 `{persistentShell:true, processGroupSignal:true, remotes:false,
 remoteDescriptors:false}` (with two of them lowering one flag), while
@@ -115,21 +149,22 @@ and lose most of the suite.
 `host` keeps `persistentShell` for exactly this reason, even though `docker` and
 `ssh` drop it permanently — **do not "fix" that inconsistency.** Two of the three
 core configurations deep-equal `persistentShell: true`
-(`referenceProviderHarness.mjs:79,89`), and losing them would cost most of the
+(`CAPABILITY_CONFIGS` in `tests/referenceProviderHarness.mjs`), and losing them would cost most of the
 exec-lifecycle, fileops, derivation and error-taxonomy coverage, none of which
 is about shells. It costs nothing: a host exec already holds its child's stdin
 open.
 
 ### What cc's conformance suite demands beyond `systems-protocol.md`
 
-`referenceProviderHarness.mjs:31-39` says the suite appends "exactly the two
+The `PROVIDER_ARGV_ENV` note in `tests/referenceProviderHarness.mjs` says the suite appends "exactly the two
 `--no-*` flags and nothing else" and that "nothing in the suite is otherwise
 specific to the reference provider". Neither is true as written. A provider
-being verified must also accept `--remote <id>=<abs root>` (`:438`), `--mirror`
-and `--exclude` (`:560`, `:591`), **fence** each remote to its root with
-`cwd:"/"` exempt, and **inject `CC_REMOTE`** into the remote command's
-environment (`:456`). Those facts are documented — in cc's
-`docs/architecture.md:108` — just not in the doc a provider author is told is
+being verified must also accept `--remote <id>=<abs root>` (its `withRemotes` fixture),
+`--mirror` and `--exclude` (its two `describeRemote` tests), **fence** each
+remote to its root with `cwd:"/"` exempt, and **inject `CC_REMOTE`** into the
+remote command's environment ("a bound handle names its remote on exec,
+readFile and writeFile"). Those facts are documented — in cc's
+`docs/architecture.md`, Component layout → `referenceProvider.ts` — just not in the doc a provider author is told is
 complete on its own. Filed as code-conductor card **2026-0313**.
 
 ### The consequence for cards 2026-0003 and 2026-0004
@@ -214,9 +249,20 @@ us after `DEFAULT_SHUTDOWN_GRACE_MS = 2000`
 or cc kills us mid-reap and the orphans survive anyway.
 
 `close` on one id takes the same kill-then-reap path for that id alone and emits
-**no further frames** for it. A command that **exited on its own is not
-reaped** — it has already ended on the far side, and reaping every finished exec
-would cost a round trip into the container per command.
+**no further frames** for it. It also **aborts an in-flight derived file
+operation** — those bodies run detached so one round trip does not serialise
+every other id, so dropping the bookkeeping alone would leave the far-side
+`sh -c` running. §5 is explicit that close means "kill the command (hard)", and
+cc's `readFile`/`writeFile` backstop works *by* sending close, so this is the one
+place its kill instruction could have been ignored.
+
+**A command that exited on its own is NOT reaped, and that is deliberate.** §5
+gives `exit` as a terminal frame with no cleanup obligation attached; MUST 3
+binds at *provider exit*, not at operation completion; and cc's own reference
+provider behaves identically. `reap` exists for the case where the host-side
+proxy was **killed** while the far side kept running — `close` and shutdown.
+Reaping every finished exec would cost a round trip into the container per
+command, buying nothing. (Reviewed twice; do not re-litigate.)
 
 ## Test patterns
 
@@ -234,10 +280,19 @@ global.
   descendants.
 - **Barrier, not sleep.** Frames are handled in arrival order, so a short `exec`
   whose `exit` you await proves the earlier frames were processed.
+
+  That ordering comes from a promise chain in `Session.deliver`, and its cost was
+  **measured, not assumed**: only the routing-and-registration phase is
+  serialised, so the chain is at most one frame deep in flight, and both file-op
+  bodies run detached (MUST 4 is honoured). A review additionally failed to break
+  it with 20 000 frames queued at EOF. It is needed because resolving a remote is
+  an `await` and a `stdin` frame can arrive in the same chunk as the `exec` that
+  opened its id — without the chain that follow-on frame is processed first and
+  dropped as unknown.
 - **A grandchild under test redirects its own stdout to `/dev/null`**, or it
   holds the command's pipes open after the direct child dies and the `exit`
   frame never arrives. cc's own suite does the same
-  (`systems-protocol-conformance.test.mjs:137-141`).
+  (`systems-protocol-conformance.test.mjs` → "process-group signalling").
 - **Scripted fake cc** (`tests/helpers.mjs` → `fakeConductor`) for registration,
   asserted on the recorded request log, never on timing.
 - **Real `/bin/sh` for the far-side scripts.** `tests/fileops.test.mjs` runs the

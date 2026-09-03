@@ -33,7 +33,7 @@ import { makeRunner } from './launcher/run.mjs';
 // one of them is incomplete, and incomplete is not "ok".
 export const PROBE_CAPABILITIES = ['readDir', 'realpath', 'stat', 'base64', 'shell'];
 
-// Anchored to THE EXACT ARGV CC SENDS (docs/systems-protocol.md:472-480), in
+// Anchored to THE EXACT ARGV CC SENDS (systems-protocol.md §7), in
 // the exact forms.
 //
 // `command -v find` PROVES NOTHING: busybox HAS `find` and `stat` — what it
@@ -43,7 +43,7 @@ export const PROBE_CAPABILITIES = ['readDir', 'realpath', 'stat', 'base64', 'she
 // The `stat` row is why this asserts on OUTPUT SHAPE, not on exit code:
 // busybox `stat` implements `-c` but ignores the `.3`, so it SUCCEEDS and is
 // wrong — `81a4 2 1788194735` where GNU answers `81a4 2 1788194735.064`
-// (docs/systems-protocol.md:682-686). That silent degradation is the one cc
+// (systems-protocol.md §11, item 3). That silent degradation is the one cc
 // will never surface on its own.
 export const PROBE_SCRIPT = [
   'LC_ALL=C; export LC_ALL',

@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { CHUNK_BYTES, MAX_FILE_BYTES } from '../src/launcher/protocol.mjs';
-import { buildReadScript, readFileOp, writeFileOp } from '../src/launcher/fileops.mjs';
+import { buildReadScript, buildWriteScript, readFileOp, writeFileOp } from '../src/launcher/fileops.mjs';
 import { makeRunner } from '../src/launcher/run.mjs';
 import { createHostTransport } from '../src/launcher/kinds/host.mjs';
 import { FAKE_TRANSPORT, Launcher, record, tempStore, writeRecord } from './helpers.mjs';
@@ -223,4 +223,96 @@ test('a read past one chunk is delivered as multiple data frames', async (t) => 
   const head = l.frames.find(f => f.type === 'readFileResult' && f.id === 'r1');
   assert.equal(head.size, payload.length);
   assert.deepEqual(chunks.map(c => c.seq), [0, 1, 2], 'seq is monotonic per id');
+});
+
+// PINS THE ATOMICITY of `exclusive`. The pre-check (`[ -e "$p" ]`) plus a
+// separate truncating redirect is check-then-act: a writer creating the target
+// in between would be TRUNCATED rather than refused, which is exactly the lost
+// update the flag exists to prevent. `set -C` is what closes that window.
+//
+// The window itself is microseconds wide and cannot be driven deterministically
+// from outside the script, so this pins the guard in the two ways that CAN be
+// checked without flake: that the generated script really is guarded, and that
+// the guard really works on the shell we run it with.
+test('the exclusive write is guarded by set -C, not only by the pre-check', () => {
+  const script = buildWriteScript({ path: '/tmp/x', exclusive: true, nonce: 'n0' });
+  const guard = script.indexOf('set -C');
+  const redirect = script.indexOf('base64 -d > "$p"');
+  assert.notEqual(guard, -1, 'the exclusive branch must set noclobber');
+  assert.ok(guard < redirect, 'and must set it BEFORE the redirect it protects');
+  // The plain branch must NOT be guarded — a plain write overwrites by design.
+  const plain = buildWriteScript({ path: '/tmp/x', nonce: 'n0' });
+  assert.equal(plain.includes('set -C'), false);
+});
+
+test('the shell we run scripts with really honours noclobber', async (t) => {
+  const dir = await withDir(t);
+  const p = path.join(dir, 'guarded');
+  await fs.writeFile(p, 'ORIGINAL');
+  // Exactly the construct the exclusive branch relies on. If a future /bin/sh
+  // stopped honouring `set -C`, `exclusive` would silently become a truncating
+  // write and this is the test that would say so.
+  const res = await run({ script: `set -C; printf 'CLOBBERED' > ${JSON.stringify(p)}` });
+  assert.notEqual(res.code, 0, 'noclobber refused the redirect');
+  assert.equal(await fs.readFile(p, 'utf8'), 'ORIGINAL', 'and nothing was truncated');
+});
+
+test('exclusive refuses EEXIST and leaves the existing file byte-identical', async (t) => {
+  const dir = await withDir(t);
+  const p = path.join(dir, 'raced.txt');
+  const racing = async (req) => {
+    // The target appears after the caller decided to write it.
+    await fs.writeFile(p, 'WINNER');
+    return run(req);
+  };
+  await assert.rejects(
+    () => writeFileOp(racing, { path: p, data: Buffer.from('loser'), exclusive: true }),
+    (e) => e.code === 'EEXIST');
+  assert.equal(await fs.readFile(p, 'utf8'), 'WINNER',
+    "the loser must not have truncated the winner's file");
+});
+
+test('exclusive still creates the file when it genuinely does not exist', async (t) => {
+  const dir = await withDir(t);
+  const p = path.join(dir, 'fresh.txt');
+  await writeFileOp(run, { path: p, data: Buffer.from('made'), exclusive: true, mode: 0o100640 });
+  assert.equal(await fs.readFile(p, 'utf8'), 'made');
+  assert.equal((await fs.stat(p)).mode & 0o777, 0o640, 'and honours mode on the way');
+});
+
+// PINS that our own refusals are classified by OUR tag, not by matching a
+// strerror tail anywhere in stderr — because the scripts interpolate the
+// requested path into their own failure text, and cc's callers branch on the
+// resulting codes.
+test('a path containing a strerror tail cannot spoof the classification', async (t) => {
+  const dir = await withDir(t);
+  // The path itself says "Is a directory". It is a MISSING FILE.
+  const poison = path.join(dir, 'Is a directory');
+  await assert.rejects(
+    () => readFileOp(run, { path: poison }),
+    (e) => {
+      assert.equal(e.code, 'ENOENT', 'a free-text match would have said EISDIR here');
+      return true;
+    });
+
+  // The same trap on the write side, where the parent is missing.
+  await assert.rejects(
+    () => writeFileOp(run, { path: path.join(dir, 'File exists', 'x'), data: Buffer.from('x') }),
+    (e) => e.code === 'ENOENT');
+
+  // And a real directory named after a DIFFERENT tail still reads EISDIR.
+  const realDir = path.join(dir, 'No such file or directory');
+  await fs.mkdir(realDir);
+  await assert.rejects(() => readFileOp(run, { path: realDir }), (e) => e.code === 'EISDIR');
+});
+
+test('the tag is stripped from the stderr we report to cc', async (t) => {
+  const dir = await withDir(t);
+  await assert.rejects(
+    () => readFileOp(run, { path: path.join(dir, 'absent') }),
+    (e) => {
+      assert.equal(/CCERR/.test(e.stderr ?? ''), false, 'our plumbing marker is not shown to a user');
+      assert.match(e.stderr, /No such file or directory/, 'but the POSIX tail is kept');
+      return true;
+    });
 });

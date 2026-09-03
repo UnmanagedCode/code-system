@@ -5,7 +5,7 @@
 // reaches a remote.
 //
 // NOT the `shell` exec form. cc's `shell` form is defined as a LOGIN shell
-// (`bash -lc`, docs/systems-protocol.md:329), which sources profile files whose
+// (`bash -lc`, systems-protocol.md §5), which sources profile files whose
 // output would arrive before the script's own — and our readers parse the first
 // line. `/bin/sh -c` through the argv form keeps the channel clean.
 
@@ -18,10 +18,18 @@ const PLACEHOLDER_CWD = '/';
  * @param {import('./kinds/index.mjs').Transport} transport
  * @param {object} config      the remote's kind-specific config
  * @param {string|null} remoteId
- * @returns {(req:{script:string, stdinData?:Buffer|null}) => Promise<{code:number, stdout:Buffer, stderr:string}>}
+ * @returns {(req:{script:string, stdinData?:Buffer|null, signal?:AbortSignal|null})
+ *            => Promise<{code:number, stdout:Buffer, stderr:string}>}
+ *
+ * `signal` is how `close` reaches a derived operation. §5 says close means "cc
+ * has stopped listening: kill the command (hard)", and cc's readFile/writeFile
+ * backstop works BY sending close — so without a kill handle here that
+ * instruction would be the one this launcher ignores, leaving a far-side
+ * process nobody reaps.
  */
 export function makeRunner(transport, config, remoteId = null) {
-  return ({ script, stdinData = null }) => new Promise((resolve, reject) => {
+  return ({ script, stdinData = null, signal = null }) => new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new Error('operation was closed by the client')); return; }
     const req = {
       argv: ['/bin/sh', '-c', script],
       shell: null,
@@ -41,6 +49,8 @@ export function makeRunner(transport, config, remoteId = null) {
         cwd: plan.cwd,
         env: plan.env ?? undefined,
         stdio: [req.stdinMode, 'pipe', 'pipe'],
+        // SIGKILL rather than the default SIGTERM: `close` is a hard kill.
+        ...(signal ? { signal, killSignal: 'SIGKILL' } : {}),
       });
     } catch (e) { reject(e); return; }
 

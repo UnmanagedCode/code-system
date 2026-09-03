@@ -20,10 +20,10 @@ import { createSshTransport } from './ssh.mjs';
  *                                   registers by spawning this argv for a real
  *                                   handshake against an empty store, and a
  *                                   missing/relative/empty shell is refused EPROTO
- *                                   (providerConnection.ts:242-249).
+ *                                   (providerConnection.ts, the hello check).
  * @property {boolean} processGroupSignal  Advertised verbatim. `true` is a PROMISE
  *                                   that a signal reaches the far side's whole
- *                                   group; docs/systems-protocol.md:670 calls
+ *                                   group; systems-protocol.md §11, item 2 calls
  *                                   advertising it falsely "the one lie this
  *                                   protocol cannot detect". Default false.
  * @property {boolean} remotes       Whether this kind advertises the `remotes`

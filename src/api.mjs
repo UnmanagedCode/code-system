@@ -5,7 +5,7 @@ import express from 'express';
 import { refreshBaseline, unknownBaseline } from './baseline.mjs';
 import { createTransport, isKnownKind } from './launcher/kinds/index.mjs';
 import { REGISTERED_KINDS } from './launcher/kinds/index.mjs';
-import { registrationState, runRegistration } from './registration.mjs';
+import { REQUEST_TIMEOUT_MS, readCapped, registrationState, runRegistration } from './registration.mjs';
 import { deleteRemote, isValidRemoteId, listRemotes, makeRecord, readRemote, writeRemote } from './store.mjs';
 
 // One remote's card view: the stored record, a LIVE reachability answer, and a
@@ -39,9 +39,12 @@ async function cardFor(entry, { probe = true } = {}) {
 async function projectsNaming(remoteId, { conductorUrl = process.env.CONDUCTOR_URL, fetchImpl = globalThis.fetch } = {}) {
   if (!conductorUrl) return [];
   try {
-    const res = await fetchImpl(`${String(conductorUrl).replace(/\/+$/, '')}/api/settings/systems`);
+    // Bounded on both axes: Node's fetch has no default timeout, and this runs
+    // inside a user's DELETE request. A conductor that stalls must not wedge it.
+    const res = await fetchImpl(`${String(conductorUrl).replace(/\/+$/, '')}/api/settings/systems`,
+      { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
     if (!res.ok) return [];
-    const json = await res.json();
+    const json = JSON.parse(await readCapped(res) || '{}');
     const rows = Array.isArray(json?.systems) ? json.systems : [];
     const out = [];
     for (const row of rows) {

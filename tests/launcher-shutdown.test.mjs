@@ -8,6 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { FAKE_TRANSPORT, Launcher, record, tempStore, writeRecord } from './helpers.mjs';
@@ -20,6 +21,21 @@ async function reaped(logPath) {
 }
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+// The launcher's own `sh -c` children, read from /proc rather than guessed at,
+// so "the child is gone" is a measurement.
+async function descendantShells(launcherPid) {
+  const out = [];
+  for (const entry of await fs.readdir('/proc')) {
+    if (!/^\d+$/.test(entry)) continue;
+    let stat;
+    try { stat = await fs.readFile(`/proc/${entry}/stat`, 'utf8'); } catch { continue; }
+    // ppid is field 4, after the comm field which may itself contain spaces.
+    const ppid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
+    if (ppid === launcherPid) out.push(Number(entry));
+  }
+  return out;
+}
 
 async function settle(pred, ms = 3_000) {
   const until = Date.now() + ms;
@@ -123,4 +139,78 @@ test('the host-side child really dies — the group goes, not just the direct ch
   } finally {
     try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
   }
+});
+
+// PINS THAT `close` REACHES A DERIVED FILE OPERATION. §5 is explicit — close
+// means "kill the command (hard)" — and cc's readFile/writeFile backstop works
+// BY sending close, so this is the one place its kill instruction could be
+// ignored. The body runs detached (so one round trip does not serialise every
+// other id), which is exactly why dropping bookkeeping alone is not enough:
+// without a kill handle the far-side `sh -c` keeps running, and on docker/ssh
+// it becomes a process nobody reaps.
+test('`close` kills the in-flight derived child of a readFile, not just its bookkeeping', async (t) => {
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  await writeRecord(store.dir, record('alpha'));
+  // A FIFO makes the read block on the far side with no sleep and no wall-clock
+  // dependence: opening one for reading blocks until a writer appears, and
+  // nobody ever writes. A `length` is required — a FIFO stats as size 0, so an
+  // unbounded read computes `want=0` and never opens it at all.
+  const fifo = path.join(store.dir, 'blocker');
+  await new Promise((resolve, reject) => {
+    const c = spawn('mkfifo', [fifo]);
+    c.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`mkfifo exited ${code}`))));
+    c.on('error', reject);
+  });
+
+  const l = new Launcher(['--kind', 'fake'], {
+    CODE_SYSTEM_STORE: store.dir, CODE_SYSTEM_FAKE_TRANSPORT: FAKE_TRANSPORT,
+  });
+  t.after(() => l.kill());
+  await l.hello();
+
+  l.send({ type: 'readFile', id: 'r1', remoteId: 'alpha', path: fifo, length: 10 });
+  // The derived `sh -c` is now parked opening the FIFO.
+  const running = async () => (await descendantShells(l.pid)).length > 0;
+  assert.equal(await settle(running), true, 'the derived child really started');
+
+  l.send({ type: 'close', id: 'r1' });
+  assert.equal(await settle(async () => !(await running())), true,
+    'close killed the derived child — without the abort handle it would still be parked');
+
+  // And nothing is emitted for a closed id.
+  await new Promise(r => setTimeout(r, 150));
+  assert.equal(l.frames.some(f => f.id === 'r1'), false,
+    'close means cc has stopped listening: no further frames for that id');
+
+  // The connection is still usable.
+  l.send({ type: 'exec', id: 'after', remoteId: 'alpha', cwd: '/tmp', argv: ['printf', 'ok'] });
+  assert.equal((await l.waitFor(f => f.type === 'exit' && f.id === 'after')).code, 0);
+});
+
+test('shutdown also takes a parked derived child with it', async (t) => {
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  await writeRecord(store.dir, record('alpha'));
+  const fifo = path.join(store.dir, 'blocker2');
+  await new Promise((resolve, reject) => {
+    const c = spawn('mkfifo', [fifo]);
+    c.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`mkfifo exited ${code}`))));
+    c.on('error', reject);
+  });
+  const l = new Launcher(['--kind', 'fake'], {
+    CODE_SYSTEM_STORE: store.dir, CODE_SYSTEM_FAKE_TRANSPORT: FAKE_TRANSPORT,
+  });
+  t.after(() => l.kill());
+  await l.hello();
+  l.send({ type: 'readFile', id: 'r1', remoteId: 'alpha', path: fifo, length: 10 });
+  assert.equal(await settle(async () => (await descendantShells(l.pid)).length > 0), true);
+
+  const started = Date.now();
+  l.closeStdin();
+  const { code } = await l.exited;
+  assert.equal(code, 0);
+  assert.ok(Date.now() - started < 2_000, "inside cc's own shutdown grace");
+  assert.equal(await settle(async () => (await descendantShells(l.pid)).length === 0), true,
+    'MUST 3 covers a derived file operation too');
 });

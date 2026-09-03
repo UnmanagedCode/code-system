@@ -20,9 +20,38 @@ import { REGISTERED_KINDS } from './launcher/kinds/index.mjs';
 
 const LABELS = { docker: 'Docker containers', ssh: 'SSH hosts' };
 
+// Node's fetch has NO DEFAULT TIMEOUT, so a CONDUCTOR_URL that accepts the
+// connection and then stalls would hang POST /api/registration/retry forever —
+// a user-facing request with no way out. And an unbounded body is buffered
+// whole, so a hostile or broken conductor could hand us a gigabyte.
+export const REQUEST_TIMEOUT_MS = 10_000;
+const MAX_BODY_BYTES = 64 * 1024;
+
+// Read at most MAX_BODY_BYTES of a response, without buffering the rest.
+// Exported because src/api.mjs reads the same conductor endpoint.
+export async function readCapped(res) {
+  try {
+    if (!res.body) return (await res.text()).slice(0, MAX_BODY_BYTES).trim();
+    const chunks = [];
+    let total = 0;
+    for await (const chunk of res.body) {
+      chunks.push(Buffer.from(chunk));
+      total += chunk.length;
+      if (total >= MAX_BODY_BYTES) break;
+    }
+    return Buffer.concat(chunks).subarray(0, MAX_BODY_BYTES).toString('utf8').trim();
+  } catch { return ''; }
+}
+
+const bodyText = readCapped;
+
+function withTimeout(init = {}) {
+  return { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) };
+}
+
 // THE ARGV IS A FUNCTION OF (install path, kind) ONLY — no config value appears
 // in it. That is what lets cc's per-(row.id, JSON.stringify(argv)) handle cache
-// (src/systems/registry.ts:186-193) hold ONE connection while remotes come and
+// (src/systems/registry.ts, the HANDLES cache) hold ONE connection while remotes come and
 // go: a new remote is a new file in the store and a new `bindRemote` view on
 // the same process, never a re-registration.
 //
@@ -40,14 +69,14 @@ function sameLaunch(a, b) {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 }
 
-async function bodyText(res) {
-  try { return (await res.text()).trim(); } catch { return ''; }
-}
-
 // cc's own message is preserved VERBATIM. The 400 case is the `.git`-ancestor
 // refusal, whose text already names the offending directory and the fix
-// (src/systems/sessionRoot.ts:78-83) — paraphrasing it would throw away the
+// (src/systems/sessionRoot.ts, assertSessionRootsPlaceable) — paraphrasing it would throw away the
 // only actionable part.
+// NOTE: 404 is deliberately absent. `unsupported` means "this code-conductor
+// has no Systems support", which is only knowable from the COLLECTION GET; a
+// 404 on a per-row PATCH means the row vanished between our GET and our write,
+// which is an `error` for the user to see, not a claim about cc's version.
 function mapWrite(status, text, id) {
   if (status === 201 || status === 200) return { state: 'ok', httpStatus: status, message: `'${id}' is registered` };
   if (status === 409) return { state: 'ok', httpStatus: status, message: `'${id}' already exists` };
@@ -60,8 +89,31 @@ function mapWrite(status, text, id) {
         + ' That is a bug signal in this plugin, not a user error.',
     };
   }
-  if (status === 404) return { state: 'unsupported', httpStatus: status, message: text };
   return { state: 'error', httpStatus: status, message: text || `HTTP ${status}` };
+}
+
+// Re-GET the collection after a 409 and repair the row if the winner's launch
+// argv is not ours.
+async function reconcile(collection, want, fetchImpl, log) {
+  try {
+    const res = await fetchImpl(collection, withTimeout());
+    if (!res.ok) return { state: 'ok', httpStatus: 409, message: `'${want.id}' already exists` };
+    const json = JSON.parse(await bodyText(res) || '{}');
+    const cur = (Array.isArray(json?.systems) ? json.systems : []).find(s => s?.id === want.id);
+    if (!cur) return { state: 'ok', httpStatus: 409, message: `'${want.id}' already exists` };
+    if (sameLaunch(cur.launch, want.launch)) {
+      return { state: 'ok', httpStatus: 409, message: `'${want.id}' was created concurrently with the same launch` };
+    }
+    log(`registration: '${want.id}' lost a create race to a different launch — repairing`);
+    const patch = await fetchImpl(`${collection}/${encodeURIComponent(want.id)}`, withTimeout({
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ launch: want.launch }),
+    }));
+    return mapWrite(patch.status, await bodyText(patch), want.id);
+  } catch (e) {
+    return { state: 'error', httpStatus: 409, message: `reconciling '${want.id}' after 409 failed: ${e instanceof Error ? e.message : String(e)}` };
+  }
 }
 
 const OVERALL_ORDER = ['ok', 'unsupported', 'skipped', 'blocked', 'unreachable', 'error'];
@@ -96,7 +148,7 @@ export async function register({
 
   let existing;
   try {
-    const res = await fetchImpl(collection);
+    const res = await fetchImpl(collection, withTimeout());
     if (res.status === 404) {
       // A real and current condition, surfaced by name: this code-conductor
       // predates Systems support.
@@ -109,7 +161,8 @@ export async function register({
       log(`registration: error — ${detail}`);
       return { state: 'error', detail, rows: [], checkedAt };
     }
-    const json = await res.json();
+    // Capped read + parse, not res.json(), which would buffer the whole body.
+    const json = JSON.parse(await bodyText(res) || '{}');
     existing = Array.isArray(json?.systems) ? json.systems : [];
   } catch (e) {
     const detail = `GET ${collection} failed: ${e instanceof Error ? e.message : String(e)}`;
@@ -123,23 +176,29 @@ export async function register({
     try {
       if (cur && sameLaunch(cur.launch, want.launch)) {
         // SEND NOTHING. A PATCH would make cc re-probe
-        // (src/appSettings.ts:604-607) for no reason on every backend restart.
+        // (src/appSettings.ts, updateSystem) for no reason on every backend restart.
         rows.push({ id: want.id, state: 'ok', httpStatus: null, message: `'${want.id}' is already registered` });
         log(`registration: '${want.id}' already registered — no request sent`);
         continue;
       }
       const res = cur
-        ? await fetchImpl(`${collection}/${encodeURIComponent(want.id)}`, {
+        ? await fetchImpl(`${collection}/${encodeURIComponent(want.id)}`, withTimeout({
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ launch: want.launch }),
-        })
-        : await fetchImpl(collection, {
+        }))
+        : await fetchImpl(collection, withTimeout({
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ id: want.id, label: want.label, launch: want.launch }),
-        });
-      const mapped = mapWrite(res.status, await bodyText(res), want.id);
+        }));
+      let mapped = mapWrite(res.status, await bodyText(res), want.id);
+      // A 409 means another backend instance created the row while we were
+      // deciding. RE-READ AND RECONCILE rather than assuming it matches: the
+      // winner may have registered a different launch argv (an older install
+      // path), and leaving that in place would keep cc spawning the wrong
+      // launcher.
+      if (res.status === 409) mapped = await reconcile(collection, want, fetchImpl, log);
       rows.push({ id: want.id, ...mapped });
       log(`registration: '${want.id}' → ${mapped.state} (${cur ? 'PATCH' : 'POST'} ${res.status})`);
     } catch (e) {

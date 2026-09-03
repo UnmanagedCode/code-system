@@ -5,7 +5,7 @@ machine. It is never auto-registered. It exists because cc's conformance suite �
 which cc's own doc calls "the definition of a valid provider" — **builds its
 fixtures with node's `fs` and then asks the provider about them**, so it only
 verifies a provider reaching the same filesystem as the test process
-(`tests/referenceProviderHarness.mjs:58-62`). A docker or ssh target does not.
+(the third-party NOTE in `tests/referenceProviderHarness.mjs`). A docker or ssh target does not.
 Nothing but a host kind can run that suite against this code.
 
 **Two things the suite demands that its own docs do not say:**
@@ -17,7 +17,7 @@ Nothing but a host kind can run that suite against this code.
    requires the provider to **fence** each remote to its root (with `cwd:"/"`
    exempt), and asserts the provider **injects `CC_REMOTE`** into the remote
    command's environment. Those facts are documented — in code-conductor's
-   `docs/architecture.md:108` — just not in `systems-protocol.md`, the doc that
+   `docs/architecture.md`, Component layout → `referenceProvider.ts` — just not in `systems-protocol.md`, the doc that
    claims to be complete on its own. Filed as code-conductor card **2026-0313**.
 
 2. **Capabilities must be DERIVED FROM FLAGS, not declared.** The suite's three
@@ -47,6 +47,19 @@ something to work around.
   exec-lifecycle, fileops, derivation and error-taxonomy coverage.
 - **Never add a flag to `docker` or `ssh` to fake `remotes:false`.** That is a
   test-only divergence in the one field cc negotiates on.
+- **The `--remote` fence is LEXICAL, not containment.** It is `path.relative`
+  against the root with no `realpath`, so a symlink inside the root escapes it.
+  Deliberate: on `host`, `exec` is arbitrary by design, so `cat` reads the same
+  file anyway, and the fence exists only for the test vehicle — production
+  `docker`/`ssh` remotes carry no root at all. **Cards 2026-0003 and 2026-0004
+  must not reach for it as a containment primitive.**
+- The guard that ships is **one** general seam
+  (`CODE_SYSTEM_ALLOW_HOST_KIND=1`) plus a **second** one gating only the
+  unfenced-serving path (`CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED=1`, set solely by
+  `tests/conformance.mjs`). The plan's mandatory `--remote` fence was dropped
+  because the suite's core configurations pass no flags; see
+  `docs/architecture.md` → "The `host` kind" for the deviation and its residual
+  risk.
 - What makes this acceptable is the seam: the codec, the frame loop and fileops
   are kind-agnostic and `spawnPlan` is pure, so **`host` passing the core suite
   proves the core for every kind.** The per-kind residue is argv construction

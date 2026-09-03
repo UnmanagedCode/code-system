@@ -104,7 +104,7 @@ export class StoreRemoteSource {
     if (!r.ok) {
       // Every failure to resolve a target is ENOREMOTE and ID-ADDRESSED. An
       // id-less error frame is connection-level and would fail every OTHER
-      // target's in-flight work (docs/systems-protocol.md:598).
+      // target's in-flight work (systems-protocol.md §9, "One dead remote is not a dead connection").
       return { ok: false, code: 'ENOREMOTE', message: `${r.message} (${this.#kind} launcher)` };
     }
     const rec = r.record;
@@ -138,7 +138,7 @@ export class StoreRemoteSource {
 // cold launcher useless.
 //
 // EUNKNOWN is the right code by the taxonomy — the catch-all that carries raw
-// stderr verbatim and IS SURFACED TO THE USER (docs/systems-protocol.md:579).
+// stderr verbatim and IS SURFACED TO THE USER (systems-protocol.md §8, "cc-side interpretation").
 export function baselineRefusal(rec) {
   const b = rec?.baseline;
   if (!b || b.state !== 'unsupported') return null;

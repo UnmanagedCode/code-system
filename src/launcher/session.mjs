@@ -21,7 +21,7 @@ import { withinRoot } from './remotes.mjs';
 // `removeTree`, `unlink`, `chmod`) runs at `/` and carries its real target in
 // argv. A provider that fenced it would refuse EVERY derivation while `exec`
 // and the two file primitives kept working — which reads as cc being broken
-// rather than as a fence doing its job (docs/systems-protocol.md:490-504).
+// rather than as a fence doing its job (systems-protocol.md §7, "Every derivation is sent with cwd: '/'").
 const PLACEHOLDER_CWD = '/';
 
 // Reaping must finish inside cc's own window: cc closes our stdin and SIGKILLs
@@ -45,7 +45,11 @@ export class Session {
 
   #execs = new Map();
   #writes = new Map();
-  #reads = new Set();
+  // id → AbortController for an IN-FLIGHT derived file operation. It is both the
+  // "is this id still live" check and the kill handle `close` needs: the body
+  // runs detached so one round trip does not serialise every other id, so
+  // dropping bookkeeping alone would leave the far-side command running.
+  #fileOps = new Map();
   #greeted = false;
   #chain = Promise.resolve();
 
@@ -100,7 +104,7 @@ export class Session {
       if (!res.ok) {
         // ID-ADDRESSED, always: an id-less error frame is connection-level and
         // would fail every OTHER target's in-flight work
-        // (docs/systems-protocol.md:598).
+        // (systems-protocol.md §9, "One dead remote is not a dead connection").
         this.#fail(String(f.id), res.code, res.message, res.stderr ? { stderr: res.stderr } : {});
         return;
       }
@@ -318,7 +322,11 @@ export class Session {
       void this.#reap(state);
     }
     this.#writes.delete(id);
-    this.#reads.delete(id);
+    // `close` means cc has stopped listening: kill the command HARD. Without
+    // this the derived `sh -c` keeps running — and on docker/ssh it becomes a
+    // far-side process nobody reaps.
+    this.#fileOps.get(id)?.abort();
+    this.#fileOps.delete(id);
   }
 
   async #reap(state) {
@@ -336,20 +344,22 @@ export class Session {
 
   #readFileOpen(f, remote) {
     const id = String(f.id);
-    this.#reads.add(id);
+    const ac = new AbortController();
+    this.#fileOps.set(id, ac);
     // Detached on purpose: a round trip to a container must not serialise every
     // other id behind it.
-    void this.#readFileBody(f, remote, id);
+    void this.#readFileBody(f, remote, id, ac.signal);
   }
 
-  async #readFileBody(f, remote, id) {
+  async #readFileBody(f, remote, id, signal) {
     try {
       const res = await readFileOp(this.#runner(remote), {
         path: String(f.path),
         offset: typeof f.offset === 'number' ? f.offset : 0,
         length: typeof f.length === 'number' ? f.length : null,
+        signal,
       });
-      if (!this.#reads.has(id)) return; // cc closed it while we were away
+      if (!this.#fileOps.has(id)) return; // cc closed it while we were away
       this.#write({ type: 'readFileResult', id, size: res.size, mode: res.mode, isBinary: res.isBinary });
       // BOTH ENDS MUST CHUNK: a payload riding as one frame breaches the line
       // ceiling and dies EPROTO mid-transfer.
@@ -358,13 +368,13 @@ export class Session {
       }
       this.#write({ type: 'end', id });
     } catch (e) {
-      if (!this.#reads.has(id)) return;
+      if (!this.#fileOps.has(id)) return;
       this.#fail(id, e?.code ?? 'EUNKNOWN', errMsg(e), {
         ...(e?.exitCode !== null && e?.exitCode !== undefined ? { exitCode: e.exitCode } : {}),
         ...(e?.stderr ? { stderr: e.stderr } : {}),
       });
     } finally {
-      this.#reads.delete(id);
+      this.#fileOps.delete(id);
     }
   }
 
@@ -405,10 +415,12 @@ export class Session {
     if (!w) return;
     this.#writes.delete(id);
     if (w.failed) return;
-    void this.#writeEndBody(w, id);
+    const ac = new AbortController();
+    this.#fileOps.set(id, ac);
+    void this.#writeEndBody(w, id, ac.signal);
   }
 
-  async #writeEndBody(w, id) {
+  async #writeEndBody(w, id, signal) {
     try {
       await writeFileOp(this.#runner(w.remote), {
         path: w.path,
@@ -416,13 +428,18 @@ export class Session {
         mode: w.mode,
         atomic: w.atomic,
         exclusive: w.exclusive,
+        signal,
       });
+      if (!this.#fileOps.has(id)) return;
       this.#write({ type: 'writeFileResult', id, ok: true });
     } catch (e) {
+      if (!this.#fileOps.has(id)) return;
       this.#fail(id, e?.code ?? 'EUNKNOWN', errMsg(e), {
         ...(e?.exitCode !== null && e?.exitCode !== undefined ? { exitCode: e.exitCode } : {}),
         ...(e?.stderr ? { stderr: e.stderr } : {}),
       });
+    } finally {
+      this.#fileOps.delete(id);
     }
   }
 
@@ -465,7 +482,9 @@ export class Session {
     }
     this.#execs.clear();
     this.#writes.clear();
-    this.#reads.clear();
+    // A derived file operation is a live child too — MUST 3 takes it with us.
+    for (const [, ac] of this.#fileOps) ac.abort();
+    this.#fileOps.clear();
     if (pending.length === 0) return;
     await Promise.race([Promise.allSettled(pending), sleep(this.#reapDeadlineMs)]);
   }

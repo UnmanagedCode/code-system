@@ -7,6 +7,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import {
   PROBE_SCRIPT, needsProbe, parseProbeOutput, refreshBaseline, unknownBaseline,
 } from '../src/baseline.mjs';
@@ -20,7 +23,7 @@ const GNU_OUT = [
 ].join('\n');
 
 // What BusyBox v1.38.0 answers, with the error text quoted verbatim from
-// code-conductor's docs/systems-protocol.md:677-686.
+// code-conductor's systems-protocol.md §11, item 3.
 const BUSYBOX_OUT = [
   'FAIL\treadDir\tfind -printf\tfind: unrecognized: -printf',
   'FAIL\trealpath\trealpath -e --\trealpath: -e: No such file or directory',
@@ -182,4 +185,56 @@ test('the launcher SERVES a remote that has never been probed', async (t) => {
   l.send({ type: 'exec', id: 'e1', remoteId: 'fresh', cwd: '/tmp', argv: ['printf', 'served'] });
   const exit = await l.waitFor(f => f.type === 'exit' && f.id === 'e1');
   assert.equal(exit.code, 0);
+});
+
+// EXECUTES THE FAIL ARMS OF PROBE_SCRIPT ITSELF. Every busybox answer the tests
+// above see is a hand-written string, so the script's own `printf` quoting and
+// its `case "$3" in *.*)` output-shape branch were never run: a quoting bug
+// there, or a retargeted `case`, passes the whole suite and surfaces on a real
+// Alpine target as a WRONG VERDICT — exactly what the probe exists to prevent.
+//
+// A PATH shim of find/realpath/stat emitting the busybox text quoted verbatim
+// from code-conductor's systems-protocol.md §11 gets those arms executed with no
+// busybox and no container, matching this project's fake-external-deps
+// convention.
+test('the probe script\'s own busybox arms execute and produce the right verdict', async (t) => {
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  const bin = path.join(store.dir, 'bin');
+  await fs.mkdir(bin, { recursive: true });
+  const shim = async (name, body) => {
+    const f = path.join(bin, name);
+    await fs.writeFile(f, `#!/bin/sh\n${body}\n`);
+    await fs.chmod(f, 0o755);
+  };
+  // BusyBox v1.38.0, measured, per systems-protocol.md §11.
+  await shim('find', `printf 'find: unrecognized: -printf\\n' >&2; exit 1`);
+  await shim('realpath', `printf "realpath: -e: No such file or directory\\n" >&2; exit 1`);
+  // Succeeds AND IS WRONG: -c honoured, the .3 precision silently dropped.
+  await shim('stat', `printf '41ed 4096 1788194735\\n'; exit 0`);
+
+  const res = await new Promise((resolve) => {
+    const c = spawn('/bin/sh', ['-c', PROBE_SCRIPT], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const out = []; const err = [];
+    c.stdout.on('data', b => out.push(b));
+    c.stderr.on('data', b => err.push(b));
+    c.on('close', (code) => resolve({ code, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString() }));
+  });
+
+  const parsed = parseProbeOutput(res);
+  assert.equal(parsed.state, 'unsupported', `probe stdout was:\n${res.stdout.toString()}`);
+  assert.deepEqual(parsed.missing.map(m => m.capability), ['readDir', 'realpath', 'stat']);
+
+  const byCap = Object.fromEntries(parsed.missing.map(m => [m.capability, m]));
+  assert.equal(byCap.readDir.probe, 'find -printf');
+  assert.equal(byCap.readDir.detail, 'find: unrecognized: -printf',
+    "the script carried the target's own words through its printf intact");
+  assert.match(byCap.realpath.detail, /No such file or directory/);
+  // The output-shape branch: exit 0 throughout, caught on the missing dot.
+  assert.match(byCap.stat.detail, /sub-second/);
+  assert.match(byCap.stat.detail, /1788194735/, 'and quotes what the target actually answered');
+  assert.equal(byCap.stat.probe.includes('%.3Y'), true, 'the probe names the flag it checked');
 });

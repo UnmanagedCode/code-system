@@ -205,3 +205,46 @@ test('--remote is refused for a store-backed kind rather than silently ignored',
   assert.equal(code, 2);
   assert.match(l.stderr, /config store/);
 });
+
+// PINS "read fresh per operation" WHERE THE INVARIANT ACTUALLY LIVES:
+// StoreRemoteSource.lookup, called once per request frame on a LIVE connection.
+// tests/store.test.mjs proves the store itself does not memoise, but a `Map`
+// added inside lookup would pass that and every other file — and a remote the
+// backend re-probes mid-connection would then serve a stale verdict until the
+// launcher restarted. This is also the only test that drives the two-tier
+// baseline design's real scenario: the backend writes a new verdict while a
+// project is already pointed at that remote.
+test('a record rewritten mid-connection is seen by the very next frame', async (t) => {
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  await writeRecord(store.dir, record('alpha'));
+  const l = new Launcher(['--kind', 'fake'], fakeEnv(store.dir));
+  t.after(() => l.kill());
+  await l.hello();
+
+  // Served: the baseline is `unknown`, which the launcher treats as "no evidence".
+  l.send({ type: 'exec', id: 'before', remoteId: 'alpha', cwd: '/tmp', argv: ['printf', 'served'] });
+  assert.equal((await l.waitFor(f => f.type === 'exit' && f.id === 'before')).code, 0);
+
+  // The backend probes and writes an `unsupported` verdict, with the connection
+  // still open and no restart.
+  await writeRecord(store.dir, record('alpha', {
+    baseline: {
+      state: 'unsupported',
+      fingerprint: 'fp2',
+      missing: [{ capability: 'readDir', probe: 'find -printf', detail: 'find: unrecognized: -printf' }],
+      checkedAt: '2026-09-03T00:00:00.000Z',
+    },
+  }));
+
+  l.send({ type: 'exec', id: 'after', remoteId: 'alpha', cwd: '/tmp', argv: ['printf', 'served'] });
+  const err = await l.waitFor(f => f.type === 'error' && f.id === 'after');
+  assert.equal(err.code, 'EUNKNOWN', 'the launcher re-read the record rather than answering from a cache');
+  assert.match(err.message, /readDir/);
+  assert.equal(l.frames.some(f => f.type === 'exit' && f.id === 'after'), false);
+
+  // And it works in the other direction too — a fixed target clears itself.
+  await writeRecord(store.dir, record('alpha'));
+  l.send({ type: 'exec', id: 'fixed', remoteId: 'alpha', cwd: '/tmp', argv: ['printf', 'served'] });
+  assert.equal((await l.waitFor(f => f.type === 'exit' && f.id === 'fixed')).code, 0);
+});

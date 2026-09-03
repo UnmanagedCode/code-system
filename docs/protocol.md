@@ -30,7 +30,7 @@ Sent once, before any other frame, in answer to cc's `hello`.
 We send the absolute constant `/bin/bash`, per kind, always. It is **required**:
 `protocol.ts:225` types it `system: { shell: string } & Partial<SystemDescriptor>`,
 and a hello with a missing, relative or empty value is refused `EPROTO` at the
-handshake (`providerConnection.ts:242-249`), which would fail registration.
+handshake (the hello check in `providerConnection.ts`), which would fail registration.
 
 It is also **never read for `docker` or `ssh`**. cc consumes it in exactly one
 place — `src/systems/providerShell.ts:360`,
@@ -41,10 +41,14 @@ long-lived shell and reports the rest."* Both kinds advertise
 be dropped from cc.)
 
 So: **do not probe for it, do not make it configurable, and do not derive it from
-anything.** There is no per-remote `shell` in the store — there is no consumer
-and there is not going to be one. `host` is the only kind whose value is actually
-used, and only incidentally: it really does open a persistent shell, which is
-what keeps two of cc's three core conformance configurations runnable.
+anything.** There is no per-remote `shell` in the store, because such a field
+would be **inert today**: the only thing that reads `system.shell` is a code path
+a `persistentShell:false` kind never reaches. That is a measurement, not a
+prediction about what cc will do next — and if a consumer ever appears, adding
+the field back is additive, with no migration. `host` is the only kind whose
+value is actually used, and only incidentally: it really does open a persistent
+shell, which is what keeps two of cc's three core conformance configurations
+runnable.
 
 It cannot be probed anyway: cc registers by handshaking with **zero remotes
 configured**, and its handshake budget is 10 s (`providerConnection.ts:64`),
@@ -78,7 +82,7 @@ addressed by `id` alone and we never look for a `remoteId` on them.
 
 **Id-addressing is a MUST, not a nicety.** An id-less `error` frame is
 connection-level and would fail every *other* target's in-flight work
-(`systems-protocol.md:598`).
+(`systems-protocol.md §9`).
 
 **`cwd: "/"` is accepted and never fenced.** Every derived operation cc sends
 (`stat`, `readDir`, `realpath`, `mkdir`, `removeTree`, `unlink`, `chmod`)
@@ -158,7 +162,7 @@ bare name would depend on the orchestrator's PATH.
    predates Systems support); network error or non-2xx → `error`. No retry.
 3. per row: absent → `POST`; present with a matching `launch` → **send
    nothing** (a PATCH would make cc re-probe on every backend restart,
-   `appSettings.ts:604-607`); present with a different `launch` → `PATCH {launch}`.
+   `updateSystem` in `appSettings.ts`); present with a different `launch` → `PATCH {launch}`.
 
 | From cc | State | Shown |
 |---|---|---|

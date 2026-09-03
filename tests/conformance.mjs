@@ -23,7 +23,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ALLOW_ENV } from '../src/launcher/kinds/host.mjs';
+import { ALLOW_ENV, ALLOW_UNFENCED_ENV } from '../src/launcher/kinds/host.mjs';
 import { LAUNCHER_MAIN } from '../src/paths.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -51,9 +51,12 @@ const child = spawn(process.execPath, [runner, suite], {
   env: {
     ...process.env,
     CC_CONFORMANCE_PROVIDER: provider,
-    // The suite is the `host` kind's reason to exist, so this is where the
-    // guard is opened — deliberately, and nowhere else.
+    // The suite is the `host` kind's reason to exist, so this is where both
+    // guards are opened — deliberately, and nowhere else in the shipped code.
+    // The second one is needed because the suite's three core capability
+    // configurations pass no `--remote`, and therefore serve unfenced.
     [ALLOW_ENV]: '1',
+    [ALLOW_UNFENCED_ENV]: '1',
   },
   stdio: 'inherit',
 });

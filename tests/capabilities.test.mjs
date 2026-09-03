@@ -30,7 +30,7 @@ for (const kind of ['docker', 'ssh']) {
       // No long-lived shell for this kind: cc takes its documented
       // absent-behaviour and runs every redirected shell command as a one-shot
       // exec. Because cc GATES `stdin`/`stdinClose` on this capability
-      // (src/systems/providerSystem.ts:628), advertising false is what stops
+      // (src/systems/providerSystem.ts, the persistentShell gate), advertising false is what stops
       // those frames being sent at all; the shared refusal path they would meet
       // is pinned in tests/hostkind.test.mjs, which uses the one kind that can
       // currently spawn a child.

@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { LAUNCHER, fakeConductor } from './helpers.mjs';
-import { desiredRows, register } from '../src/registration.mjs';
+import { REQUEST_TIMEOUT_MS, desiredRows, register } from '../src/registration.mjs';
 
 const ROWS = desiredRows();
 const DOCKER = ROWS.find(r => r.id === 'docker');
@@ -189,4 +189,112 @@ test('a GET that answers non-JSON is `error` rather than an exception', async (t
   t.after(() => cc.close());
   const state = await register({ conductorUrl: cc.url });
   assert.equal(state.state, 'error');
+});
+
+// PINS THE 409 RECONCILE. Another instance winning the create race is `ok` only
+// if it registered OUR launch argv; if it registered a different one (an older
+// install path), leaving it would keep cc spawning the wrong launcher forever.
+test('a 409 whose winner has a DIFFERENT launch is repaired, not accepted', async (t) => {
+  const stale = ['/old/node', '/old/main.mjs', '--kind', 'docker'];
+  let created = false;
+  const cc = await fakeConductor((req) => {
+    if (req.method === 'GET') {
+      // First GET: empty, so we try to POST. Later GETs: the race winner's row.
+      const rows = created ? [{ ...DOCKER, launch: stale }, { ...SSH }] : [];
+      return systemsBody(rows);
+    }
+    if (req.method === 'POST') { created = true; return { status: 409, body: 'already exists' }; }
+    if (req.method === 'PATCH') return { status: 200, body: {} };
+    return null;
+  });
+  t.after(() => cc.close());
+
+  const state = await register({ conductorUrl: cc.url });
+  assert.equal(state.state, 'ok');
+  const patch = cc.requests.find(r => r.method === 'PATCH');
+  assert.ok(patch, 'the losing instance re-read and repaired the row');
+  assert.equal(patch.url, '/api/settings/systems/docker');
+  assert.deepEqual(patch.body, { launch: DOCKER.launch });
+});
+
+test('a 409 whose winner has the SAME launch sends no PATCH', async (t) => {
+  let created = false;
+  const cc = await fakeConductor((req) => {
+    if (req.method === 'GET') return systemsBody(created ? [{ ...DOCKER }, { ...SSH }] : []);
+    if (req.method === 'POST') { created = true; return { status: 409, body: 'already exists' }; }
+    return { status: 500, body: 'should not have been called' };
+  });
+  t.after(() => cc.close());
+
+  const state = await register({ conductorUrl: cc.url });
+  assert.equal(state.state, 'ok');
+  assert.equal(cc.requests.some(r => r.method === 'PATCH'), false,
+    'nothing to repair means nothing to send');
+});
+
+// PINS the plan's split: `unsupported` means "this cc has no Systems support",
+// which is only knowable from the COLLECTION GET. A 404 on a per-row PATCH
+// means the row vanished under us — a different fact, and not one to report as
+// a claim about cc's version.
+test('a per-row 404 is `error`, not `unsupported`', async (t) => {
+  const cc = await fakeConductor((req) => {
+    if (req.method === 'GET') {
+      return systemsBody([{ ...DOCKER, launch: ['/stale/node', '/stale/main.mjs', '--kind', 'docker'] }, { ...SSH }]);
+    }
+    return { status: 404, body: 'system not found' };
+  });
+  t.after(() => cc.close());
+
+  const state = await register({ conductorUrl: cc.url });
+  assert.equal(state.state, 'error');
+  const row = state.rows.find(r => r.id === 'docker');
+  assert.equal(row.state, 'error');
+  assert.equal(row.httpStatus, 404);
+  assert.match(row.message, /not found/);
+});
+
+// PINS that a conductor which accepts the connection and then stalls cannot
+// wedge POST /api/registration/retry. Node's fetch has no default timeout, so
+// without AbortSignal.timeout this hangs forever.
+test('a stalled conductor is an `error` after the request timeout, not a hang', async (t) => {
+  const http = await import('node:http');
+  const held = [];
+  const server = http.createServer((_req, res) => { held.push(res); /* never answered */ });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  t.after(async () => {
+    for (const res of held) res.destroy();
+    await new Promise(r => server.close(r));
+  });
+  const url = `http://127.0.0.1:${server.address().port}`;
+
+  // A short signal injected through fetchImpl, so the test is fast and does not
+  // depend on the production 10s constant.
+  const fetchImpl = (input, init = {}) => fetch(input, { ...init, signal: AbortSignal.timeout(300) });
+  const started = Date.now();
+  const state = await register({ conductorUrl: url, fetchImpl });
+  assert.equal(state.state, 'error');
+  assert.ok(Date.now() - started < 5_000, 'it gave up rather than hanging');
+  assert.match(state.detail, /failed/);
+});
+
+test('the production request timeout is set, and is finite', () => {
+  assert.equal(Number.isFinite(REQUEST_TIMEOUT_MS), true);
+  assert.ok(REQUEST_TIMEOUT_MS > 0 && REQUEST_TIMEOUT_MS <= 60_000);
+});
+
+// PINS the body cap. An unbounded read would buffer whatever the conductor
+// sends; the cap keeps a broken or hostile peer from deciding our memory use.
+test('an oversized error body is truncated rather than buffered whole', async (t) => {
+  const huge = 'x'.repeat(256 * 1024); // 4x the cap — enough to prove it, fast to send
+  const cc = await fakeConductor((req) => {
+    if (req.method === 'GET') return systemsBody([]);
+    return { status: 400, body: huge };
+  });
+  t.after(() => cc.close());
+
+  const state = await register({ conductorUrl: cc.url });
+  assert.equal(state.state, 'blocked');
+  assert.ok(state.rows[0].message.length <= 64 * 1024,
+    `kept ${state.rows[0].message.length} bytes of a ${huge.length}-byte body`);
+  assert.ok(state.rows[0].message.length > 0, 'but still shows the user what came back');
 });
