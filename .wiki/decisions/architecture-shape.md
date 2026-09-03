@@ -1,6 +1,6 @@
 # Locked architecture decisions
 
-These are decided for this plugin, ahead of implementation. Later cards should build to this shape, not re-derive it.
+These are locked for this plugin. Implementation should conform to this shape, not re-derive it.
 
 - **One cc System row per provider KIND, not per remote.** Two rows total: `docker` and `ssh`. Each advertises `remotes:true`. See [gotchas/no-remote-discovery.md](../gotchas/no-remote-discovery.md) for why the remote catalog lives entirely in this plugin's UI instead.
 - **System is a transport, not the remote system.** The cc System row is just how cc reaches a target; the actual remote/`remoteId` is the real unit of identity, configured per `remoteId`.
