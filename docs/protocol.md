@@ -13,46 +13,25 @@ Sent once, before any other frame, in answer to cc's `hello`.
 
 ```json
 {"type":"hello","protocol":1,"provider":"code-system-docker/0.1.0",
- "capabilities":{"persistentShell":false,"processGroupSignal":false,
-                 "remotes":true,"remoteDescriptors":false},
- "system":{"os":"linux","pathSep":"/","shell":"/bin/bash","home":"/root"}}
+ "capabilities":{"processGroupSignal":false,"remotes":true,"remoteDescriptors":false}}
 ```
 
 | Capability | `docker` | `ssh` | `host` |
 |---|---|---|---|
-| `persistentShell` | `false` (permanent) | `false` (permanent) | `true` unless `--no-persistent-shell` |
 | `processGroupSignal` | `false` until card 2026-0003 | `false` until card 2026-0004 | `true` unless `--no-process-group-signal` |
 | `remotes` | `true` always | `true` always | at least one `--remote` |
 | `remoteDescriptors` | `false` | `false` | at least one `--mirror`/`--exclude` |
 
-### `system.shell` is mandatory ceremony, and inert for us
+**Those three keys and no more.** They are cc's `Capabilities` interface
+verbatim (`src/systems/protocol.ts`); a missing key reads as `false` and an
+unknown key is ignored, so a fourth would be a field with no reader.
 
-We send the absolute constant `/bin/bash`, per kind, always. It is **required**:
-`protocol.ts:225` types it `system: { shell: string } & Partial<SystemDescriptor>`,
-and a hello with a missing, relative or empty value is refused `EPROTO` at the
-handshake (the hello check in `providerConnection.ts`), which would fail registration.
-
-It is also **never read for `docker` or `ssh`**. cc consumes it in exactly one
-place — `src/systems/providerShell.ts:360`,
-`this.#host.descriptor?.shell ?? '/bin/bash'` — inside the **persistent-shell**
-path, and `protocol.ts:205` says so plainly: *"cc uses `shell` to open the
-long-lived shell and reports the rest."* Both kinds advertise
-`persistentShell:false`, so that shell is never opened. (The field is expected to
-be dropped from cc.)
-
-So: **do not probe for it, do not make it configurable, and do not derive it from
-anything.** There is no per-remote `shell` in the store, because such a field
-would be **inert today**: the only thing that reads `system.shell` is a code path
-a `persistentShell:false` kind never reaches. That is a measurement, not a
-prediction about what cc will do next — and if a consumer ever appears, adding
-the field back is additive, with no migration. `host` is the only kind whose
-value is actually used, and only incidentally: it really does open a persistent
-shell, which is what keeps two of cc's three core conformance configurations
-runnable.
-
-It cannot be probed anyway: cc registers by handshaking with **zero remotes
-configured**, and its handshake budget is 10 s (`providerConnection.ts:64`),
-which an ssh cold connect can exceed.
+**There is NO `system` descriptor**, and we send none. cc's
+`HelloProviderFrame` is `{type, protocol, provider, capabilities?}`. The
+descriptor the hello used to carry (`os`, `pathSep`, `shell`, `home`) is
+deleted: `shell` was the only field cc ever read — it opened the long-lived
+shell with it — and that shell is gone. **Do not reintroduce a per-kind
+`defaultShell`, a per-remote `shell` field, or a probe for either.**
 
 `docker` and `ssh` advertise `remotes:true` **always**, never derived from what
 is in the store — cc memoises the handshake per connection generation, so a
@@ -63,8 +42,8 @@ capability that flapped as remotes were added would be memoised wrong. See
 
 Carried by the four **request** frames only — `exec`, `readFile`, `writeFile`,
 `describeRemote` — and by nothing else. An id is bound to one remote for its
-whole lifetime; `stdin`, `stdinClose`, `signal`, `close`, `data` and `end` are
-addressed by `id` alone and we never look for a `remoteId` on them.
+whole lifetime; `signal`, `close`, `data` and `end` are addressed by `id` alone
+and we never look for a `remoteId` on them.
 
 | Situation | Answer |
 |---|---|

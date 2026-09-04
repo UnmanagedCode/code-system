@@ -66,9 +66,10 @@ export class Session {
   }
 
   // Frames are handled STRICTLY IN ARRIVAL ORDER. Resolving a remote is an
-  // await (the store is read fresh from disk), and `stdin` for an id can arrive
-  // in the same chunk as the `exec` that opened it — so without this chain the
-  // follow-on frame would be processed first and dropped as an unknown id.
+  // await (the store is read fresh from disk), and a `signal` for an id can
+  // arrive in the same chunk as the `exec` that opened it — so without this
+  // chain the follow-on frame would be processed first and dropped as an
+  // unknown id.
   //
   // Only the routing-and-registration phase is serialised: a readFile's round
   // trip runs detached, so one slow operation never serialises cc behind it
@@ -127,8 +128,6 @@ export class Session {
 
     switch (f.type) {
       case 'exec': return this.#exec(f, remote);
-      case 'stdin': return this.#stdin(f);
-      case 'stdinClose': return this.#stdinClose(f);
       case 'signal': return this.#signal(f);
       case 'close': return this.#close(f);
       case 'readFile': return this.#readFileOpen(f, remote);
@@ -142,22 +141,16 @@ export class Session {
     }
   }
 
+  // NO `system` DESCRIPTOR. cc's HelloProviderFrame is
+  // {type, protocol, provider, capabilities?} and nothing reads a descriptor —
+  // `shell` was its only ever reader and went with the long-lived shell. We
+  // send no key with zero readers.
   hello() {
-    const d = this.#transport.descriptor?.() ?? {};
     return {
       type: 'hello',
       protocol: PROTOCOL_VERSION,
       provider: `code-system-${this.#transport.kind}/${this.#version}`,
       capabilities: { ...this.#caps },
-      system: {
-        os: d.os ?? 'linux',
-        pathSep: d.pathSep ?? '/',
-        // REQUIRED and absolute. Answered from a per-kind constant, never
-        // probed: cc registers by handshaking with ZERO remotes configured, and
-        // its handshake budget is 10 s — which an ssh cold connect can exceed.
-        shell: this.#transport.defaultShell,
-        home: d.home ?? '/root',
-      },
     };
   }
 
@@ -275,32 +268,6 @@ export class Session {
     };
     send(signal);
     if (signal === 'SIGTERM') setTimeout(() => send('SIGKILL'), state.killGraceMs).unref();
-  }
-
-  #stdin(f) {
-    const id = String(f.id);
-    const state = this.#execs.get(id);
-    // A frame for an unknown or already-settled id is DROPPED, not an error:
-    // cc's close and our last frames cross on the wire by design.
-    if (!state) return;
-    if (!this.#caps.persistentShell) {
-      // The capability is exactly "cc may keep writing into a live child".
-      // Refusing here is what makes the flag real rather than decorative.
-      state.closed = true;
-      if (state.timer) clearTimeout(state.timer);
-      this.#execs.delete(id);
-      try { state.child.kill('SIGKILL'); } catch { /* already gone */ }
-      this.#fail(id, 'EUNSUPPORTED', 'this provider does not support writing to a running command');
-      return;
-    }
-    state.child.stdin?.write(Buffer.from(String(f.dataB64 ?? ''), 'base64'));
-  }
-
-  #stdinClose(f) {
-    const state = this.#execs.get(String(f.id));
-    if (!state) return;
-    if (!this.#caps.persistentShell) { this.#stdin({ ...f, type: 'stdin', dataB64: '' }); return; }
-    state.child.stdin?.end();
   }
 
   #signal(f) {

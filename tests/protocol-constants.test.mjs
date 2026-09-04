@@ -9,15 +9,30 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
   BINARY_SNIFF_BYTES, CHUNK_BYTES, FS_ERROR_CODES, MAX_FILE_BYTES, MAX_LINE_BYTES,
-  NdjsonDecoder, PROTOCOL_ERROR_CODES, PROTOCOL_VERSION, classifyStderr, decodeFrame, isBase64,
+  MIRROR_EXCLUDE_MAX, MIRROR_PATH_MAX, NdjsonDecoder, PROTOCOL_ERROR_CODES,
+  PROTOCOL_VERSION, classifyStderr, decodeFrame, isBase64,
 } from '../src/launcher/protocol.mjs';
 
+// UNGATED, and that is the point: the taxonomy claim used to live only in the
+// CC_CHECKOUT-gated test below, which nothing in `npm test` runs — which is how
+// a stale `EBUSY` survived cc removing it. Written out here as a literal, so an
+// added, removed or reordered code reds a plain `npm test` with no checkout.
 test('the constants equal the documented values', () => {
   assert.equal(PROTOCOL_VERSION, 1);
   assert.equal(CHUNK_BYTES, 64 * 1024);
   assert.equal(MAX_FILE_BYTES, 32 * 1024 * 1024);
   assert.equal(BINARY_SNIFF_BYTES, 8 * 1024);
   assert.equal(MAX_LINE_BYTES, 4 * 1024 * 1024);
+  assert.equal(MIRROR_EXCLUDE_MAX, 64);
+  assert.equal(MIRROR_PATH_MAX, 4096);
+
+  assert.deepEqual(PROTOCOL_ERROR_CODES, [
+    'EPROTO', 'ETRANSPORT', 'ETIMEDOUT', 'EUNSUPPORTED', 'ESHELLGONE',
+    'EFBIG', 'ECANCELLED', 'ENOREMOTE',
+  ], "cc's eight protocol-level codes, in cc's order");
+  assert.deepEqual(FS_ERROR_CODES, [
+    'ENOENT', 'EACCES', 'EEXIST', 'ENOTDIR', 'EISDIR', 'ENOSPC', 'EUNKNOWN',
+  ], "cc's seven filesystem codes, in cc's order");
 });
 
 test('strict base64: a lenient decode is what turns a corrupt chunk into a silent truncation', () => {
@@ -65,7 +80,10 @@ test('the classifier matches the strerror TAIL, not a tool prefix', () => {
 });
 
 // GATED, and it SKIPS rather than fails when the checkout is not there, so
-// `npm test` needs nothing but Node.
+// `npm test` needs nothing but Node. Its job is now pure DRIFT DETECTION — the
+// claim itself is pinned ungated above — and `npm run conformance` runs this
+// file first with the checkout in its environment, so "I ran conformance"
+// implies "I checked for drift".
 test('our mirror matches cc\'s own protocol.ts', { skip: !process.env.CC_CHECKOUT }, async () => {
   const src = await fs.readFile(
     path.join(process.env.CC_CHECKOUT, 'src', 'systems', 'protocol.ts'), 'utf8');
@@ -82,6 +100,8 @@ test('our mirror matches cc\'s own protocol.ts', { skip: !process.env.CC_CHECKOU
   assert.equal(MAX_FILE_BYTES, num('MAX_FILE_BYTES'));
   assert.equal(BINARY_SNIFF_BYTES, num('BINARY_SNIFF_BYTES'));
   assert.equal(MAX_LINE_BYTES, num('MAX_LINE_BYTES'));
+  assert.equal(MIRROR_EXCLUDE_MAX, num('MIRROR_EXCLUDE_MAX'));
+  assert.equal(MIRROR_PATH_MAX, num('MIRROR_PATH_MAX'));
 
   const codes = (name) => {
     const m = new RegExp(`export const ${name}\\s*=\\s*\\[([\\s\\S]*?)\\]\\s*as const;`).exec(src);

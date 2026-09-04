@@ -19,7 +19,7 @@
 // NOTHING IN THE CHECKOUT IS MODIFIED — the suite is read and run, never
 // edited. Editing it is how a provider fakes conformance.
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,8 +43,21 @@ for (const rel of [runner, suite]) {
   }
 }
 
+// THE DRIFT CHECK RUNS FIRST, and aborts the battery. It is the one test that
+// needs a checkout, this is the one command that already demands one, and
+// running it here is what stops it skipping silently for the rest of its life.
+const drift = spawnSync(
+  process.execPath,
+  ['--test', path.join(HERE, 'protocol-constants.test.mjs')],
+  { cwd: path.dirname(HERE), env: { ...process.env, CC_CHECKOUT: checkout }, stdio: 'inherit' },
+);
+if (drift.status !== 0) {
+  console.error('\nconformance: ABORTED — our protocol constants have drifted from cc\'s at this checkout');
+  process.exit(drift.status ?? 1);
+}
+
 const provider = JSON.stringify([process.execPath, LAUNCHER_MAIN, '--kind', 'host']);
-console.log(`conformance: ${checkout}\nconformance: provider ${provider}\n`);
+console.log(`\nconformance: ${checkout}\nconformance: provider ${provider}\n`);
 
 const child = spawn(process.execPath, [runner, suite], {
   cwd: checkout,
@@ -53,7 +66,7 @@ const child = spawn(process.execPath, [runner, suite], {
     CC_CONFORMANCE_PROVIDER: provider,
     // The suite is the `host` kind's reason to exist, so this is where both
     // guards are opened — deliberately, and nowhere else in the shipped code.
-    // The second one is needed because the suite's three core capability
+    // The second one is needed because the suite's core capability
     // configurations pass no `--remote`, and therefore serve unfenced.
     [ALLOW_ENV]: '1',
     [ALLOW_UNFENCED_ENV]: '1',
@@ -61,4 +74,3 @@ const child = spawn(process.execPath, [runner, suite], {
   stdio: 'inherit',
 });
 child.on('close', (code) => process.exit(code ?? 1));
-void HERE;

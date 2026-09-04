@@ -16,8 +16,6 @@ export function createTransport(opts = {}) {
   const processGroupSignal = opts.processGroupSignal !== false;
   return {
     kind: 'fake',
-    defaultShell: '/bin/bash',
-    persistentShell: opts.persistentShell !== false,
     processGroupSignal,
     // True so the store-backed routing gate is exercised: an absent or unknown
     // remoteId must be an id-addressed ENOREMOTE.
@@ -42,7 +40,5 @@ export function createTransport(opts = {}) {
         appendFileSync(reapLog, `${JSON.stringify({ pid: handle.pid, token: handle.token, remoteId: handle.remoteId })}\n`);
       }
     },
-
-    descriptor() { return { os: 'linux', pathSep: '/', home: '/root' }; },
   };
 }

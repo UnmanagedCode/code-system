@@ -70,28 +70,50 @@ kind that needs it puts it on the far side inside its own `spawnPlan`.
 `kinds/host.mjs` execs directly on cc's own machine. It is **not** one of
 `REGISTERED_KINDS` and never gets a cc System row.
 
-**Why it exists, and why deleting it is expensive.** cc's conformance suite
-*is* the definition of a valid provider, and it "builds its fixtures with node's
-own `fs` and then asks the provider about them, so it verifies a provider that
-reaches **the same filesystem as the test process**"
-(the third-party NOTE in `tests/referenceProviderHarness.mjs`). A docker or ssh target does not
-share that filesystem. **Nothing but a host kind can run cc's suite against this
-code**, so removing it removes the only check on the frame loop, the routing,
-`fileops.mjs` and the shutdown path. It is exercised by a real caller —
-`npm run conformance` — which is the YAGNI bar.
+**Why it exists.** Two reasons, each load-bearing on its own:
 
-**The guard, and a DEVIATION FROM THE PLAN.** "We never register it" is not a
-fence: a row registered by hand with `--kind host` is an unfenced arbitrary-exec
-provider on cc's own machine, reachable by any project pointed at it. cc gates
-its own equivalent (`CC_LOCAL_SYSTEM_PROVIDER`) behind an env var for the same
-reason (`CC_LOCAL_SYSTEM_PROVIDER` in `src/systems/registry.ts`).
+1. **It is the only far side that reaches the test process's own filesystem.**
+   cc's suite "builds its fixtures with node's own `fs` and then asks the
+   provider about them, so it verifies a provider that reaches **the same
+   filesystem as the test process**" (`systems-protocol.md` §10). A docker or
+   ssh target does not. `CC_CONFORMANCE_REMOTE_ID` fixes *addressing*, not
+   *filesystem identity*, so binding a docker target to a named handle does not
+   substitute. The same requirement makes `host` the far side for two of our own
+   suites: `tests/fileops.test.mjs` (the only real-shell proof the generated
+   read/write scripts are correct rather than just the host-side parse) and
+   `tests/baseline.test.mjs` (the only proof `PROBE_SCRIPT` is valid POSIX sh).
+   Both are deterministic, with no docker and no network.
+2. **`npm run conformance` drives the battery through the SHIPPED launcher** —
+   `tests/conformance.mjs` runs `[node, src/launcher/main.mjs, --kind, host]` —
+   so it exercises arg parsing, kind dispatch, the frame loop, routing and the
+   shutdown path. A transport exercised directly would prove none of that.
 
-The plan required **two** conditions: an env seam **and** at least one mandatory
-`--remote <id>=<absolute root>` fence. **The mandatory fence is unimplementable
-as written**, and this is the reason: cc's three core `CAPABILITY_CONFIGS` pass
-no flags at all, so a `host` that refused without a fence makes **62 of the
-suite's 65 tests unrunnable** — and running that suite is the only reason the
-kind exists.
+**The rejected fourth option, recorded so nobody re-litigates it.** Demoting
+`host` to a *test-only* provider entry point (not a shipped `--kind`) is
+launchable — `CC_CONFORMANCE_PROVIDER` takes an argv, never a registered cc
+kind — but it fails reason 2: it would prove the transport speaks the protocol,
+not that the shipped launcher does. Recovering that means importing `main.mjs`
+from the entry point, which is `--kind host` with extra steps and a second code
+path to keep correct.
+
+**The old justification was FALSE and has been deleted.** It held that an
+always-`remotes:true` kind was permanently barred from the suite's core
+capability configurations. Three measurements at cc `bf5f2afe` refute it: `IS_REFERENCE_PROVIDER` is an
+*identity* gate (`!process.env[PROVIDER_ARGV_ENV]?.trim()`), not a shape gate;
+`assertNegotiatedCapabilities` deep-equals the whole object only for the
+reference provider and otherwise loops `TOGGLED_CAPABILITIES`, which derives to
+`processGroupSignal` alone, tolerating `remotes`/`remoteDescriptors` as a
+superset; and `CAPABILITY_CONFIGS` is **two** configurations, not three. `host`
+unlocks **zero** rows a bound `docker` would not — see the four skips below.
+
+**The guard, and a DEVIATION FROM THE PLAN.** The plan required **two**
+conditions: an env seam **and** at least one mandatory
+`--remote <id>=<absolute root>` fence. The mandatory fence is unimplementable,
+and the reason is on **our** side of the wire, not cc's: `CAPABILITY_CONFIGS`
+pass no flags at all, so no `--remote` reaches us in the core battery, so
+`hostUnfencedRefusal()` fires and the launcher exits 2 **before any frame**.
+Every core configuration would die at the launch, not at an assertion — killing
+reason 2 above.
 
 What ships is two seams that split along the *risk* instead:
 
@@ -100,17 +122,32 @@ What ships is two seams that split along the *risk* instead:
 | `--kind host --remote a=/some/root` | `CODE_SYSTEM_ALLOW_HOST_KIND=1` |
 | `--kind host` (serves unfenced) | that **plus** `CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED=1` |
 
-Only `tests/conformance.mjs` sets the second one. So a hand-registered row now
-needs someone to have deliberately exported a variable **with `UNFENCED` in its
-name** into the orchestrator's environment, rather than merely the general test
-var — which is most of what the plan's mandatory fence was buying.
+**No shipped code path sets the second one** — only tests do (`conformance.mjs`,
+`hostkind.test.mjs`, `capabilities.test.mjs`). That property, not the number of
+setters, is what to preserve when adding a test. So a hand-registered row needs
+someone to have deliberately exported a variable **with `UNFENCED` in its name**
+into the orchestrator's environment.
 
-**Residual risk, stated rather than implied.** With both variables exported into
-the orchestrator, a hand-registered `host` row still serves arbitrary exec on
-cc's machine. Neither seam is a capability check; they are speed bumps that make
-the dangerous configuration require a deliberate, self-describing act. The real
-protection is that `host` is absent from `REGISTERED_KINDS`, so nothing this
-plugin does ever creates such a row.
+**What the seams actually buy — the weaker, true claim.** A cc System row's
+`launch` is a `string[]` cc validates only for **shape** and **reachability**:
+`validateLaunch` (`appSettings.ts`) checks it is a non-empty array of non-empty
+strings, and `verifySystemLaunch` proves it works by *spawning it and
+handshaking*. `getSystems()` then reads it back with no content check and
+`resolveSystem` spawns it. There is **no allow-list and no path check anywhere**
+— nothing constrains *which* executable an argv names. So anyone able to
+register a System row can already have cc spawn an arbitrary argv on cc's host,
+and these seams are **not** what stands between an attacker and host execution.
+
+What `--kind host` genuinely adds over "some arbitrary argv" is narrower: it
+turns a one-shot argv into a **standing, documented, protocol-speaking exec
+service** any cc project can be pointed at via its *Remote* field. The two env
+seams are **defence-in-depth against our own auto-registration bug** — a `host`
+row escaping `desiredRows()` — and against a user hand-registering `--kind host`
+without understanding it. They stop a **misconfiguration** becoming that
+service; they do not stop a **compromise**. The `REGISTERED_KINDS` omission is
+the separate half: it is what stops *us* ever creating such a row. Neither is a
+capability check. (`kinds/host.mjs`'s header says the same thing; the two used
+to contradict each other and no longer do.)
 
 Failure is **stderr + exit 2 before any frame**, so cc's registration answers 502
 quoting it, which `registration.mjs` surfaces verbatim. Both seams are pinned by
@@ -130,7 +167,6 @@ primitive.**
 
 | Capability | `host` |
 |---|---|
-| `persistentShell` | `true` unless `--no-persistent-shell` |
 | `processGroupSignal` | `true` unless `--no-process-group-signal` |
 | `remotes` | at least one `--remote` given |
 | `remoteDescriptors` | at least one `--mirror` or `--exclude` given |
@@ -138,52 +174,81 @@ primitive.**
 This is the shape cc's own reference provider uses (`remotes:
 this.#opts.remotes.size > 0`, the hello capabilities block in
 `referenceProvider.ts`), and the suite's assertion message states the intent:
-*"the flags the provider was launched with are what it advertises"*. It is what makes the suite runnable at all — its three
-core `CAPABILITY_CONFIGS` pass **no** flags and **deep-equal**
-`{persistentShell:true, processGroupSignal:true, remotes:false,
-remoteDescriptors:false}` (with two of them lowering one flag), while
-`withRemotes` and the two mirror tests pass `--remote`/`--mirror` and require
-the opposite. A kind that hardcoded any of these four would fail the deep-equal
-and lose most of the suite.
+*"the flags the provider was launched with are what it advertises"*. Bare `host`
+equals `CAPABILITY_CONFIGS[0].caps` verbatim and `--no-process-group-signal`
+equals `CAPABILITY_CONFIGS[1].caps` verbatim — because they are derived, not
+hardcoded. A kind that hardcoded any of the three would fail the deep-equal the
+reference-provider path makes.
 
-`host` keeps `persistentShell` for exactly this reason, even though `docker` and
-`ssh` drop it permanently — **do not "fix" that inconsistency.** Two of the three
-core configurations deep-equal `persistentShell: true`
-(`CAPABILITY_CONFIGS` in `tests/referenceProviderHarness.mjs`), and losing them would cost most of the
-exec-lifecycle, fileops, derivation and error-taxonomy coverage, none of which
-is about shells. It costs nothing: a host exec already holds its child's stdin
-open.
+### The launch surface the suite appends
 
-### What cc's conformance suite demands beyond `systems-protocol.md`
+`systems-protocol.md` §10 → **"The launch surface — what the suite sends beyond
+the wire contract"** is now the authority, and it is complete: cc card 2026-0313
+landed and closed the gap this section used to record as pending. Do not
+re-derive the list from cc's `referenceProvider.ts`; read §10's table.
 
-The `PROVIDER_ARGV_ENV` note in `tests/referenceProviderHarness.mjs` says the suite appends "exactly the two
-`--no-*` flags and nothing else" and that "nothing in the suite is otherwise
-specific to the reference provider". Neither is true as written. A provider
-being verified must also accept `--remote <id>=<abs root>` (its `withRemotes` fixture),
-`--mirror` and `--exclude` (its two `describeRemote` tests), **fence** each
-remote to its root with `cwd:"/"` exempt, and **inject `CC_REMOTE`** into the
-remote command's environment ("a bound handle names its remote on exec,
-readFile and writeFile"). Those facts are documented — in cc's
-`docs/architecture.md`, Component layout → `referenceProvider.ts` — just not in the doc a provider author is told is
-complete on its own. Filed as code-conductor card **2026-0313**.
+What it obliges a provider being verified to do:
+
+| Flag / variable | The provider must |
+|---|---|
+| `--no-process-group-signal` | signal the direct child only |
+| `--remote <id>=<absolute root>` | **serve that target** — the id is its whole address; an unknown or absent id is an id-addressed `ENOREMOTE` |
+| `--mirror <[id=]absolute root>` | answer `describeRemote` with that `mirrorRoot` |
+| `--exclude <[id=]absolute path>` | add that path to the same descriptor's `exclude` |
+| `CC_REMOTE=<id>` | be in the environment of **every child an `exec` starts** |
+
+Each capability is advertised **iff** at least one of its flags is given, which
+is why ours are derived rather than declared. A provider that accepts a flag and
+ignores it fails the rows the flag toggles; one that exits on an unknown flag
+fails that whole configuration at the handshake. Neither is skipped.
+
+**THE `--remote` ROOT IS NOT A FENCE THE SUITE ASKS YOU TO ENFORCE.** §10's table
+says so in the row itself — *"the root is where the suite places that target's
+fixtures, **not a fence it asks you to enforce**"* — and cc's own architecture
+doc says the reference provider's root fence is *"this provider's property, not
+a protocol obligation"*, exercised by no row in the suite. **Cards 2026-0003 and
+2026-0004 must not implement root fencing as a conformance requirement.** Our
+`host` kind fences because a test vehicle on cc's own machine needs a misroute to
+be *refusable*, not because the battery demands it — and production
+`docker`/`ssh` remotes carry no root at all.
+
+### What a third-party run does NOT verify
+
+Four rows skip for **any** third-party provider, all gated on
+`IS_REFERENCE_PROVIDER`. They are identical for `host` and for a bound `docker`,
+and their printed reasons are the list of what the run does not check:
+
+| Test | Printed reason |
+|---|---|
+| `a provider that does not advertise remotes is never handed a remoteId` | `cc-side fixture, pinned to the reference provider: asserts what CC does, not what a provider does` |
+| `a provider without the capability advertises no mirror` | same |
+| `CC_CONFORMANCE_REMOTE_ID binds the fixture handle, and an explicit remoteId still wins` | `asserts the unset default` |
+| `every code in the taxonomy is produced by a real failure somewhere in this suite` | `counts producers across rows a third-party run skips` |
+
+A **fifth** skip, or a different reason string, means the harness changed and
+this section needs re-checking.
 
 ### The consequence for cards 2026-0003 and 2026-0004
 
-**`docker` and `ssh` always advertise `remotes:true`, and can therefore NEVER
-pass the suite's three core configurations.** That is not a defect in them and
-is not something to chase or work around. A capability derived from store
-contents would flap as remotes were added, and cc memoises the handshake per
-connection generation, so it would be memoised wrong.
+`docker` and `ssh` always advertise `remotes:true`. Since cc `bf5f2afe` that no
+longer bars them from the battery: `CC_CONFORMANCE_REMOTE_ID` binds every
+fixture handle to one named target, and the third-party capability assertion
+tolerates `remotes`/`remoteDescriptors` as a **superset**. **A bound run against
+the real `docker` kind is therefore supported and worth doing** — it measures
+the shipped kind rather than a generalisation from `host`. What it needs is a
+container that shares the test process's filesystem (a bind mount), which is rig
+territory: **cards 2026-0003 and 2026-0006**.
 
-What makes that acceptable is the seam: `protocol.mjs`, `session.mjs` and
-`fileops.mjs` are kind-agnostic and `spawnPlan` is pure, so **`host` passing the
-core suite proves the core for every kind.** The per-kind residue is only argv
-construction and `reap` — covered by unit tests on the pure `spawnPlan` plus the
-live `code-system-test` rig. docker and ssh get the `withRemotes`/mirror subset,
-not the core.
+Until then, the seam is what carries the argument: `protocol.mjs`, `session.mjs`
+and `fileops.mjs` are kind-agnostic and `spawnPlan` is pure, so **`host` passing
+the core suite proves the core for every kind.** The per-kind residue is only
+argv construction and `reap` — covered by unit tests on the pure `spawnPlan`
+plus the live `code-system-test` rig.
 
 **Do not add a flag to docker or ssh to fake `remotes:false`.** That would be a
-test-only divergence in the one field cc negotiates on.
+test-only divergence in the one field cc negotiates on, and cc's own harness
+says so (`referenceProviderHarness.mjs`, the `assertNegotiatedCapabilities`
+note). It is also unnecessary — a bound run needs no such lie.
 
 **Two obligations that land on those cards specifically:**
 
@@ -313,9 +378,9 @@ global.
   serialised, so the chain is at most one frame deep in flight, and both file-op
   bodies run detached (MUST 4 is honoured). A review additionally failed to break
   it with 20 000 frames queued at EOF. It is needed because resolving a remote is
-  an `await` and a `stdin` frame can arrive in the same chunk as the `exec` that
-  opened its id — without the chain that follow-on frame is processed first and
-  dropped as unknown.
+  an `await` and a follow-on frame — a `signal` for an id — can arrive in the
+  same chunk as the `exec` that opened it; without the chain that follow-on
+  frame is processed first and dropped as unknown.
 - **A grandchild under test redirects its own stdout to `/dev/null`**, or it
   holds the command's pipes open after the direct child dies and the `exit`
   frame never arrives. cc's own suite does the same
@@ -336,5 +401,13 @@ CC_CHECKOUT=/path/to/code-conductor npm run conformance
 Runs cc's own `tests/systems-protocol-conformance.test.mjs` against
 `--kind host`, with **no test edits** — editing that suite is how a provider
 fakes conformance. It skips cleanly when `CC_CHECKOUT` is unset, so `npm test`
-needs nothing but Node. `tests/protocol-constants.test.mjs` uses the same gate
-to parse cc's `src/systems/protocol.ts` and catch constant drift.
+needs nothing but Node.
+
+**It runs `tests/protocol-constants.test.mjs` first**, with `CC_CHECKOUT` in its
+environment, and aborts before launching the battery if that fails. That test's
+gated half parses cc's `src/systems/protocol.ts` and catches constant drift; it
+had been skipping silently since it was written, because nothing in `npm test`
+sets the variable — which is how a stale `EBUSY` outlived cc removing it. The
+claim itself now also lives in the file's **ungated** test as a literal
+`deepEqual`, so a re-added or reordered code reds a plain `npm test` with no
+checkout at all, and the gated test is pure drift detection.

@@ -15,12 +15,6 @@ import { createSshTransport } from './ssh.mjs';
 /**
  * @typedef {object} Transport
  * @property {string}  kind          'docker' | 'ssh' | 'host'
- * @property {string}  defaultShell  ABSOLUTE. Answered in `hello` with ZERO remotes
- *                                   configured, so it can never be probed: cc
- *                                   registers by spawning this argv for a real
- *                                   handshake against an empty store, and a
- *                                   missing/relative/empty shell is refused EPROTO
- *                                   (providerConnection.ts, the hello check).
  * @property {boolean} processGroupSignal  Advertised verbatim. `true` is a PROMISE
  *                                   that a signal reaches the far side's whole
  *                                   group; systems-protocol.md §11, item 2 calls

@@ -59,31 +59,31 @@ missing capability: half-working is worse than a clear refusal. The probe costs
 one round trip **per container start or image change**, not one per card
 refresh, and a target you fix clears itself on the next refresh with no restart.
 
-## No long-lived shell (`persistentShell: false`)
+## No long-lived shell — and nothing carries over between commands
 
-`docker` and `ssh` do not offer a persistent shell. cc takes its documented
-fallback: **every redirected shell command runs as its own one-shot command**,
-with the working directory passed explicitly and read back afterwards.
+There is no long-lived shell in cc's protocol at all. **Every redirected shell
+command runs as its own one-shot command**, with the working directory passed
+explicitly on the request.
 
-**The headline difference: `cd` persists across commands, but exports, shell
-functions and background jobs do not.** That matches the local Claude Code
-experience, whose `Bash` tool also carries only the working directory.
+**The headline difference: nothing persists between commands — not even the
+working directory.** cc reads `$PWD` back only so it can *tell* you where a
+command ended; it never feeds that value into the next one. Every command starts
+at the project root, and a command that ended somewhere else gets a notice
+saying its `cd` was discarded. Exports, shell functions and background jobs do
+not survive either.
 
 Three further differences the mode really has, stated rather than glossed:
 
 1. **Each command gets a fresh login shell**, so anything your profile files
-   print would land in the command's output. cc's command framing brackets each
-   command with a sentinel to stop that — load-bearing here in a way it is not
-   for a persistent shell.
+   print would land in the command's output on *every* command. cc's command
+   framing brackets each one with a sentinel to stop that.
 2. **A working directory deleted since the last command fails the NEXT command**
-   with "no such file or directory", rather than running it somewhere. A
-   persistent shell would have kept running in the deleted directory.
-3. **The command rides the shell exec form**, so what it needs of the target is
-   *that form's* login shell (`bash -lc`) — not the shell a persistent session
-   would have been opened with.
+   with "no such file or directory", rather than running it somewhere.
+3. **The command rides the `exec` frame's shell form**, so what it needs of the
+   target is that form's login shell (`bash -lc`).
 
-If you need exported variables or a background job to survive between commands,
-put them in a single command, or in a profile file on the target.
+If you need a `cd`, exported variables or a background job to survive, put them
+in a single command, or in a profile file on the target.
 
 ## Registration is automatic, and says why when it fails
 

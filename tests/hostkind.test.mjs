@@ -1,12 +1,11 @@
 // PINS the `host` kind's guard and its flag-derived capabilities.
 //
-// The guard, because a hand-registered `--kind host` row is an unfenced
-// arbitrary-exec provider on cc's own machine. The capabilities, because
-// deriving them from flags is the ONLY thing that makes cc's conformance suite
-// runnable against this launcher at all: its three core configurations pass no
-// flags and deep-equal `remotes:false` / `remoteDescriptors:false`, while its
-// remotes and mirror tests pass `--remote` / `--mirror` and require the
-// opposite.
+// The guard, because a hand-registered `--kind host` row is a standing,
+// protocol-speaking exec service on cc's own machine. The capabilities, because
+// systems-protocol.md §10 makes each one advertised IFF at least one of its
+// flags is given: the core fixtures pass no `--remote` / `--mirror` and build
+// UNBOUND handles, while the remotes and mirror fixtures pass them and need the
+// opposite, so a hardcoded value breaks one group or the other.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -49,14 +48,19 @@ test('a value other than 1 does not open the guard', async () => {
 //
 // The plan required `host` to refuse unless BOTH a general env seam AND at
 // least one `--remote <id>=<root>` fence were given. The fence half is
-// unimplementable as written: cc's three core CAPABILITY_CONFIGS pass no flags
-// at all, so a mandatory fence makes 62 of the suite's 65 tests unrunnable —
-// and running that suite is the only reason this kind exists.
+// unimplementable, and the reason is on OUR side of the wire: cc's
+// CAPABILITY_CONFIGS pass no flags at all, so no `--remote` reaches us in the
+// core battery, so hostUnfencedRefusal() fires and the launcher exits 2 before
+// any frame — every core configuration dead at the launch, not at an assertion.
+// That kills ONE OF THE TWO reasons this kind exists (running cc's battery
+// through the shipped launcher); the other — being the only far side that
+// reaches the test process's own filesystem — is why `host` survives at all.
+// See the header of src/launcher/kinds/host.mjs, which owns both.
 //
 // What ships instead gates the UNFENCED-SERVING PATH ONLY, behind a second,
 // separately-named seam (CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED). A fenced host
 // needs only the general seam; serving unfenced needs a variable with UNFENCED
-// in its name, which only tests/conformance.mjs sets. See
+// in its name, which NO SHIPPED CODE PATH SETS — only tests do. See
 // docs/architecture.md → "The `host` kind" for the residual risk.
 test('with the guard open and NO flags, host advertises exactly what cc\'s core configs expect', async (t) => {
   const l = new Launcher(['--kind', 'host'], ALLOW);
@@ -64,9 +68,8 @@ test('with the guard open and NO flags, host advertises exactly what cc\'s core 
   const hs = await l.hello();
   // This deep-equal is CAPABILITY_CONFIGS[0].caps, verbatim.
   assert.deepEqual(hs.capabilities, {
-    persistentShell: true, processGroupSignal: true, remotes: false, remoteDescriptors: false,
+    processGroupSignal: true, remotes: false, remoteDescriptors: false,
   });
-  assert.equal(hs.system.shell.startsWith('/'), true);
   assert.match(hs.provider, /^code-system-host\/\S+$/);
 
   // With no --remote it serves ONE unfenced default target, so a request naming
@@ -76,33 +79,13 @@ test('with the guard open and NO flags, host advertises exactly what cc\'s core 
   assert.equal(textOf(l.frames, 'e1'), 'served');
 });
 
-test('--no-persistent-shell lowers the capability AND makes it real', async (t) => {
-  const l = new Launcher(['--kind', 'host', '--no-persistent-shell'], ALLOW);
-  t.after(() => l.kill());
-  const hs = await l.hello();
-  // CAPABILITY_CONFIGS[1].caps, verbatim.
-  assert.deepEqual(hs.capabilities, {
-    persistentShell: false, processGroupSignal: true, remotes: false, remoteDescriptors: false,
-  });
-
-  // THE MECHANISM docker and ssh permanently sit behind: with the capability
-  // absent, a `stdin` frame is refused rather than served. Exercised here
-  // because `host` is the kind that can actually spawn a child; the per-kind
-  // constants are pinned in tests/capabilities.test.mjs.
-  l.send({ type: 'exec', id: 'c1', cwd: '/tmp', argv: ['cat'] });
-  l.send({ type: 'stdin', id: 'c1', dataB64: Buffer.from('hi').toString('base64') });
-  const err = await l.waitFor(f => f.type === 'error' && f.id === 'c1');
-  assert.equal(err.code, 'EUNSUPPORTED');
-  assert.equal(typeof err.id, 'string', 'id-addressed');
-});
-
 test('--no-process-group-signal lowers the capability and sets descendantsMaySurvive', async (t) => {
   const l = new Launcher(['--kind', 'host', '--no-process-group-signal'], ALLOW);
   t.after(() => l.kill());
   const hs = await l.hello();
-  // CAPABILITY_CONFIGS[2].caps, verbatim.
+  // CAPABILITY_CONFIGS[1].caps, verbatim.
   assert.deepEqual(hs.capabilities, {
-    persistentShell: true, processGroupSignal: false, remotes: false, remoteDescriptors: false,
+    processGroupSignal: false, remotes: false, remoteDescriptors: false,
   });
 
   // The grandchild's own stdout goes to /dev/null so it does not hold the
@@ -158,6 +141,51 @@ test('--remote turns on `remotes`, fences each target, and injects CC_REMOTE', a
   const exit = await l.waitFor(f => f.type === 'exit' && f.id === 'deriv');
   assert.equal(exit.code, 0, "cwd '/' must never be fenced");
   assert.equal(textOf(l.frames, 'deriv'), 'derived');
+});
+
+// PINS: `CC_REMOTE` is overlaid AFTER the frame's `env` replacement, on BOTH
+// exec forms — so THE PROVIDER'S BINDING WINS OVER A CALLER-SUPPLIED VALUE.
+//
+// §5 says an `exec`'s `env` REPLACES the environment, posix_spawn-style. cc's
+// reference provider therefore spreads the remote id on top of it
+// (`remoteId === null ? baseEnv : { ...baseEnv, CC_REMOTE: remoteId }`), and so
+// must we.
+//
+// THE FIXTURE MUST COLLIDE, or this pins nothing. `{...baseEnv, CC_REMOTE}` and
+// `{CC_REMOTE, ...baseEnv}` produce byte-identical objects unless the frame's
+// own `env` carries a `CC_REMOTE` key — so the replacement env below names one
+// deliberately. Without that collision the reordered spread survives, and so
+// does the wrong behaviour it stands for: a caller-supplied `CC_REMOTE`
+// overriding the provider's own binding, which is exactly the routing lie
+// `CC_REMOTE` exists to make impossible. No row in cc's suite sends an env
+// containing `CC_REMOTE` either, so conformance is blind to it as well.
+test('CC_REMOTE names the target on both exec forms, and the provider\'s binding beats a frame-supplied value', async (t) => {
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  const rootA = path.join(store.dir, 'a');
+  await fs.mkdir(rootA);
+
+  const l = new Launcher(['--kind', 'host', '--remote', `a=${rootA}`], ALLOW_FENCED);
+  t.after(() => l.kill());
+  await l.hello();
+
+  // An env the frame supplies WHOLESALE: it wipes everything the launcher's own
+  // process had, AND it claims a CC_REMOTE of its own.
+  const replacement = { PATH: process.env.PATH, CC_REMOTE: 'frame-supplied' };
+
+  // (i) the argv form.
+  l.send({ type: 'exec', id: 'argv', remoteId: 'a', cwd: rootA, argv: ['env'], env: replacement });
+  assert.equal((await l.waitFor(f => f.type === 'exit' && f.id === 'argv')).code, 0);
+  const argvEnv = textOf(l.frames, 'argv');
+  assert.match(argvEnv, /^CC_REMOTE=a$/m,
+    'the argv form gets the ROUTED target, not the frame-supplied one');
+  assert.doesNotMatch(argvEnv, /^CC_REMOTE=frame-supplied$/m,
+    'the frame-supplied value must not survive — that would be a routing lie');
+
+  // (ii) the shell form.
+  l.send({ type: 'exec', id: 'sh', remoteId: 'a', cwd: rootA, shell: 'echo "$CC_REMOTE"', env: replacement });
+  assert.equal((await l.waitFor(f => f.type === 'exit' && f.id === 'sh')).code, 0);
+  assert.equal(textOf(l.frames, 'sh').trim(), 'a');
 });
 
 test('--mirror/--exclude turn on remoteDescriptors and round-trip the advertisement', async (t) => {

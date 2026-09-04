@@ -16,26 +16,6 @@ export function createDockerTransport() {
   return {
     kind: 'docker',
 
-    // The contract's `shell` exec form is defined as `bash -lc`
-    // (systems-protocol.md §5), so bash is already assumed of the far
-    // side. Not probeable: cc's handshake budget is 10 s and the handshake
-    // happens with zero remotes configured.
-    defaultShell: '/bin/bash',
-
-    // FALSE, PERMANENTLY — an owner decision, not a not-yet. There is no
-    // long-lived shell for this kind, so cc takes its documented
-    // absent-behaviour: every redirected shell command becomes a one-shot
-    // `exec` of the same framing, with `cwd` passed explicitly and `$PWD` read
-    // back from the sentinel to carry into the next call. cc gates `stdin` /
-    // `stdinClose` on the capability (src/systems/providerSystem.ts, the persistentShell gate) and so
-    // never sends them here; session.mjs refuses one EUNSUPPORTED, id-addressed,
-    // if it ever arrives. The `exec` frame's own `stdin?` field is unaffected —
-    // one-shot stdin stays.
-    //
-    // The user-visible difference is documented in docs/features.md, the
-    // README's known limitations and .wiki/gotchas/no-persistent-shell.md.
-    persistentShell: false,
-
     // FALSE until the transport actually does setsid inside the container, pgid
     // discovery and `kill -- -<pgid>` (systems-protocol.md §11, item 2). The core
     // then sets `descendantsMaySurvive: true` on every exit it terminated,
@@ -72,7 +52,5 @@ export function createDockerTransport() {
     },
 
     async reap() {},
-
-    descriptor() { return { os: 'linux', pathSep: '/', home: '/root' }; },
   };
 }
