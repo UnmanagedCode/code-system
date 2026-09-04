@@ -62,6 +62,14 @@ Carried by the four **request** frames only — `exec`, `readFile`, `writeFile`,
 whole lifetime; `signal`, `close`, `data` and `end` are addressed by `id` alone
 and we never look for a `remoteId` on them.
 
+**The gate is therefore checked when an id is BOUND, not per chunk.** A
+`writeFile` whose opening frame was already routed completes and lands the file
+**whole**, even if the operator disables the remote before its `end` arrives;
+the next *request* frame is refused. That is the correct granularity, not a gap:
+refusing mid-stream would leave a partial file where the protocol promises none.
+Pinned by `tests/gate.test.mjs`, with a barrier proving the write really was
+routed first.
+
 | Situation | Answer |
 |---|---|
 | no `remoteId`, on a kind advertising `remotes` | `ENOREMOTE`, **id-addressed** — we have no default |
@@ -108,6 +116,15 @@ transport failure — and `EACCES` already means "a path outside a remote's root
 `ENOREMOTE` maps to `502 REMOTE_NOT_FOUND` and our message is interpolated
 verbatim and untruncated, twice nested, into the sidebar system pill's tooltip
 and into a session's redirected `Bash`.
+
+**cc's memo of that check is asymmetric, and nothing on our side can flush it.**
+`assertRemoteKnown` short-circuits on `#probedAgainst === hs`
+(`src/systems/providerSystem.ts:178`) and assigns the memo at `:183`, *after* the
+throw — so a refusal is never remembered (**off→on takes effect on the next
+resolution**) while a success is (**on→off stays stale** until the handshake
+generation changes). Only cc's advisory resolution signal lags; every operation
+against a switched-off remote is still refused here, before the target is
+contacted.
 
 **Two hard constraints on the gate's message**, both measured, both pinned by
 `tests/gate.test.mjs`:

@@ -13,6 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { FS_ERROR_CODES } from '../src/launcher/protocol.mjs';
 import { FlagRemoteSource, StoreRemoteSource } from '../src/launcher/remotes.mjs';
@@ -263,4 +264,59 @@ test('FlagRemoteSource has no gate, even with a switched-off store record of the
   const stored = await new StoreRemoteSource('host').lookup('a');
   assert.equal(stored.ok, false);
   assert.match(stored.message, /switched OFF/);
+});
+
+// PINS THE GATE'S GRANULARITY: it is checked when an id is BOUND, not per
+// chunk. `writeFile` is the only multi-frame operation, and its follow-on
+// `data`/`end` frames are addressed by an id already bound to a remote — so an
+// operation already open when the operator disables the remote runs to
+// COMPLETION and lands the file whole, while the next request frame is refused.
+//
+// That is the correct granularity rather than a gap: refusing mid-stream would
+// leave a partial file where the protocol promises none. docs/protocol.md
+// states this, and this test is why it may.
+test('a writeFile already in flight completes when the gate closes under it', async (t) => {
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  await writeRecord(store.dir, record('r', { enabled: true }));
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'code-system-gatewrite-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const target = path.join(dir, 'landed.txt');
+  const payload = Buffer.from('the whole payload, not a prefix of it\n');
+
+  // The `fake` kind, because it is STORE-BACKED (`--kind host` with no
+  // `--remote` uses FlagRemoteSource and is ungated by design — that is the
+  // conformance property, pinned separately above). It reaches this machine's
+  // real filesystem, which is what makes "the bytes landed" assertable rather
+  // than inferred.
+  const l = new Launcher(['--kind', 'fake'], fakeEnv(store.dir));
+  t.after(() => l.kill());
+  await l.hello();
+
+  // OPEN the write while the gate is open.
+  l.send({ type: 'writeFile', id: 'w', remoteId: 'r', path: target });
+  l.send({ type: 'data', id: 'w', seq: 0, dataB64: payload.toString('base64') });
+
+  // BARRIER, NOT SLEEP. Frames are handled in arrival order, so a short exec
+  // whose `exit` we await proves the two frames above were already routed —
+  // without it the record flip below races the write's own lookup, and the test
+  // would be asserting the opposite case while appearing to pass or fail at
+  // random.
+  l.send({ type: 'exec', id: 'barrier', remoteId: 'r', cwd: '/tmp', argv: ['printf', 'up'] });
+  await l.waitFor(f => f.type === 'exit' && f.id === 'barrier');
+
+  // NOW the operator disables the remote, with the write still open.
+  await writeRecord(store.dir, record('r', { enabled: false }));
+
+  l.send({ type: 'end', id: 'w' });
+  const done = await l.waitFor(f => (f.type === 'writeFileResult' || f.type === 'error') && f.id === 'w');
+  assert.equal(done.type, 'writeFileResult', `the open write completed: ${JSON.stringify(done)}`);
+  assert.deepEqual(await fs.readFile(target), payload, 'and landed WHOLE, not truncated');
+
+  // And the very next request frame is refused, so the gate did close.
+  l.send({ type: 'exec', id: 'after', remoteId: 'r', cwd: '/tmp', argv: ['printf', 'x'] });
+  const err = await l.waitFor(f => f.type === 'error' && f.id === 'after');
+  assert.equal(err.code, 'ENOREMOTE');
+  assert.match(err.message, /switched OFF/);
 });

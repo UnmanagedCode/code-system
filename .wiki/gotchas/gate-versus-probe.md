@@ -57,10 +57,14 @@ would break the gate, not merely slow it.
 
 ## Consequences that surprise people
 
-- **A cc project cannot be pointed at a disabled remote at all.** cc's
-  `assertRemoteKnown` runs at `PUT /api/projects/:name/remote`, before anything
-  is written, so the operator's order of work is: add → connect → then set
-  *Remote*.
+- **cc's binding check is ASYMMETRIC, and nothing on our side can flush it.**
+  `assertRemoteKnown` (`src/systems/providerSystem.ts:159-184` at the pin)
+  short-circuits on `#probedAgainst === hs` at `:178`, and assigns that memo at
+  `:183` — *after* the throw. So a refused remote is never memoised (off→on is
+  live) while a remote that already probed OK keeps resolving healthy until the
+  handshake generation changes (on→off is stale). The safety property is intact
+  — every operation is still refused at our gate — only cc's advisory
+  resolution signal lags. `docs/features.md` owns the user-facing wording.
 - **A disabled remote is never probed either.** The tooling-baseline probe execs
   INTO the target but runs in the backend, bypassing `lookup`, so `enabled` is
   part of `refreshBaseline`'s condition (`src/baseline.mjs`).

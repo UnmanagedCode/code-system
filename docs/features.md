@@ -62,9 +62,20 @@ Three consequences worth knowing before they surprise you:
 
 - **A new remote starts disabled.** Add it, then connect it. (For an SSH remote
   this is simply the truth: no shared connection exists until you connect.)
-- **You cannot point a cc project at a disabled remote.** cc checks that the
-  provider serves the target *before* it writes the project's *Remote* field, so
-  the order of work is: add the remote → connect it → then set *Remote*.
+- **Connect before you set a project's *Remote*.** cc checks that the provider
+  serves a target before it writes the field, and a remote it has never reached
+  while switched on is refused — so the working order is: add the remote →
+  connect it → then set *Remote*.
+
+  Be precise about what that check does and does not catch, because it is
+  asymmetric. cc remembers a *successful* check for the life of its connection
+  to the provider, and does not re-ask. So **switching a remote back on takes
+  effect immediately** (a refusal is never remembered), while **switching one
+  off does not retroactively unbind it** — a project already pointed at it stays
+  bound, and cc may still accept a fresh binding, until that connection is
+  re-established. Nothing is unsafe about this: every command against a
+  switched-off remote is still refused, by this plugin, before the target is
+  contacted. Only cc's advisory "is this remote real" answer lags.
 - **Editing a remote's connection details switches it off.** A changed container
   or host may be a different target entirely, so the gate and the tooling verdict
   both reset. Editing only the **label** does not.

@@ -69,12 +69,13 @@ kind that needs it puts it on the far side inside its own `spawnPlan`.
 its relay reached the far side must say so rather than return quietly. The core
 reports it and carries on.
 
-`connect(config)` / `disconnect(config)` are **optional** and exist only for a
-kind whose transport multiplexes. Nothing in the core calls them: the launcher
-never needs them (see the ControlMaster section below), the live fixture's
-setup/teardown do, and card 2026-0005's buttons will. **What they do and do not
-govern is part of the seam contract, so the typedef owns it** —
-`src/launcher/kinds/index.mjs`, which is what card 2026-0005 programs against.
+`connect(config)` / `disconnect(config)` are **required on every registered
+kind** — they are the operator gate's per-kind side effect, not a multiplexing
+feature, so a kind with nothing to open still implements them. Nothing in the
+frame loop calls them; the backend's two gate routes and the live fixtures do.
+**The typedef at `src/launcher/kinds/index.mjs` is the single home** for what
+they govern, what may throw, and what the backend does when one does — read it
+there rather than here.
 
 `classifyFailure(config, {code, stdout, stderr})` is **optional** and reads the
 *transport's* own error vocabulary — a docker daemon response — turning a
