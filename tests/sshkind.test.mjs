@@ -572,6 +572,40 @@ test('classifyFailure: a command cannot forge a transport verdict', () => {
   }), null);
 });
 
+// PINS THE BLANK-LINE BOUNDARY, in both directions, because the two differ and
+// nothing else fixes where the line falls. `allOf` trims the whole stream
+// before `sshOwnLine` splits it, so:
+//
+//  - a LEADING blank is normalised away and the wording still classifies. The
+//    wrong implementation this catches is an `allOf` that stopped trimming (or
+//    trimmed only `\r`): a genuine refusal arriving with a leading newline
+//    would then stop being classified at all.
+//  - an INTERIOR blank TERMINATES the walk. The wrong implementation this
+//    catches is the plausible "robustness" edit of SKIPPING blank lines instead
+//    of stopping at them — which re-opens the mid-stream hole for any command
+//    whose own output ends in a blank line before a nested ssh's message.
+//
+// The asymmetry is deliberate: ssh's own diagnostic has no interior blank line
+// (measured — the prefixed shape is two adjacent CRLF lines), so refusing a
+// shape ssh does not produce is the conservative direction, while a leading
+// newline changes nothing about who wrote the message.
+test('classifyFailure: a LEADING blank is normalised away; an INTERIOR one stops the walk', () => {
+  // Leading — still ours.
+  assert.equal(classify({ code: 255, stdout: '', stderr: '\nHost key verification failed.\n' })?.code,
+    'EUNKNOWN');
+  assert.equal(classify({ code: 255, stdout: '', stderr: '\r\n  \nroot@h: Permission denied (publickey).\n' })?.code,
+    'EUNKNOWN');
+
+  // Interior — between ssh's OWN preamble and the match, which is the only
+  // place a blank-skipping mutant differs from the shipped walk. ssh does not
+  // emit this, so refusing it is correct rather than merely safe.
+  assert.equal(classify({
+    code: 255, stdout: '',
+    stderr: 'No ED25519 host key is known for 1.2.3.4 and you have requested strict checking.\n'
+      + '\nHost key verification failed.\n',
+  }), null, 'a blank line is not one of ssh\'s own opening lines — the walk must stop, not skip');
+});
+
 // ── U13-U16: the async seams, driven through a stub ssh ──────────────
 
 /**
@@ -751,6 +785,14 @@ test('connect starts ONE master with no doubled ControlMaster, and disconnect is
     await createSshTransport({ cli: gone.cli }).disconnect(CONFIG);
     assert.ok((await gone.argv()).includes('exit'), exitStderr);
   }
+  // THE PREFIX IS THE CONTRACT, the four tails above are an enumeration. An
+  // UNSEEN tail after the same prefix must still resolve, or a future OpenSSH
+  // rewording of the tail would silently un-idempotent teardown; conversely the
+  // negative below is what pins that the PREFIX is doing the work.
+  const unseenTail = await stubSsh(t, {
+    exitExit: 255, exitStderr: 'Control socket connect(/tmp/x/sock): Some future errno wording\n',
+  });
+  await createSshTransport({ cli: unseenTail.cli }).disconnect(CONFIG);
 
   // But a disconnect that failed for any OTHER reason is reported.
   const broken = await stubSsh(t, { exitExit: 255, exitStderr: 'something else entirely\n' });

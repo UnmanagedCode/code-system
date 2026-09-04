@@ -253,19 +253,44 @@ once, in `.wiki/gotchas/ssh-controlmaster-transport.md` §1.
 |---|---|---|---|
 | 255 | stderr | `ssh: connect to host …` / `ssh: Could not resolve hostname …` | `ENOREMOTE`, naming the **configured** host |
 | 255 | stderr | `hostname contains invalid characters` | `ENOREMOTE`, naming the configured host |
-| 255 | stderr | `Permission denied (publickey…` — **anywhere in stderr**; ssh prefixes it with `<user>@<host>: ` | `EUNKNOWN` naming `~/.ssh/config`, the agent and `CODE_SYSTEM_SSH` — **never `ENOREMOTE`**: our access failing is not the remote being absent |
-| 255 | stderr | `Host key verification failed` — **anywhere in stderr**; ssh prefixes it, with CRLF, when the config requests strict checking explicitly | `EUNKNOWN` naming the `known_hosts` policy, same reason |
+| 255 | stderr | `Permission denied (publickey…` on a line of ssh's own **opening**; ssh prefixes it on that line with `<user>@<host>: ` | `EUNKNOWN` naming `~/.ssh/config`, the agent and `CODE_SYSTEM_SSH` — **never `ENOREMOTE`**: our access failing is not the remote being absent |
+| 255 | stderr | `Host key verification failed` on a line of ssh's own **opening** — either the first line, or the second when ssh prefixes it (with CRLF) with `No <type> host key is known for … strict checking.` | `EUNKNOWN` naming the `known_hosts` policy, same reason |
 | **127** | stderr | `env: '<argv0>': No such file or directory` | `ENOENT` — §5's "a command that never started is an `error` frame, not an `exit` frame" |
 | **125** | stderr | `env: cannot change directory to '<cwd>': …` | `ENOENT`, same reason. **Note the different exit code** — anchoring on 127 alone reports a bad cwd as a command that ran and exited |
 | anything else | — | — | **not a transport failure**: the command's own `exit` frame |
 
-Two guards are `includes` rather than `startsWith`, and that is measured rather
-than defensive: neither wording opens the stream. Forging a row requires exiting
-exactly 255 (or `env`'s 127/125), writing **nothing** to stdout, and reproducing
-ssh's exact bytes on stderr — a bound on plausibility, not a proof, and the
-outcome of forging it is a named refusal rather than a wrong answer. These rows
-report the **whole** normalised diagnostic as `stderr`, because ssh's host-key
-refusal spans two lines and the first is the less useful half.
+**Two anchors are in use, and the difference is measured rather than stylistic.**
+The rows whose wording *opens the stream* are matched with `startsWith` on the
+stream — the strictest available. The auth and host-key rows cannot be: neither
+wording opens the stream (ssh prefixes the first on its line and the second with
+a whole line). They are matched **per line, within ssh's own opening**: the walk
+takes the first line that matches, and stops as soon as a line is neither a
+match nor that one measured preamble. Forging either therefore requires exiting
+exactly 255 (or `env`'s 127/125), writing **nothing** to stdout, and putting
+ssh's exact bytes at the *start* of stderr. These rows report the **whole**
+normalised diagnostic as `stderr` and quote the **matched line** in the message,
+because ssh's host-key refusal spans two lines and the first is the less useful
+half.
+
+**A KNOWN LIMITATION, stated rather than claimed away.** The bound above is a
+bound on plausibility, not a proof, and there is one case where it is *not*
+implausible: a caller's own command that runs `ssh`, `scp` or git-over-ssh and
+whose **first** action fails — a submodule fetch, a jump host — prints these
+exact bytes at position zero with an empty stdout and exit 255. That is reported
+as **our** transport failing. The observable consequence: the command's own exit
+status is swallowed into an `EUNKNOWN` that points the operator at *their*
+`~/.ssh/config` or `known_hosts` to fix somebody else's failure.
+
+It is **ineliminable from the host side**, not merely unfixed. The bytes are
+identical whichever ssh wrote them; stdout is empty and the exit is 255 in both
+cases; and `-O check` reports the master up in both (ours *is* up — the command
+is riding it), so no other channel separates them. Anchoring on our own
+destination was considered and rejected on a measurement: ssh names the
+**resolved** host (`root@172.17.0.5: …`) while the provider knows only the
+operator's Host **alias**, so that anchor would reject our own genuine refusal on
+every alias-based remote — which is the shipped default shape. What the per-line
+anchor does buy is the reachable half: a chatty command, a mid-line occurrence
+and a mid-stream occurrence are all refused.
 
 ## `readFile` / `writeFile` — derived over `exec`
 

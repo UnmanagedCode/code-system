@@ -306,12 +306,26 @@ const SSH_PREAMBLE = /^No \S+ host key is known for .* strict checking\.$/;
  * before it is itself a line ssh wrote. Null once a command's own output has
  * got there first.
  *
- * This is the ANCHOR-THEN-REFINE shape `docker.mjs` uses (`startsWith` on the
- * stream wrapping an `includes`), generalised over that one preamble. When OUR
- * authentication or host-key check fails the remote command NEVER RAN, so ssh's
- * diagnostic opens stderr; a command that ran has its own output in front of it.
- * That position is the only available discriminator — the bytes themselves are
- * identical whichever ssh emitted them.
+ * This is the ANCHOR-THEN-REFINE shape `docker.mjs` uses, generalised over that
+ * one preamble.
+ *
+ * WHAT IT GUARANTEES, exactly: the wording must be part of ssh's own OPENING.
+ * That stops a CHATTY command from reaching these rows, and stops a mid-line or
+ * mid-stream occurrence — which was the reachable half of the hazard.
+ *
+ * WHAT IT DOES NOT GUARANTEE, AND CANNOT: a nested `ssh`/`scp`/git-over-ssh
+ * inside a caller's own command that fails FIRST and prints nothing else emits
+ * these exact bytes at position zero, and is classified as ours. The bytes are
+ * identical whichever ssh wrote them, stdout is empty either way, the exit is
+ * 255 either way, and `-O check` reports the master up in both cases (ours IS
+ * up — the command is riding it), so there is no channel left to separate them.
+ * Anchoring on our own destination does not work either: MEASURED, ssh names
+ * the RESOLVED host (`root@172.17.0.5: …`) while `destFor` yields the operator's
+ * Host ALIAS (`root@my-alias`), so that anchor would reject our own genuine
+ * refusal on every alias-based remote — i.e. on the shipped default shape.
+ * Stated as a limitation, with its observable consequence, in
+ * docs/protocol.md → "How an ssh failure becomes a code", which owns the
+ * forgeability bound.
  *
  * @returns {string|null} the matched line, normalised (no CR)
  */
@@ -606,13 +620,11 @@ export function createSshTransport({ cli } = {}) {
     // EVERY ROW IS GUARDED ON AN EMPTY STDOUT PLUS ssh's OWN WORDING, ANCHORED,
     // because EXIT 255 ON ITS OWN CLASSIFIES NOTHING: ssh forwards a remote
     // command's exit status verbatim, so a command may itself exit 255
-    // (measured). Two anchors are in use, and the difference is measured rather
-    // than stylistic: the rows whose wording OPENS the stream are matched with
-    // `startsWith` on the stream, which is the strictest available; the two that
-    // do not open it (auth, host key) go through `sshOwnLine`, which anchors
-    // per line and refuses once a command's own output has got in front. The
-    // measurements and the exit-255 argument live once, in
-    // .wiki/gotchas/ssh-controlmaster-transport.md.
+    // (measured). Two anchors are in use — `startsWith` on the stream where the
+    // wording opens it, `sshOwnLine` for the two that do not; see its doc above
+    // for what that guarantees and what it cannot. The measurements live in
+    // .wiki/gotchas/ssh-controlmaster-transport.md, the contract and the
+    // residual limitation in docs/protocol.md.
     classifyFailure(config, { code, stdout = '', stderr = '' }) {
       const host = String(config?.host ?? '');
       const dest = destFor(config);

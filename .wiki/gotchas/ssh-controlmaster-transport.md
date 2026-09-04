@@ -44,6 +44,14 @@ bug that shipped once and was caught by the live suite:
   with CRLF**. With the default (`ask`) it is that second line alone, with LF.
   Both shapes are in `tests/sshkind.test.mjs`.
 
+**And the auth prefix names the RESOLVED host, not the configured alias.**
+Measured with `Host my-alias-not-the-ip` / `HostName 172.17.0.5`: ssh printed
+`root@172.17.0.5: Permission denied (publickey).`, containing no trace of the
+alias. So a provider that tried to anchor this row on its own
+`<user>@<host>` — the obvious way to tell our auth failure from a nested ssh's —
+would **reject its own genuine refusal on every alias-based remote**, i.e. on
+the shipped default shape. `docs/protocol.md` records the resulting limitation.
+
 `env` refusing to start the command uses **two** exit codes, measured
 separately, both on stderr with an empty stdout:
 
