@@ -14,9 +14,11 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  ALLOWED_SUBCOMMANDS, DOCKER_ENV, assertAttachOnly, buildReapScript, createDockerTransport,
-  dockerCliArgv,
+  ALLOWED_SUBCOMMANDS, DOCKER_ENV, assertAttachOnly, createDockerTransport, dockerCliArgv,
 } from '../src/launcher/kinds/docker.mjs';
+// MOVED to kinds/reapscript.mjs when card 2026-0004 landed: `ssh` needs the
+// identical relay, so the script is shared rather than copied.
+import { buildReapScript } from '../src/launcher/kinds/reapscript.mjs';
 
 const CONFIG = { container: 'app' };
 

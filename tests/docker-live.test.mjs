@@ -15,7 +15,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PROBE_SCRIPT, parseProbeOutput } from '../src/baseline.mjs';
-import { buildReapScript, createDockerTransport } from '../src/launcher/kinds/docker.mjs';
+import { createDockerTransport } from '../src/launcher/kinds/docker.mjs';
+import { buildReapScript } from '../src/launcher/kinds/reapscript.mjs';
 import { makeRunner } from '../src/launcher/run.mjs';
 import { Launcher, tempStore, writeRecord } from './helpers.mjs';
 import {
