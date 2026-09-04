@@ -2,7 +2,7 @@
 
 **What:** `src/launcher/kinds/host.mjs` is a third kind that execs on cc's own
 machine. It is never auto-registered. **KEPT — decided with evidence at cc
-`bf5f2afe`** — for two reasons, each load-bearing on its own:
+`8b7b10bf`** — for two reasons, each load-bearing on its own:
 
 1. **It is the only far side that reaches the TEST PROCESS'S OWN filesystem.**
    cc's suite "builds its fixtures with node's own `fs` and then asks the

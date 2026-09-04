@@ -46,9 +46,11 @@ export function asObject(raw) {
 // environment" — which on cc's own host is `process.env` and inside a container
 // is the container's own PATH/HOME/toolchain (see kinds/docker.mjs, which does
 // not call this for the inherit case at all). session.mjs must not collapse the
-// two: cc sends no `env` on any of its seven derivations precisely because
-// "they inherit the far side's environment, its PATH, its toolchain"
-// (systems-protocol.md §7).
+// two: cc sends no `env` on ANY `exec` it issues — its own plumbing and a
+// caller's command alike — so "every command therefore runs in the provider's
+// own environment … the far side's PATH and toolchain, not cc's"
+// (systems-protocol.md §7). A variable a command needs rides in argv via
+// `env(1)`, which ADDS rather than replaces.
 //
 // CC_REMOTE is overlaid AFTER the frame's wholesale replacement, so THE
 // PROVIDER'S BINDING BEATS A FRAME-SUPPLIED VALUE — §10's CC_REMOTE row, and

@@ -93,10 +93,21 @@ frame-supplied value.
 
 **An `exec` frame with no `env` means "inherit the FAR SIDE's environment"**, and
 the launcher passes exactly that — `null` — to the kind. It never substitutes its
-own `process.env`: cc sends no `env` on any of its seven derivations precisely
-because they inherit the far side's PATH and toolchain (§7). For `docker` that is
-the difference between `git` resolving in the container and `env: 'git': No such
-file or directory`, exit 127.
+own `process.env`. At cc `8b7b10bf`, **no `exec` cc issues carries an `env` frame
+field** — cc's own plumbing and a caller's command alike (§7) — so every command
+runs in the provider's own environment: the far side's PATH and toolchain, not
+cc's. A variable a command needs travels in **argv**, through `env(1)`, which
+ADDS to that environment rather than replacing it; that is how the derivations
+ship `LC_ALL=C`. For `docker` the inherit path is the difference between `git`
+resolving in the container and `env: 'git': No such file or directory`, exit 127.
+
+**A frame `env` is still REPLACE, and every kind still implements it.** §5's
+`env` row is unchanged at the new pin — an object replaces the environment
+exactly as `posix_spawn` does — and cc's `ExecOptions.env` still exists. cc
+sending none today is not licence to drop the branch: without it a provider
+would silently *overlay* where the contract says *replace*. `docker` satisfies it
+with `env -i --` (below); pinned by `tests/dockerkind.test.mjs` and, against a
+real container, by `tests/docker-live.test.mjs` L7.
 
 ## `docker` — what goes on the wire
 
@@ -154,18 +165,6 @@ output had a command run, so the stderr guard is a bound on plausibility rather
 than a proof; forging it yields a named refusal, never a wrong answer. This runs on two paths —
 `session.mjs`'s exec close handler and `run.mjs`'s single funnel for `fileops`
 and the baseline probe — through one optional `Transport.classifyFailure` member.
-
-### Known limitation: `env` across the transport boundary
-
-At cc `bf5f2afe`, cc's non-derived `exec` sends **its own host environment** as a
-wholesale `env` (`providerSystem.ts`: `opts.env ?? process.env`). §5 says `env`
-REPLACES, so honouring it faithfully means a container command sees cc's host
-`HOME` and `PATH`. The `shell` form largely self-repairs (`/bin/bash -lc`
-re-sets PATH from `/etc/profile`); the **argv** form does not, and a host PATH
-without the container's binary directories yields exit 127. cc's own card
-2026-0317 removes the cause upstream (unmerged, off the pin). Tracked on this
-side as **code-system card 2026-0008**; see
-`.wiki/gotchas/exec-env-across-a-boundary.md`.
 
 ## `readFile` / `writeFile` — derived over `exec`
 

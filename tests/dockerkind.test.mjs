@@ -21,8 +21,9 @@ import {
 const CONFIG = { container: 'app' };
 
 // A frame as session.mjs builds it. `env: null` is the INHERIT case — which is
-// what cc sends on all seven of its derivations, and what run.mjs sends for
-// every fileops script and the baseline probe.
+// what cc sends on EVERY `exec` it issues (its own derivations and a caller's
+// command alike), and what run.mjs sends for every fileops script and the
+// baseline probe.
 function req(over = {}) {
   return {
     argv: ['git', 'status'],
@@ -109,8 +110,9 @@ test('spawnPlan: a frame env REPLACES via `env -i`, with CC_REMOTE overlaid last
 
 // PINS the rule session.mjs's old `process.env` fallback broke: an ABSENT frame
 // `env` means the command inherits THE CONTAINER's PATH, HOME and toolchain
-// (§7: "they inherit the far side's environment"). That is what every cc
-// derivation, every fileops script and the baseline probe rely on. A mutant
+// (§7: "Every command therefore runs in the provider's own environment … the far
+// side's PATH and toolchain, not cc's"). That is what every `exec` cc issues,
+// every fileops script and the baseline probe rely on. A mutant
 // treating null as "replace with the launcher's process.env" reds here — and
 // that mutant was the shipped behaviour before this card.
 test('spawnPlan: no frame env means the CONTAINER keeps its own environment', () => {

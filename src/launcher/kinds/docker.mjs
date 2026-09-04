@@ -249,7 +249,7 @@ export function createDockerTransport({ cli } = {}) {
 
       if (req.env === null) {
         // INHERIT: the container keeps its own PATH/HOME/toolchain, which is
-        // what §7 promises for the seven derivations, and what every fileops
+        // what §7 promises for every `exec` cc issues, and what every fileops
         // script and the baseline probe need. Only our two plumbing variables
         // are overlaid.
         if (req.remoteId !== null) args.push('-e', `CC_REMOTE=${req.remoteId}`);
