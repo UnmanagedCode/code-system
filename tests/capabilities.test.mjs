@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ALL_KINDS, REGISTERED_KINDS, createTransport } from '../src/launcher/kinds/index.mjs';
 import { createDockerTransport } from '../src/launcher/kinds/docker.mjs';
+import { createSshTransport } from '../src/launcher/kinds/ssh.mjs';
 import { FAKE_TRANSPORT, Launcher, tempStore } from './helpers.mjs';
 
 // cc's `Capabilities` interface, verbatim: processGroupSignal, remotes,
@@ -93,15 +94,38 @@ test('an option-shaped config value is refused, not stored', () => {
   assert.equal(ssh.validateConfig({ host: 'build-box-2', user: 'ci-runner' }).ok, true);
 });
 
-// NARROWED TO `ssh` when card 2026-0003 landed the docker transport. Deleting
-// it instead would drop ssh's fence, and leaving it whole would red.
-test('the ssh transport fails LOUDLY where its card has not landed', async () => {
+// THE POST-LANDING ANALOGUE of the fence this test used to be. Card 2026-0004
+// landed the ssh transport, so the `/2026-0004/` placeholder assertions became
+// their opposite: the seams answer for real, and NO card placeholder may
+// survive anywhere in a shipped plan. `processGroupSignal` is deliberately
+// still false — see the decision in kinds/docker.mjs, which ssh shares — so a
+// card that "finished" by flipping it to true reds here as well as lying to cc.
+test('ssh\'s seams answer for real, and its negotiated capabilities did not move', async () => {
   const t = createTransport('ssh');
-  assert.throws(() => t.spawnPlan({}, { argv: ['true'], shell: null, cwd: '/', env: null }),
-    /2026-0004/, 'a stub that returned a plausible plan would be worse than one that throws');
-  const reach = await t.reachability({});
+  assert.deepEqual(
+    { g: t.processGroupSignal, r: t.remotes, d: t.remoteDescriptors },
+    { g: false, r: true, d: false });
+
+  // An explicit cli, so this does not depend on whether the environment running
+  // the suite has CODE_SYSTEM_SSH set (tests/sshkind.test.mjs owns the seam's
+  // own behaviour).
+  const plan = createSshTransport({ cli: ['ssh'] }).spawnPlan({ host: 'box' },
+    { argv: ['true'], shell: null, cwd: '/', env: null, stdinMode: 'ignore', remoteId: null, token: 'tok' });
+  assert.equal(plan.file, 'ssh');
+  assert.equal(plan.args.at(-2), 'box', 'the destination is an operand after `--`');
+  assert.equal(plan.args.at(-3), '--');
+  assert.doesNotMatch(JSON.stringify(plan), /2026-0004/, 'no card placeholder survives anywhere in the plan');
+
+  // Reachability really asks a control socket now. Driven through an ssh
+  // invocation that CANNOT exist, so the answer does not depend on whether the
+  // machine running the suite happens to have ssh or a reachable host: it must
+  // be unreachable, and it must name the override rather than the card.
+  const reach = await createSshTransport({ cli: ['/definitely-not-ssh-xyz'] })
+    .reachability({ host: 'box' });
   assert.equal(reach.connected, false);
-  assert.match(reach.detail, /2026-0004/);
+  assert.equal(reach.fingerprint, null);
+  assert.match(reach.detail, /CODE_SYSTEM_SSH/);
+  assert.doesNotMatch(reach.detail, /2026-0004/);
 });
 
 // THE OTHER HALF of the same claim: docker's seams answer for real now, and
