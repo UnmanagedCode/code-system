@@ -143,8 +143,9 @@ test('an unsupported baseline shows every capability, its probe and the target\'
 // schema found and the repair; paraphrasing it would throw that away, and a
 // broken record is exactly the case where the user has least other information.
 test('a broken record shows the store\'s own message verbatim, as an error', () => {
-  const message = "remote 'future' is stored at schema 9, but this version reads schema 2 only"
-    + ' — start the code-system backend, which migrates the store on startup';
+  const message = "remote 'future' is stored at schema 9, but this version reads schema 1 only"
+    + ' — start the code-system backend, which moves a record it cannot read aside'
+    + ' into the quarantine directory';
   const alert = cardAlert({ remoteId: 'future', broken: { reason: 'schema', message } });
   assert.equal(alert.level, 'err');
   assert.equal(alert.text, message, 'verbatim');

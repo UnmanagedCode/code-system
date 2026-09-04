@@ -1,7 +1,7 @@
 # Architecture
 
 Internals: the two processes, the seam a provider kind plugs into, the on-disk
-store and its migration, the shutdown contract, and the test patterns.
+store and its startup pass, the shutdown contract, and the test patterns.
 
 ## Two processes, one ownership split
 
@@ -454,31 +454,28 @@ re-registration, because `src/registration.mjs` makes the launch argv a function
 of **(install path, kind) only** — which is what holds cc's connection cache
 while remotes come and go.
 
-### Migration
+### The startup pass
 
 `src/migrate.mjs` runs once at backend start, before anything serves, and has
-two jobs **in this order**: upgrade what it recognises, then **quarantine** what
-it does not — moved aside, never deleted. Its "already applied" self-check is
-the store's own contents, so it needs no marker file. Every schema an upgrade
-knows about is known here and nowhere else: application code assumes the current
-format only.
+**exactly one job**: **quarantine** a record the current readers cannot
+understand — moved aside, never deleted. Its "already applied" self-check is the
+store's own contents, so it needs no marker file.
 
-**THE ORDERING IS LOAD-BEARING, and getting it wrong destroys the user's
-configuration.** `readRemote` refuses an older record with reason `'schema'`,
-and `'schema'` is in `QUARANTINE_REASONS` — so an upgrade that ran *after* the
-quarantine branch, or not at all, would move **every existing remote** aside and
-the user would open the UI to an empty list. (Recoverably — quarantine never
-deletes — but the cards are gone.) The upgrade therefore also reads the raw JSON
-itself, because `readRemote` by construction cannot read the shape it is
-upgrading from. `tests/migrate.test.mjs` exists for this trap and was written
-before the schema bump, failing against the unmodified tree.
+**There is no upgrade pass and no version-handling code anywhere in this tree,
+deliberately.** Schema 1 is the first and only schema, and it has always
+included every field the readers expect — `enabled` among them — so there is no
+earlier shape to upgrade FROM. A record at any other `schema` value is from the
+future or is corrupt; either way we cannot know what it means, and quarantining
+it is the honest answer rather than a guess. `migrate.mjs`'s header says this
+explicitly, so the omission reads as a decision rather than as something
+missing.
 
-**Schema 1 → 2** adds `enabled`, the operator gate, defaulting **false**: an
-existing remote comes up switched off and the operator connects it. The upgraded
-record is built through `makeRecord`, so an upgraded record and a freshly created
-one are the same shape and this file cannot leave a third shape behind; the
-original `updatedAt` is then restored, because the storage shape changed and the
-user's configuration did not.
+**When a schema 2 genuinely arrives**, its upgrade goes there and nowhere else,
+and it will have to run **before** the quarantine branch and read the raw JSON
+itself: `readRemote` refuses an unrecognised schema with reason `'schema'`, and
+`'schema'` is in `QUARANTINE_REASONS`, so an upgrade ordered after it would move
+every existing remote aside instead of upgrading it. That ordering hazard is
+recorded in the header for whoever adds the second schema.
 
 A launcher that meets a record at another schema refuses **that remote** with
 `ENOREMOTE`, quoting the schema it found and naming the backend as the repair.

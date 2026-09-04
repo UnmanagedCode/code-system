@@ -69,9 +69,6 @@ Three consequences worth knowing before they surprise you:
   or host may be a different target entirely, so the gate and the tooling verdict
   both reset. Editing only the **label** does not.
 
-Existing remotes come up disabled the first time you run a version with this
-feature; connect the ones you use.
-
 ## Connecting is attach-only
 
 Connecting to a remote never starts or stops anything. This plugin never runs

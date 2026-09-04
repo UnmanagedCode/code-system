@@ -110,7 +110,10 @@ test('a record at another schema is refused BY NAME, never upgraded at read time
     const r = await readRemote('future');
     assert.equal(r.ok, false);
     assert.equal(r.reason, 'schema');
-    assert.match(r.message, new RegExp(`schema ${SCHEMA + 1}`), 'the refusal quotes the schema it found');
+    // Anchored to the `stored at` clause: a bare `/schema N/` would also match
+    // the refusal's own "…reads schema N only" tail.
+    assert.match(r.message, new RegExp(`stored at schema ${SCHEMA + 1}`),
+      'the refusal quotes the schema it FOUND, not the one it reads');
     assert.match(r.message, /backend/, 'and names the repair');
   });
 });

@@ -26,7 +26,7 @@ export function remotesDir() {
   return path.join(storeRoot(), 'remotes');
 }
 
-// Where migrate.mjs moves a record it cannot upgrade. Never deleted, because a
+// Where migrate.mjs moves a record it cannot READ. Never deleted, because a
 // record we cannot read is still the user's configuration.
 export function quarantineDir() {
   return path.join(storeRoot(), 'quarantine');

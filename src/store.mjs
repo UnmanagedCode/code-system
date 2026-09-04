@@ -32,7 +32,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { remotesDir } from './paths.mjs';
 
-export const SCHEMA = 2;
+export const SCHEMA = 1;
 
 // A remoteId is TWO things at once, and both constrain it: it is a filename
 // stem, and it is the entire hand-off contract to cc — a user reads it off the
@@ -76,16 +76,15 @@ export async function readRemote(id) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { ok: false, reason: 'malformed', message: `remote '${id}' is not a JSON object` };
   }
-  // REFUSED BY NAME, never guessed at. A launcher can be spawned before the
-  // backend has ever run its migration, so it can genuinely meet a record it
-  // does not understand — and a read-time upgrade here would be the
-  // dual-shape parsing the migration exists to prevent.
+  // REFUSED BY NAME, never guessed at. A read-time upgrade here would be the
+  // dual-shape parsing this codebase does not do; the startup pass moves an
+  // unreadable record aside instead (src/migrate.mjs).
   if (raw.schema !== SCHEMA) {
     return {
       ok: false,
       reason: 'schema',
       message: `remote '${id}' is stored at schema ${JSON.stringify(raw.schema)}, but this version reads schema ${SCHEMA} only`
-        + ' — start the code-system backend, which migrates the store on startup',
+        + ' — start the code-system backend, which moves a record it cannot read aside into the quarantine directory',
     };
   }
   return { ok: true, record: raw };

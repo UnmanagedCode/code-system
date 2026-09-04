@@ -84,7 +84,7 @@ See [`.wiki/decisions/architecture-shape.md`](.wiki/decisions/architecture-shape
 
 - [`docs/features.md`](docs/features.md) — user-facing behaviour: cards, the baseline verdict, registration states.
 - [`docs/protocol.md`](docs/protocol.md) — interface contracts: the handshake per kind, `remoteId` routing, the derived file operations, registration, the REST surface.
-- [`docs/architecture.md`](docs/architecture.md) — internals: the `Transport` seam and how to add a kind, the store and its migration, the shutdown/reap contract, test patterns.
+- [`docs/architecture.md`](docs/architecture.md) — internals: the `Transport` seam and how to add a kind, the store and its startup pass, the shutdown/reap contract, test patterns.
 - [`.wiki/`](.wiki/index.md) — durable gotchas and decisions, reviewed and merged like code.
 
 ### Testing
@@ -93,7 +93,7 @@ See [`.wiki/decisions/architecture-shape.md`](.wiki/decisions/architecture-shape
 
 ## Known limitations
 
-- **Remotes start switched off, and existing ones come up switched off after upgrading.** The Connect/Disconnect toggle is an operator **gate**, not a report of transport state: while a remote is off, code-system refuses every operation against it itself and never contacts the target. Editing a remote's connection details switches it off again (a changed config may be a different target); editing only its label does not. See [`.wiki/gotchas/gate-versus-probe.md`](.wiki/gotchas/gate-versus-probe.md).
+- **A remote starts switched off.** The Connect/Disconnect toggle is an operator **gate**, not a report of transport state: while a remote is off, code-system refuses every operation against it itself and never contacts the target. Editing a remote's connection details switches it off again (a changed config may be a different target); editing only its label does not. See [`.wiki/gotchas/gate-versus-probe.md`](.wiki/gotchas/gate-versus-probe.md).
 
 - **Target tooling baseline.** Running the providers on cc's host does not make the target toolless: cc derives `readDir`/`stat`/etc. by sending commands with GNU-specific argv. Alpine/busybox targets break `readDir` and `realpath`, and silently lose sub-second `stat` precision; distroless/scratch targets have no shell at all. The plugin probes for this and refuses such a target by name rather than half-working. See [`.wiki/gotchas/tooling-baseline.md`](.wiki/gotchas/tooling-baseline.md).
 - **No long-lived shell, and no carry-over between commands.** cc's protocol has no persistent shell, so every redirected shell command runs as its own one-shot: **nothing persists — not even the working directory.** Every command starts at the project root, and cc tells the worker when its `cd` was discarded; exports, shell functions and background jobs do not survive either. See [`.wiki/gotchas/no-persistent-shell.md`](.wiki/gotchas/no-persistent-shell.md) and `docs/features.md`.

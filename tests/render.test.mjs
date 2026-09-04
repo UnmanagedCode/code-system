@@ -117,7 +117,7 @@ const REMOTES = [
   },
   { // a record the store could not read
     remoteId: 'future',
-    broken: { reason: 'schema', message: "remote 'future' is stored at schema 9 — start the backend" },
+    broken: { reason: 'schema', message: "remote 'future' is stored at schema 9, but this version reads schema 1 only — start the code-system backend" },
   },
 ];
 
