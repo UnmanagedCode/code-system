@@ -1,0 +1,149 @@
+/* The plugin owns its WHOLE visual surface: code-conductor injects no CSS and
+   no tokens across the iframe, and hard-codes `#plugin-frame { background:
+   #fff }` while its own shell is dark. So the token block below is not a
+   convenience — without it the page renders white inside a dark app.
+
+   Tokens and card geometry follow code-hub's public/styles.css, so the two
+   plugins read as one system. */
+:root {
+  --bg: #14171c;
+  --panel: #1d2128;
+  --panel-2: #262b34;
+  --text: #e7eaf0;
+  --muted: #8a94a6;
+  --accent: #6cc24a;   /* green  — enabled / reachable */
+  --danger: #e35a5a;   /* red    — broken / unsupported */
+  --amber: #f59e0b;    /* amber  — the gate and the probe disagree */
+  --border: #2c323d;
+  --mono: ui-monospace, "JetBrains Mono", monospace;
+  --content-max: 1400px;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  -webkit-tap-highlight-color: transparent;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+button, select, input {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 10px; font: inherit;
+}
+button { cursor: pointer; }
+button:disabled { opacity: .4; cursor: not-allowed; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+/* Top bar */
+#topbar {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+  padding: calc(18px + env(safe-area-inset-top))
+           max(16px, calc((100% - var(--content-max)) / 2 + 12px))
+           10px;
+  background: var(--panel); border-bottom: 1px solid var(--border);
+}
+#topbar h1 { margin: 0; font-size: 28px; font-weight: 700; letter-spacing: .5px; }
+.subtitle { margin: 4px 0 0; font-size: 13px; color: var(--muted); max-width: 60ch; }
+.pills { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: 0 0 auto; }
+.pill {
+  font-size: 11px; font-family: var(--mono);
+  padding: 2px 8px; border-radius: 8px; border: 1px solid var(--border);
+  color: var(--muted); white-space: nowrap;
+}
+.pill.ok { color: var(--accent); border-color: rgba(108,194,74,0.45); }
+.pill.bad { color: var(--danger); border-color: rgba(227,90,90,0.4); }
+
+/* Layout */
+#app { max-width: var(--content-max); margin: 0 auto; padding: 12px 12px 60px; }
+.empty { color: var(--muted); text-align: center; padding: 40px 20px; }
+.toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; color: var(--muted); font-size: 13px; }
+#updated { margin-left: auto; font-family: var(--mono); font-size: 12px; }
+#refresh { width: 34px; height: 34px; padding: 0; font-size: 18px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center; color: var(--muted); flex: 0 0 auto; }
+#refresh:active, #add:active { transform: translateY(1px); }
+
+#remotes { display: grid; grid-template-columns: 1fr; gap: 10px; }
+@media (min-width: 720px) { #remotes { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 1200px) { #remotes { grid-template-columns: 1fr 1fr 1fr; } }
+
+/* Card */
+.card {
+  background: var(--panel); border: 1px solid var(--border);
+  border-left: 7px solid var(--accent-bar, var(--accent));
+  border-radius: 12px; padding: 8px 10px; overflow: hidden;
+}
+.card.broken { border-left-color: var(--danger); }
+.card-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.card-title { font-weight: 600; font-size: 15px; flex: 1 1 auto; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.status-side { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; font-size: 12px; color: var(--muted); }
+/* The GATE word and the PROBE word are two different facts, so they are two
+   different elements and never share styling. */
+.gate-word { font-weight: 600; }
+.gate-word.on { color: var(--accent); }
+.gate-word.off { color: var(--muted); }
+.status-word { color: var(--muted); }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: #555; }
+.dot.ok { background: var(--accent); box-shadow: 0 0 0 3px rgba(108,194,74,0.18); }
+.dot.down { background: var(--amber); }
+.dot.unknown { background: #555; }
+
+.meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px; font-size: 12px; color: var(--muted); }
+.badge { padding: 1px 6px; border-radius: 8px; border: 1px solid var(--border); font-family: var(--mono); font-size: 11px; }
+.badge.kind-docker { color: #9ecbff; border-color: rgba(120,170,255,0.4); }
+.badge.kind-ssh { color: #d8b4fe; border-color: rgba(196,140,255,0.4); }
+.badge.base-ok { color: var(--accent); border-color: rgba(108,194,74,0.45); }
+.badge.base-unsupported { color: var(--danger); border-color: rgba(227,90,90,0.4); }
+.badge.base-unknown { color: var(--muted); }
+.detail { color: var(--muted); font-size: 12px; margin-top: 4px; word-break: break-word; }
+
+/* The hand-off contract, made visible: this exact string goes into a cc
+   project's Remote field, and cc cannot discover it any other way. */
+.cred { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.cred-label { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
+.cred-val { flex: 1 1 auto; min-width: 0; font-family: var(--mono); font-size: 12px; color: var(--text);
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; word-break: break-all; }
+.cred-copy { flex: 0 0 auto; min-height: 30px; padding: 4px 10px; font-size: 12px; }
+.cred-note { color: var(--muted); font-size: 11px; margin-top: 2px; }
+
+.err { color: var(--danger); font-size: 12px; margin-top: 8px; white-space: pre-wrap;
+  font-family: var(--mono); max-height: 160px; overflow: auto; }
+.warn { color: var(--amber); font-size: 12px; margin-top: 8px; white-space: pre-wrap; }
+.note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+
+.controls { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.controls button {
+  appearance: none; border: 1px solid var(--border); background: var(--panel-2);
+  color: var(--text); padding: 6px 10px; border-radius: 8px;
+  font-size: 13px; font-weight: 500; min-height: 32px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.controls button:active { transform: translateY(1px); }
+.controls .connect { border-color: rgba(108,194,74,0.45); color: #b8e6a1; }
+.controls .connect:hover:not(:disabled) { background: rgba(108,194,74,0.12); }
+.controls .danger { border-color: rgba(227,90,90,0.4); color: #f1a5a5; }
+.controls .danger:hover:not(:disabled) { background: rgba(227,90,90,0.12); }
+
+/* Inline forms — create in a trailing tile, edit inside the card. One
+   renderer serves both (code-hub's inline-edit pattern; no <dialog>). */
+.form { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+.field { display: flex; flex-direction: column; gap: 3px; }
+.field label { font-size: 12px; color: var(--muted); }
+.field input, .field select { font-family: var(--mono); font-size: 13px; }
+.field .hint { font-size: 11px; color: var(--muted); }
+.form-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.card.add-tile { border-left-color: var(--muted); }
+
+/* Registration banner */
+#registration { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.banner { background: var(--panel); border: 1px solid var(--border); border-left: 7px solid var(--danger);
+  border-radius: 12px; padding: 8px 10px; }
+.banner.muted { border-left-color: var(--border); color: var(--muted); font-size: 12px; }
+.banner h2 { margin: 0 0 4px; font-size: 14px; }
+.banner pre { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word;
+  font-family: var(--mono); font-size: 12px; color: var(--danger); }

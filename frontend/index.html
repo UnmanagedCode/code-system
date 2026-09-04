@@ -1,42 +1,41 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#14171c" />
   <title>Code System</title>
-  <!-- The conductor's bridge reports routes for us; SPA routing goes through
-       pushState/replaceState. Required by the plugin-compliance checklist. -->
-  <script src="/pluginBridge.js" defer></script>
-  <style>
-    body { font: 14px/1.5 system-ui, sans-serif; margin: 2rem; color: #222; }
-    code { background: #f4f4f4; padding: .1em .3em; border-radius: 3px; }
-    .muted { color: #666; }
-  </style>
+  <!-- RELATIVE, every one of them. The plugin is served under an
+       X-Forwarded-Prefix it does not know, so a leading slash would break the
+       page the moment it is mounted under code-conductor. -->
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <h1>Code System</h1>
-  <p class="muted">
-    Docker containers and SSH hosts, reached from code-conductor's own machine.
-  </p>
-  <p>
-    The card UI lands in card 2026-0005. The backend it renders is already here:
-    <code>GET /api/remotes</code>, <code>GET /api/registration</code>,
-    <code>POST /api/registration/retry</code>.
-  </p>
-  <pre id="state" class="muted">loading…</pre>
-  <script type="module">
-    // Relative URLs only — the plugin is served under an X-Forwarded-Prefix it
-    // does not know.
-    const out = document.getElementById('state');
-    try {
-      const [reg, remotes] = await Promise.all([
-        fetch('api/registration').then(r => r.json()),
-        fetch('api/remotes').then(r => r.json()),
-      ]);
-      out.textContent = JSON.stringify({ registration: reg, remotes }, null, 2);
-    } catch (e) {
-      out.textContent = `backend unreachable: ${e}`;
-    }
-  </script>
+  <header id="topbar">
+    <div class="title-block">
+      <h1>Code System</h1>
+      <p class="subtitle">Docker containers and SSH hosts, reached from code-conductor's own machine.</p>
+    </div>
+    <div class="pills">
+      <span id="reg-pill" class="pill" title="System registration with code-conductor"></span>
+    </div>
+  </header>
+
+  <main id="app">
+    <div id="registration"></div>
+    <div class="toolbar">
+      <button id="add">+ Add remote</button>
+      <span id="updated"></span>
+      <button id="refresh" title="Refresh">↻</button>
+    </div>
+    <div id="empty" class="empty">Loading remotes…</div>
+    <div id="remotes"></div>
+  </main>
+
+  <script type="module" src="app.js"></script>
+  <!-- ABSOLUTE, and the only absolute URL on the page: the bridge is served by
+       the conductor, not by this plugin. Required verbatim by the plugin
+       compliance checklist. -->
+  <script src="/pluginBridge.js" defer></script>
 </body>
 </html>
