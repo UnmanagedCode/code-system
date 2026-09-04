@@ -102,14 +102,29 @@ test('a wrong-kind and a wrong-schema record are ENOREMOTE by name, not a guess'
 // effect; cc deleted `stdin`/`stdinClose`, which is what this test used to ride
 // on.
 //
-// TWO children are live on purpose. With one, an implementation whose `#signal`
-// ignored `f.id` and killed the only running child would pass while pinning
-// nothing about binding. Here it would kill `c2` as well, and the second assert
-// reds.
+// THREE children, and the signalled one is the MIDDLE one, because the mutants
+// worth catching are the id-blind ones and each picks a different victim:
+//
+//   - "kill the first live child"  kills c1 → c2's exit never arrives
+//   - "kill the most recent"       kills c3 → c2's exit never arrives
+//   - "kill every live child"      kills all three → caught by the SIGINT step
+//
+// Two live children would not do it: with c1 and c2 up and c1 signalled, the
+// insertion-order mutant coincides with correct behaviour, and once one child is
+// dead every "pick the single live one" heuristic coincides again. The middle of
+// three is the position no ordering heuristic reaches by accident.
+//
+// THE SIGINT STEP IS THE DETERMINISTIC PART, and it is why the signal NAME
+// differs. `waitFor` scans frames already received, so "c1 can still be killed"
+// proves nothing on its own — a mutant that killed c1 early has already emitted
+// its exit, and that frame would satisfy a bare liveness check. Asserting the
+// exit carries SIGINT does discriminate: an exit produced by the earlier
+// SIGTERM cannot report SIGINT, and a child has exactly one exit frame. No
+// ordering assumption, no race.
 //
 // Adding `signal` to REQUEST_FRAMES (i.e. looking for a `remoteId` on a
-// follow-on frame) answers ENOREMOTE and leaves both commands running, so the
-// exit never arrives at all.
+// follow-on frame) answers ENOREMOTE and leaves every command running, so no
+// exit arrives at all.
 test('an id is bound to one remote: a follow-on frame carries no remoteId and reaches only its own child', async (t) => {
   const store = await tempStore();
   t.after(() => store.cleanup());
@@ -118,19 +133,36 @@ test('an id is bound to one remote: a follow-on frame carries no remoteId and re
   t.after(() => l.kill());
   await l.hello();
 
-  l.send({ type: 'exec', id: 'c1', remoteId: 'alpha', cwd: '/tmp', argv: ['sleep', '30'] });
-  l.send({ type: 'exec', id: 'c2', remoteId: 'alpha', cwd: '/tmp', argv: ['sleep', '30'] });
+  for (const id of ['c1', 'c2', 'c3']) {
+    l.send({ type: 'exec', id, remoteId: 'alpha', cwd: '/tmp', argv: ['sleep', '30'] });
+  }
   // The signal frame names NO remote. The `id` is the whole address.
-  l.send({ type: 'signal', id: 'c1', signal: 'SIGTERM', processGroup: true });
-  const exit = await l.waitFor(f => f.type === 'exit' && f.id === 'c1');
-  assert.equal(exit.signal, 'SIGTERM', 'the signal reached the child the id was bound to');
+  l.send({ type: 'signal', id: 'c2', signal: 'SIGTERM', processGroup: true });
+  const killed = await l.waitFor(f => f.type === 'exit' && f.id === 'c2');
+  assert.equal(killed.signal, 'SIGTERM', 'the signal reached the child the id was bound to');
 
-  // A BARRIER for the negative: a later exec's exit proves the signal frame was
-  // long since processed, so "c2 has not exited" is a fact rather than a race.
+  // A fast negative. The barrier proves the `signal` frame was PROCESSED — it
+  // does not prove a wrong kill's exit frame would already have been emitted, so
+  // this assert is a strong signal rather than an ordering guarantee. The
+  // deterministic discrimination is the SIGINT step below.
   l.send({ type: 'exec', id: 'barrier', remoteId: 'alpha', cwd: '/tmp', argv: ['printf', 'ok'] });
   await l.waitFor(f => f.type === 'exit' && f.id === 'barrier');
-  assert.equal(l.frames.some(f => f.type === 'exit' && f.id === 'c2'), false,
-    'the OTHER live child was untouched — the id, not "whatever is running", is the address');
+  for (const id of ['c1', 'c3']) {
+    assert.equal(l.frames.some(f => f.type === 'exit' && f.id === id), false,
+      `${id} was untouched — the id, not "whatever is running", is the address`);
+  }
+
+  // THE DETERMINISTIC PROOF, and it also reaps both survivors rather than
+  // leaving a detached `sleep` behind when the launcher is killed. A SIGINT exit
+  // can only come from this frame; an exit already produced by the SIGTERM above
+  // reports SIGTERM and reds here.
+  for (const id of ['c1', 'c3']) {
+    l.send({ type: 'signal', id, signal: 'SIGINT', processGroup: true });
+    const exit = await l.waitFor(f => f.type === 'exit' && f.id === id);
+    assert.equal(exit.signal, 'SIGINT',
+      `${id} was still alive and answered ITS OWN signal — not one aimed at another id`);
+  }
+
   assert.equal(l.frames.some(f => f.type === 'error'), false,
     'a follow-on frame is never refused for naming no remote');
 });
