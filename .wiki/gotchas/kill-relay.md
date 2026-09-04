@@ -26,6 +26,13 @@ when it is set. Without that, the launcher reports `{code:124, timedOut:true}`
 (cc's own "the provider killed it") for a command still running in the container.
 A command that exited **on its own** is still not reaped; that rule stands.
 
+**BOTH KINDS reap by TOKEN, from ONE script** —
+`src/launcher/kinds/reapscript.mjs`, extracted when `ssh` landed because the
+mechanism and the reason are identical. `ssh`'s premise is measured too: SIGKILL
+the local ssh client and the remote command is still running
+([ssh-controlmaster-transport.md](ssh-controlmaster-transport.md) §10), so its
+live suite runs that negative control first, exactly as docker's does.
+
 **`docker` reaps by TOKEN, not by pgid.** Every `docker exec` carries
 `CC_EXEC_TOKEN=<per-exec nonce>` in the container process's environment; `reap`
 sends one bounded `docker exec … /bin/sh -c` that SIGKILLs every process whose

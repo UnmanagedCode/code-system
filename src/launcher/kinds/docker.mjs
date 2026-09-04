@@ -10,6 +10,9 @@
 
 import { spawn } from 'node:child_process';
 import { asObject, execEnv, operand } from './config.mjs';
+// The kill relay's far-side script is SHARED with `ssh`: identical mechanism,
+// identical reason (a far-side child is not this process's OS descendant).
+import { REAP_TAG, TOKEN_VAR, buildReapScript } from './reapscript.mjs';
 
 // THE OPERATOR SEAM for a host where the docker CLI needs a prefix (this one:
 // the socket is root-owned, so live tests want ["sudo","-n","docker"]).
@@ -126,51 +129,6 @@ function runDocker(cli, args, { timeoutMs }) {
       error: null,
     }));
   });
-}
-
-// The token this exec's container-side processes carry, and the string `reap`
-// scans /proc/<pid>/environ for. Children inherit an environment, so ONE pass
-// reaches the whole subtree with no discovery step — and it survives a
-// descendant that called setsid, which a process-group kill does not.
-const TOKEN_VAR = 'CC_EXEC_TOKEN';
-
-// SIGKILL every process in the container whose environment carries this exec's
-// token. Uses only `tr` (in §1's POSIX baseline) and shell built-ins — no
-// `grep`, and no `ps`, which node:24-slim does not have.
-//
-// `"$t"` inside the case pattern makes the match LITERAL; unquoted it would be
-// a glob. The reap exec itself carries no token, so it cannot kill itself.
-//
-// The token is the core's own per-exec nonce (24 hex chars, session.mjs), so
-// single-quoting it here is sound — nothing user- or frame-supplied reaches it.
-//
-// IT REPORTS WHETHER IT COULD SEE ANYTHING AT ALL, and that is the point.
-// Without `tr`, or on a target whose `/proc/<pid>/environ` we cannot read, every
-// `case` simply matches nothing and an unconditional `exit 0` would report a
-// successful reap while the container-side subtree survived — the exact MUST-3
-// hazard the relay exists for, made invisible. The scanning process is itself in
-// `/proc` and can always read its own environ, so `readable === 0` is an
-// unambiguous "the mechanism is blind" rather than "there was nothing to see".
-// Measured: with `tr` off PATH the script answers `CCREAP blind`, exit 3, on
-// both node:24-slim's dash and busybox's ash.
-export const REAP_TAG = 'CCREAP';
-
-export function buildReapScript(token) {
-  return [
-    'LC_ALL=C; export LC_ALL',
-    `t='${TOKEN_VAR}=${token}'`,
-    'readable=0; killed=0',
-    'for d in /proc/[0-9]*; do',
-    '  e=$(tr \'\\0\' \'\\n\' < "$d/environ" 2>/dev/null)',
-    '  [ -n "$e" ] && readable=$((readable+1))',
-    '  case "$e" in',
-    '    *"$t"*) kill -9 "${d#/proc/}" 2>/dev/null; killed=$((killed+1)) ;;',
-    '  esac',
-    'done',
-    `if [ "$readable" -eq 0 ]; then printf '${REAP_TAG} blind\\n'; exit 3; fi`,
-    `printf '${REAP_TAG} ok %s %s\\n' "$killed" "$readable"`,
-    'exit 0',
-  ].join('\n');
 }
 
 // A never-started `docker exec` puts its diagnostic on STDOUT with exit 127 or

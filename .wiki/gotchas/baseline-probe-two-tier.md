@@ -7,7 +7,10 @@ need is split in two (`src/baseline.mjs`):
    `docker inspect` daemon query, or an ssh ControlPath socket's existence — and
    returns a `fingerprint` that costs nothing extra because it is built from
    fields of a call already being made (image id + `State.StartedAt`; for ssh
-   the config hash plus the socket's inode+ctime).
+   the config hash plus the socket's inode+ctime). **Both are implemented as
+   written** — ssh's is `ssh:<identity-hash>:<ino>:<ctimeMs>`, and it is
+   deliberately NOT parsed out of `-O check`'s `Master running (pid=…)`, which
+   would not move across a reconnect that reused a pid.
 2. **The probe itself is one round trip INTO the target**, run by the backend
    and cached on the remote's record **against that fingerprint**.
 

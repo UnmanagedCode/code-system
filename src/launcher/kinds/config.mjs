@@ -12,9 +12,19 @@
 // either existed, because a validator that accepts an option-shaped value is a
 // latent hole even while spawnPlan throws.
 //
-// Not a general shell-escaping scheme: nothing here reaches a shell (the core
-// spawns argv directly, and fileops quotes everything it interpolates). This is
-// specifically about the argv/option boundary.
+// Not a general shell-escaping scheme. This is specifically about the
+// argv/option boundary, and the boundary is all it defends.
+//
+// BE PRECISE ABOUT WHERE A SHELL IS AND IS NOT IN PLAY, because it differs by
+// kind. For `host` and `docker` nothing validated here reaches a shell at all:
+// the core spawns argv directly, and fileops quotes everything it interpolates.
+// For `ssh` that is FALSE — `ssh` takes a SHELL STRING, not an argv, so the
+// remote command is tokenized by the target's login shell (measured; see
+// .wiki/gotchas/ssh-controlmaster-transport.md). `kinds/ssh.mjs` therefore
+// quotes every token it interpolates with fileops' `shellQuote` and hands ssh
+// ONE argv element. None of that changes this file's job: a leading `-` in a
+// stored `host`/`user` is an OPTION to the local ssh client, before any remote
+// shell exists, which is why it is refused here.
 
 /**
  * @returns {{ok:true, value:string}|{ok:false, error:string}}

@@ -65,12 +65,20 @@ replacement makes it UNSET.
 through **the `env` the frame carried**, not the provider's own, and that naming
 it absolutely removes the dependence on either side's PATH.
 
-`docker` already names it absolutely, everywhere:
+`docker` names its INTERPRETERS absolutely, and has one exception that is not
+an interpreter:
 
-- `/bin/bash -lc` for the `shell` form — `src/launcher/kinds/docker.mjs:237`
-- `/bin/sh -c` for the reap script — `src/launcher/kinds/docker.mjs:341`
+- `/bin/bash -lc` for the `shell` form — `src/launcher/kinds/docker.mjs`
+- `/bin/sh -c` for the reap script — `src/launcher/kinds/reapscript.mjs`, via
+  `docker.mjs`'s `reap`
 - `/bin/sh -c` for every fileops script and the baseline probe —
   `src/launcher/run.mjs:39`
+- **but a bare `env` in the REPLACE branch** (`docker.mjs`, `env -i --`), which
+  `docker exec` resolves through the CONTAINER's PATH. Narrower than the
+  `host.mjs` case below — it is not "resolved through the frame's env" — but it
+  is the same rule unsatisfied, and this page used to claim otherwise. **A
+  deliberate non-fix**, filed as card **2026-0009**: fixing it inline would be
+  an unmeasured edit to another card's deliverable.
 
 `host` uses a bare `bash` (`src/launcher/kinds/host.mjs:119`), so **which
 side's PATH resolves it depends on which branch of `execEnv` ran** — both
@@ -90,5 +98,22 @@ measured on Node 24:
   `env` at the pin.
 
 Either way `host` is a test vehicle on cc's own machine, so this is a note, not a
-defect — recorded so card 2026-0004's `ssh` names its interpreter absolutely from
-the start and depends on neither side's PATH.
+defect — it was recorded so `ssh` would name its interpreter absolutely from the
+start and depend on neither side's PATH. **Also a deliberate non-fix**, now
+filed as card **2026-0010** so the two open cases are tracked symmetrically
+rather than one being written down and the other not.
+
+**`ssh` did.** `/bin/bash -lc` for the `shell` form, `/usr/bin/env` for the
+environment and cwd, `/bin/sh -c` for the reap relay — all absolute. It has ONE
+unavoidable tokenization step (ssh hands the far side a shell string, so the
+target's login shell parses it), and that step is **stated in the contract**
+rather than hidden: `docs/protocol.md` → "`ssh` — what goes on the wire" owns
+the sentence. `host.mjs`'s bare `bash` remains, unfixed and out of scope (card 2026-0010).
+
+**One trap this kind hits that `docker` does not, recorded because an
+outcome-shaped test cannot see it:** `ssh` is always `remotes:true`, so
+`remoteId` is always set, so `execEnv(null, id)` takes branch 2 and returns
+`{...process.env, CC_REMOTE}` — shipping the LAUNCHER's environment across the
+wire. `kinds/ssh.mjs` therefore does not call `execEnv` on the inherit branch at
+all (and passes `{}` as `base` on the other), and `tests/sshkind.test.mjs` seeds
+a unique key into `process.env` and asserts its absence from the plan.

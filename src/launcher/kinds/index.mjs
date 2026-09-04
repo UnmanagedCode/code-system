@@ -34,6 +34,16 @@ import { createSshTransport } from './ssh.mjs';
  *   so rather than return quietly — "nothing was killed" and "the kill could not
  *   run" are indistinguishable from the core, and only one of them is a leak.
  *   session.mjs reports a throw on stderr and carries on.
+ * @property {(config:object) => Promise<object>} [connect]
+ * @property {(config:object) => Promise<void>} [disconnect]
+ *   OPTIONAL, and only meaningful for a kind whose transport multiplexes. For
+ *   `ssh` they open and close the ControlMaster: `connect` is the one operation
+ *   that BINDS the control socket (and so the only one allowed the I/O that
+ *   builds its directory), `disconnect` is `ssh -O exit` and is IDEMPOTENT.
+ *   They govern the MULTIPLEXED MASTER ONLY, never authorization: an `exec`
+ *   after a `disconnect` still succeeds, unmultiplexed. Nothing in the core
+ *   calls them — the live fixture's setup/teardown does, and card 2026-0005's
+ *   buttons will.
  * @property {(config:object, res:{code:number, stdout:string, stderr:string})
  *            => {code:string, message:string, stderr?:string}|null} [classifyFailure]
  *   OPTIONAL. Reads THE TRANSPORT's own error vocabulary — a docker daemon

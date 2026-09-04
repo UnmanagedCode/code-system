@@ -18,7 +18,7 @@ Sent once, before any other frame, in answer to cc's `hello`.
 
 | Capability | `docker` | `ssh` | `host` |
 |---|---|---|---|
-| `processGroupSignal` | **`false`, final** — see below | `false` until card 2026-0004 | `true` unless `--no-process-group-signal` |
+| `processGroupSignal` | **`false`, final** — see below | **`false`, final** — same reason | `true` unless `--no-process-group-signal` |
 | `remotes` | `true` always | `true` always | at least one `--remote` |
 | `remoteDescriptors` | `false` | `false` | at least one `--mirror`/`--exclude` |
 
@@ -45,6 +45,10 @@ the core sets `descendantsMaySurvive: true` on every exit it terminated, and the
 kind's `reap` SIGKILLs the container-side subtree anyway. Both measurements are
 in `.wiki/gotchas/docker-exec-transport.md` so a later card can raise it from a
 known position.
+
+**`ssh`'s `false` is the same decision, for the same reason** — `true` obliges
+signal fidelity, i.e. a `Transport.signal` seam relaying into the far host — and
+it is not restated here. `reap` SIGKILLs the far-side subtree either way.
 
 `docker` and `ssh` advertise `remotes:true` **always**, never derived from what
 is in the store — cc memoises the handshake per connection generation, so a
@@ -167,6 +171,133 @@ than a proof; forging it yields a named refusal, never a wrong answer. This runs
 `session.mjs`'s exec close handler and `run.mjs`'s single funnel for `fileops`
 and the baseline probe — through one optional `Transport.classifyFailure` member.
 
+## `ssh` — what goes on the wire
+
+```
+<ssh-cli> -T -o BatchMode=yes -o ConnectTimeout=5 -o ControlPath=<path>
+          -o ControlMaster=no -o ControlPersist=600
+          -- <user>@<host> "<ONE quoted remote command>"
+```
+
+The remote command is a **single argv element**: every token below quoted once
+with `shellQuote` and joined with spaces.
+
+```
+/usr/bin/env --chdir=<cwd> [-i] -- [CC_REMOTE=<id>] CC_EXEC_TOKEN=<tok> <command…>
+```
+
+**`ssh` takes a SHELL STRING, not an argv, and this is the contract sentence a
+reader must not have to derive.** Everything after the destination is joined by
+ssh and **tokenized by the target's login shell**, which must therefore be
+POSIX-compatible in its handling of single quotes. That is the *only* layer of
+resolution in play, and everything past it is named **absolutely**:
+`/usr/bin/env` composes the environment and the working directory, and the
+`shell` form's interpreter is `/bin/bash -lc`. **Neither side's `PATH` resolves
+anything.** The measurement behind the rule — a command split across argv
+elements losing its quoting and running as two commands — is in
+`.wiki/gotchas/ssh-controlmaster-transport.md` §2.
+
+**There are TWO `--` terminators, and each closes a measured hijack.**
+
+| # | Terminator | Ends | Without it |
+|---|---|---|---|
+| 1 | before `<user>@<host>` | ssh's option section | a leading-dash host is read as an **option** and the *command* slides into the hostname position |
+| 2 | after `env [-i]` | GNU `env`'s option section | a frame env **key** like `--chdir=/` or `--argv0=EVIL` hijacks the cwd or spoofs `$0` |
+
+Terminator 2 is emitted in **both** env branches, not just `REPLACE`: on the
+inherit branch the assignments are ours, but `<command…>[0]` is the frame's own
+`argv[0]` and may start with `-`.
+
+| Element | Rule |
+|---|---|
+| `<ssh-cli>` | `["ssh"]`, or the whole argv named by **`CODE_SYSTEM_SSH`** (JSON array of non-empty strings). The shipped default is bare `ssh` — **the operator's own `~/.ssh/config` and agent**, which is what makes a remote's `host` a Host *alias*. A malformed value throws at transport construction → launcher exit 2 before any frame |
+| `-T` | always. The operator's config may say `RequestTTY force`, and a pty applies CR translation that corrupts `fileops`' `CCSTAT` header parse (measured) |
+| `-o BatchMode=yes` | always. Nothing may wait on a human — for a passphrase or a host key |
+| `-o ConnectTimeout=5` | always. With `BatchMode`, this is what makes an unreachable host answer in seconds rather than hang past cc's deadline |
+| `-o ControlPath=<path>` | provider-computed, never configurable — formula in `docs/architecture.md` |
+| `-o ControlMaster` | **`no` on every operation**; `yes` only in `connect`. `no` means "use a master if one exists, never create one", so the exec path needs no directory and `spawnPlan` stays pure. **`-M` is never emitted**: doubled with `-o ControlMaster=yes` it means `ask`, which `BatchMode` cannot answer (measured) |
+| `-o ControlPersist=600` | finite, so a master orphaned by a crashed launcher reaps itself |
+| `StrictHostKeyChecking` / `UserKnownHostsFile` | **never set** — that is the policy, not an omission. See below |
+| `--chdir=<cwd>` | the frame's `cwd`, verbatim, **including `/`**. Replaces docker's `-w`, which has no ssh equivalent; a bad cwd then fails inside `env` with a wording we classify |
+| `env` absent (`null`) | no `-i`: the target keeps its own PATH/HOME/toolchain. The two plumbing variables ride as `env` operands |
+| `env` supplied | `-i` — a **replacement**, as §5 requires. `CC_REMOTE` and `CC_EXEC_TOKEN` are the last entries, so the provider's binding beats a frame-supplied one |
+| `<command…>` | `argv` form: the argv verbatim. `shell` form: `/bin/bash -lc <shell>` — the same interpreter the baseline probe requires |
+| stdin | nothing in argv. `stdin:'ignore'` already gives ssh a closed stdin, and `'pipe'` is how `writeFile`'s payload arrives and EOF propagates |
+| `detached` | never. The remote command is not an OS descendant of the client, so a group kill does not reach it |
+
+**No config value ever becomes an `-o`.** Every `-o` value is a provider-owned
+constant or the provider-computed ControlPath.
+
+### The `known_hosts` policy
+
+**Stated explicitly, because "we set no option" is not by itself a policy.** The
+provider sets neither `StrictHostKeyChecking` nor `UserKnownHostsFile`, and
+relies on an interaction: OpenSSH's default is `StrictHostKeyChecking=ask`, and
+combined with the `BatchMode=yes` the provider *does* set, an unknown or changed
+host key **fails — it never prompts, and never trusts on first use**.
+
+Adding or repairing a key is the **operator's own out-of-band action** against
+their own `known_hosts` (`ssh-keyscan`, or a manual verification). The refusal is
+an id-addressed `EUNKNOWN` whose message says so. Pinned against a live target
+whose key has been removed by `tests/ssh-live.test.mjs` → *"an unknown host key
+FAILS — never a prompt, never trust-on-first-use"*.
+
+### How an ssh failure becomes a code
+
+**Exit 255 on its own classifies nothing**, so every row below is guarded on
+ssh's own wording **plus an empty stdout**. The measured collision — including
+the remote command's own exit status, which ssh forwards verbatim — is tabulated
+once, in `.wiki/gotchas/ssh-controlmaster-transport.md` §1.
+
+| Exit | Stream | Text | Verdict |
+|---|---|---|---|
+| 255 | stderr | `ssh: connect to host …` / `ssh: Could not resolve hostname …` | `ENOREMOTE`, naming the **configured** host |
+| 255 | stderr | `hostname contains invalid characters` | `ENOREMOTE`, naming the configured host |
+| 255 | stderr | `Permission denied (publickey…` on a line of ssh's own **opening**; ssh prefixes it on that line with `<user>@<host>: ` | `EUNKNOWN` naming `~/.ssh/config`, the agent and `CODE_SYSTEM_SSH` — **never `ENOREMOTE`**: our access failing is not the remote being absent |
+| 255 | stderr | `Host key verification failed` on a line of ssh's own **opening** — either the first line, or the second when ssh prefixes it (with CRLF) with `No <type> host key is known for … strict checking.` | `EUNKNOWN` naming the `known_hosts` policy, same reason |
+| **127** | stderr | `env: '<argv0>': No such file or directory` | `ENOENT` — §5's "a command that never started is an `error` frame, not an `exit` frame" |
+| **125** | stderr | `env: cannot change directory to '<cwd>': …` | `ENOENT`, same reason. **Note the different exit code** — anchoring on 127 alone reports a bad cwd as a command that ran and exited |
+| anything else | — | — | **not a transport failure**: the command's own `exit` frame |
+
+**Two anchors are in use, and the difference is measured rather than stylistic.**
+The rows whose wording *opens the stream* are matched with `startsWith` on the
+stream — the strictest available. The auth and host-key rows cannot be: neither
+wording opens the stream (ssh prefixes the first on its line and the second with
+a whole line). They are matched **per line, within ssh's own opening**: the walk
+takes the first line that matches, and stops as soon as a line is neither a
+match nor that one measured preamble. Forging either therefore requires exiting
+exactly 255 (or `env`'s 127/125), writing **nothing** to stdout, and putting
+ssh's exact bytes at the *start* of stderr. These rows report the **whole**
+normalised diagnostic as `stderr` and quote the **matched line** in the message,
+because ssh's host-key refusal spans two lines and the first is the less useful
+half.
+
+**A KNOWN LIMITATION, stated rather than claimed away.** The bound above is a
+bound on plausibility, not a proof, and there is one case where it is *not*
+implausible: a caller's own command that runs `ssh`, `scp` or git-over-ssh and
+whose **first** action fails — a submodule fetch, a jump host — prints these
+exact bytes at position zero with an empty stdout and exit 255. That is reported
+as **our** transport failing. The observable consequence: the command's own exit
+status is swallowed into an `EUNKNOWN` that points the operator at *their*
+`~/.ssh/config` or `known_hosts` to fix somebody else's failure.
+
+**It is ineliminable from the signals this classifier receives** — which is
+`(code, stdout, stderr)` and nothing else. It is *not* a universal
+impossibility, and the difference matters, so the candidates are recorded rather
+than asserted away:
+
+| Candidate signal | Why it does not separate the two arms |
+|---|---|
+| **stdout** | empty in both. Our ssh writes nothing there on these failures, and a command whose first action is a failing ssh has produced no stdout yet |
+| **exit code** | 255 in both. `ssh` itself exits 255 on an auth failure, and ssh forwards the remote command's status verbatim, so a nested client's 255 arrives as ours |
+| **the bytes** | byte-identical. ssh puts no marker on its own diagnostics to distinguish them from a child's |
+| **position in stderr** | **adopted** — it separates a *chatty* command (`sshOwnLine`), which was the reachable half. It cannot separate a nested client that fails first with no prior output |
+| **the `<dest>: ` prefix** on the auth row | rejected on a measurement: ssh names the **resolved** host (`root@172.17.0.5: …`) while the provider knows only the operator's Host **alias**, so this anchor would reject our own genuine refusal on every alias-based remote — the shipped default shape. It is also auth-only |
+| **connection state** (`reachability()`) | consistent with both arms, so it separates nothing: under `ControlMaster=no` an exec against a never-connected remote runs unmultiplexed, so *our own* auth failure also reports `connected: false`. It is also unavailable — this classifier is synchronous and takes no config beyond the record |
+| **`ssh -E <log_file>`** | **it WORKS, and is deferred rather than rejected.** Measured: with `-E`, our own auth failure leaves stderr **empty** and the wording in the log, while a nested client's failure leaves the wording **on stderr** and nothing in the log. Adopting it is a `Transport`-seam and core change this card does not make — a per-exec log path plumbed through `ExecRequest`/`SpawnPlan`, created and unlinked outside a **pure** `spawnPlan`, and read back so cc still sees ssh's own text on stderr (MUST 1), which `-E` otherwise removes. Filed as card **2026-0011** |
+
+So the residual is a **bounded, understood cost of not yet paying for `-E`**, not a wall. What the per-line anchor buys today is the reachable half: a chatty command, a mid-line occurrence and a mid-stream occurrence are all refused.
+
 ## `readFile` / `writeFile` — derived over `exec`
 
 Both are derived from `exec` in `src/launcher/fileops.mjs`, **once for every
@@ -245,13 +376,24 @@ bash on this host. Two gaps are **stated rather than claimed away**:
   What *is* covered: the generated script is structurally guarded (`set -C`
   precedes the redirect it protects, and is absent from the plain branch), and a
   canary asserts the real shell refuses the redirect and leaves the file intact.
-- **The canary covers this host's `/bin/sh` only.** A docker or ssh target whose
-  shell ignores noclobber silently converts `exclusive` into a **truncating
-  write**, and nothing this plugin ships can detect it. Card 2026-0003 landed the
-  first kind that reaches a shell which is not ours; its live suite exercises
-  `exclusive` against `node:24-slim`'s dash and gets `EEXIST`, but that is one
-  image, not a guarantee. **Still open for card 2026-0004 and for any target
-  image**; the tooling-baseline probe is where such a check would belong.
+- **The residual exposure is a RACE, not a routine truncation — now scoped, and
+  accepted rather than hardened.** The script's `[ -e "$p" ]` pre-check is a
+  plain `test` that **no shell can ignore**, so a file that already exists when
+  the write starts is refused whatever the target shell does about `noclobber`.
+  That is pinned on the bytes themselves by `tests/ssh-live.test.mjs` →
+  *"an exclusive write … leaves the bytes intact"*, which reads the file back
+  **out of band** rather than trusting the refusal — asserting only the code
+  would pass a build that truncated first and then refused.
+  What `set -C` uniquely buys is the **check-then-act window**: a file created
+  *between* the pre-check and the redirect. On a target shell that silently
+  ignored `noclobber`, that window — and only that window — degrades to a
+  truncating write, and nothing this plugin ships can detect it.
+  Both kinds that reach a shell which is not ours now exercise `exclusive`
+  against a real target (`node:24-slim`'s dash, `debian:13-slim`'s dash) and get
+  `EEXIST`; that is two images, not a guarantee. Hardening `fileops.mjs`
+  further was rejected: it is shared by every kind, and no measurement here
+  calls its write primitive wrong. The tooling-baseline probe is where a
+  per-target check would belong.
 
 ### What an abandoned write leaves behind
 
@@ -339,8 +481,14 @@ exists. A validator that accepts an
 option-shaped value is a latent hole even while `spawnPlan` throws. Any new
 config field a kind adds gets the same treatment.
 
-(It is not a general escaping scheme: nothing here reaches a shell — the core
-spawns argv directly, and `fileops.mjs` quotes what it interpolates.)
+(It is not a general escaping scheme, and it is precise about where a shell is
+in play. For `host` and `docker` nothing validated here reaches a shell at all —
+the core spawns argv directly and `fileops.mjs` quotes what it interpolates. For
+`ssh` the remote command **is** tokenized by the target's login shell, which is
+why `kinds/ssh.mjs` quotes every token it interpolates and hands ssh one argv
+element. Either way this rule is about the **argv/option boundary**: a leading
+`-` in a stored `host`/`user` is an option to the *local* ssh client, before any
+remote shell exists.)
 
 ### `remoteId`
 

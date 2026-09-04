@@ -2,7 +2,7 @@
 
 A code-conductor plugin that lets [Claude Code](https://claude.com/claude-code) (`cc`) reach remote development targets — Docker containers and SSH hosts — without installing anything on the target itself.
 
-The `docker` transport is live: `exec` over `docker exec`, reachability over `docker inspect`, inherited `readFile`/`writeFile`, and the kill relay a container-side process needs. The `ssh` transport (card 2026-0004) and the card UI (card 2026-0005) land next; each is one file dropped into an existing seam.
+Both transports are live. `docker`: `exec` over `docker exec`, reachability over `docker inspect`. `ssh`: `exec` over a multiplexed OpenSSH ControlMaster slave, reachability over the ControlPath socket. Both inherit `readFile`/`writeFile` and the kill relay a far-side process needs. The card UI (card 2026-0005) lands next, as one file dropped into an existing seam.
 
 ## Functional description
 
@@ -81,7 +81,7 @@ See [`.wiki/decisions/architecture-shape.md`](.wiki/decisions/architecture-shape
 
 ### Testing
 
-`npm test` is deterministic and needs no docker, no ssh and no network; every test gets its own temp store. The real-container suite (`tests/docker-live.test.mjs`) **skips cleanly and loudly** when no Docker daemon answers, each skip naming what was tried and the `CODE_SYSTEM_DOCKER` override that would run it. `npm run conformance` runs **code-conductor's own conformance suite** — the definition of a valid provider — against this launcher's `host` kind, gated on `CC_CHECKOUT` and skipping cleanly without it. It first runs `tests/protocol-constants.test.mjs` with that checkout and aborts on drift, so a conformance run also proves our mirrored protocol constants still match cc's.
+`npm test` is deterministic and needs no docker, no ssh and no network; every test gets its own temp store. The two real-target suites — `tests/docker-live.test.mjs` against a real container and `tests/ssh-live.test.mjs` against a real sshd — **skip cleanly and loudly**, each skip naming what was tried and the `CODE_SYSTEM_DOCKER` override that would run it. The docker suite's gate is a Docker daemon; the ssh suite needs **both** a daemon (to host the sshd) *and* a runnable `ssh` client, and skips if either is missing. The ssh suite additionally **proves by count that its tests really ran** (or really all skipped), so a silently-skipping live suite cannot pass as a green run. `npm run conformance` runs **code-conductor's own conformance suite** — the definition of a valid provider — against this launcher's `host` kind, gated on `CC_CHECKOUT` and skipping cleanly without it. It first runs `tests/protocol-constants.test.mjs` with that checkout and aborts on drift, so a conformance run also proves our mirrored protocol constants still match cc's.
 
 ## Known limitations
 

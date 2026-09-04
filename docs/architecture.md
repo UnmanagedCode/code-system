@@ -37,7 +37,7 @@ an absolute path — which is what forces the store location below.
 | `src/launcher/fileops.mjs` | `readFile`/`writeFile`, derived over `exec`, once for every kind |
 | `src/launcher/run.mjs` | run one script on a target — shared by fileops and the probe |
 | `src/launcher/remotes.mjs` | `RemoteSource`: store-backed (production) and flag-backed (conformance) |
-| `src/launcher/kinds/` | one file per kind, plus the registry |
+| `src/launcher/kinds/` | one file per kind, plus the registry and the kill-relay script (`reapscript.mjs`) shared by `docker` and `ssh` |
 
 ## The `Transport` seam
 
@@ -68,6 +68,13 @@ kind that needs it puts it on the far side inside its own `spawnPlan`.
 `reap` may **throw**, and that is part of the contract: a kind that cannot prove
 its relay reached the far side must say so rather than return quietly. The core
 reports it and carries on.
+
+`connect(config)` / `disconnect(config)` are **optional** and exist only for a
+kind whose transport multiplexes. Nothing in the core calls them: the launcher
+never needs them (see the ControlMaster section below), the live fixture's
+setup/teardown do, and card 2026-0005's buttons will. **What they do and do not
+govern is part of the seam contract, so the typedef owns it** —
+`src/launcher/kinds/index.mjs`, which is what card 2026-0005 programs against.
 
 `classifyFailure(config, {code, stdout, stderr})` is **optional** and reads the
 *transport's* own error vocabulary — a docker daemon response — turning a
@@ -231,7 +238,7 @@ says so in the row itself — *"the root is where the suite places that target's
 fixtures, **not a fence it asks you to enforce**"* — and cc's own architecture
 doc says the reference provider's root fence is *"this provider's property, not
 a protocol obligation"*, exercised by no row in the suite. **`docker` implements
-no root fencing, and card 2026-0004 must not either.** Our
+no root fencing, and neither does `ssh`.** Our
 `host` kind fences because a test vehicle on cc's own machine needs a misroute to
 be *refusable*, not because the battery demands it — and production
 `docker`/`ssh` remotes carry no root at all.
@@ -252,7 +259,7 @@ and their printed reasons are the list of what the run does not check:
 A **fifth** skip, or a different reason string, means the harness changed and
 this section needs re-checking.
 
-### The consequence for cards 2026-0003 and 2026-0004
+### The consequence for a bound conformance run
 
 `docker` and `ssh` always advertise `remotes:true`. Since cc `8b7b10bf` that no
 longer bars them from the battery: `CC_CONFORMANCE_REMOTE_ID` binds every
@@ -261,15 +268,19 @@ tolerates `remotes`/`remoteDescriptors` as a **superset**. **A bound run against
 the real `docker` kind is therefore supported and worth doing** — it measures
 the shipped kind rather than a generalisation from `host`. What it needs is a
 container that shares the test process's filesystem (a bind mount), which is rig
-territory and **stays with card 2026-0006**: card 2026-0003 landed the transport,
-not the bound conformance rig.
+territory and **stays with card 2026-0006**: cards 2026-0003 and 2026-0004
+landed the two transports and their live suites, not the bound conformance rig.
+**A bound `ssh` run is further off than a bound `docker` one** — bind mounts are
+unavailable from this container at all, which is also why the ssh fixture image
+is built with no build context.
 
 Until then, the seam is what carries the argument: `protocol.mjs`, `session.mjs`
 and `fileops.mjs` are kind-agnostic and `spawnPlan` is pure, so **`host` passing
 the core suite proves the core for every kind.** The per-kind residue is argv
 construction, `reap` and `classifyFailure` — covered for `docker` by unit tests
 on the pure `spawnPlan` plus `tests/docker-live.test.mjs` against a real
-container.
+container, and for `ssh` by `tests/sshkind.test.mjs` plus
+`tests/ssh-live.test.mjs` against a real sshd.
 
 **Run cc's suite against a CLONE of the pin, never against a live cc worktree.**
 `tests/conformance.mjs` runs cc's own test runner with `cwd: <checkout>`, so
@@ -286,19 +297,22 @@ test-only divergence in the one field cc negotiates on, and cc's own harness
 says so (`referenceProviderHarness.mjs`, the `assertNegotiatedCapabilities`
 note). It is also unnecessary — a bound run needs no such lie.
 
-**Two obligations that land on those cards specifically:**
+**Two standing obligations for any kind, both now discharged by both
+transports:**
 
 1. **Every config field that becomes an argv operand must reject a leading `-`**
-   (`src/launcher/kinds/config.mjs`). `container`, `host` and `user` already do,
-   and `docker`'s `spawnPlan` now really does place `container` after `--`.
-   A leading dash turns an operand into an option — `container: "-v /:/host"` is
-   argument injection against `docker` — and the refusal belongs in
-   `validateConfig`, not in `spawnPlan`, so a bad value never reaches the store.
-2. **`exclusive`'s atomicity depends on the TARGET's shell honouring `set -C`.**
-   Our canary only measures cc's own `/bin/sh`. A target whose shell ignores
-   noclobber silently converts an exclusive write into a truncating one, and
-   nothing shipped today detects it — see `docs/protocol.md` →
-   "What `exclusive` does and does not guarantee".
+   (`src/launcher/kinds/config.mjs`). `container`, `host` and `user` do, and both
+   `spawnPlan`s really do place their operand after a `--`. A leading dash turns
+   an operand into an option — `container: "-v /:/host"` is argument injection
+   against `docker`, and `host: "-oProxyCommand=…"` against `ssh` — and the
+   refusal belongs in `validateConfig`, not in `spawnPlan`, so a bad value never
+   reaches the store. **`ssh` needs a second terminator as well**, for GNU
+   `env`'s option section; see `docs/protocol.md`.
+2. **`exclusive`'s remaining gap is a check-then-act race on a target shell that
+   ignores `noclobber`** — not a routine truncation, because the script's
+   `[ -e ]` pre-check is a plain `test` no shell can ignore. Scoped, measured
+   against both live targets, and accepted rather than hardened: see
+   `docs/protocol.md` → "What `exclusive` does and does not guarantee".
 
 ## The config store
 
@@ -342,12 +356,14 @@ the same names in-process, so one function serves both surfaces.
 |---|---|---|
 | `CODE_SYSTEM_STORE` | `src/paths.mjs` | store root; else `<homedir>/.code-system`. Test isolation |
 | `CODE_SYSTEM_DOCKER` | `kinds/docker.mjs` → `dockerCliArgv` | the **whole docker invocation** as a JSON array, e.g. `["sudo","-n","docker"]`. Default `["docker"]` — no `sudo` in the shipped default. Malformed → throws → launcher exit 2 before any frame |
+| `CODE_SYSTEM_SSH` | `kinds/ssh.mjs` → `sshCliArgv` | the **whole ssh invocation** as a JSON array, e.g. `["ssh","-F","/path/ssh_config"]`. Default `["ssh"]` — the operator's own `~/.ssh/config` and agent. Malformed → throws → launcher exit 2 before any frame |
 | `CODE_SYSTEM_ALLOW_HOST_KIND` | `kinds/host.mjs` | permits `--kind host` at all |
 | `CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED` | `kinds/host.mjs` | permits `--kind host` with no `--remote` fence. **No shipped path sets it** |
 | `CODE_SYSTEM_FAKE_TRANSPORT` | `main.mjs` | module path for `--kind fake`. Tests only |
 | `CC_CHECKOUT` | `tests/conformance.mjs` | gates the conformance run |
 
-**Why the docker CLI is an env var rather than a store field or a launch flag.**
+**Why the docker and ssh CLIs are env vars rather than store fields or launch
+flags.** One argument, and it covers both.
 A store field would be an **HTTP-writable executable argv** on cc's host — the
 REST surface writes remote records, so a card-UI field taking an argv is remote
 code execution by design, and `kinds/config.mjs` can keep a stored value from
@@ -450,6 +466,102 @@ take the connection down — one target's leftovers are not a dead session. The 
 benign failure is the container being gone or stopped, recognised through the
 same `classifyFailure` the exec path uses so the two cannot drift.
 
+## The ssh ControlMaster transport
+
+Every measurement behind this section is in
+`.wiki/gotchas/ssh-controlmaster-transport.md`; the wire contract is in
+`docs/protocol.md`. What lives here is the **design**.
+
+**One OpenSSH ControlMaster per target, and connect state lives in the socket.**
+Not in a process and not in memory — which is what lets the launcher and the
+backend agree with **no IPC**. It is `src/store.mjs`'s "there is no cache"
+argument applied to connection state instead of config, and it has a
+user-visible payoff: an `ssh -O exit` issued *outside* this plugin is reflected
+on the next card render with nothing restarted, because every `reachability`
+re-asks the socket.
+
+**The ControlPath formula**, the one source of truth both processes compute
+independently (`kinds/ssh.mjs`):
+
+```
+controlPathFor(config) → <os.tmpdir()>/code-system-ssh-<uid>/<sha256(user \0 host)[0..20]>
+```
+
+- **Keyed on the resolved connection identity `(user, host)`, not on
+  `remoteId`.** Two remoteIds naming the same target share one master — which is
+  what "one master per remote" means once the remote is understood as the
+  *target* rather than the record. More importantly, editing a remote's `host`
+  yields a **different** socket, so a live master is never silently reused
+  against a host it was not opened to; the old one expires on `ControlPersist`.
+  The separator is a NUL because it is the one byte neither field can contain:
+  with a joinable one, `('ab','c')` and `('a','bc')` would collide onto one
+  master.
+- **A 0700 per-uid directory, not a bare `/tmp` entry.** `/tmp` is
+  world-writable and the path is derivable, so another local user could
+  pre-create a socket there and have a slave attach *our* commands to *their*
+  master. An existing directory with the wrong owner or mode is **refused, not
+  repaired** — chmod-ing it would paper over exactly that.
+- **It refuses past 100 bytes rather than truncating**, naming `TMPDIR`. Linux
+  caps a unix socket path at 107 usable bytes, and a truncated path is a
+  *different* socket for the launcher than for the backend — the one thing the
+  no-IPC agreement cannot tolerate. Never a fallback to a second formula, which
+  would break it invisibly.
+
+**Who carries which `ControlMaster`, and why it is not `auto`.** This is the
+design's load-bearing detail, and it was forced by measurement:
+
+| surface | invocation | may do I/O |
+|---|---|---|
+| `spawnPlan` (every `exec`, every fileops script, the probe) | `-o ControlMaster=no` | **no — pure** |
+| `reachability` | `-o ControlMaster=no -O check` | yes |
+| `reap` | `-o ControlMaster=no` | yes |
+| `disconnect` | `-o ControlMaster=no -O exit` | yes |
+| `connect` | `-o ControlMaster=yes -N -f` | yes, and it is the **only** one that creates the control directory |
+
+`ControlMaster=no` is not "don't multiplex": it means **use a master if one
+exists, never create one**. Measured, it multiplexes onto a live master at zero
+further authentications and runs fine with **no directory at all** — whereas
+`auto` must *bind*, and with the directory absent it exits 255. Since
+`spawnPlan` must stay pure (`kinds/index.mjs`) and the handshake must do no I/O
+(`.wiki/gotchas/active-registration.md`), nothing on the exec path may create
+that directory — so `auto` would make a first `exec` against a fresh remote
+fail. `no` makes the pure path total: it multiplexes when it can and connects
+normally when it cannot.
+
+The consequence, stated rather than hidden: **an `exec` never creates the
+master.** Without a `connect` every command pays its own authentication and
+still works. That is the degradation the transport is designed around, and both
+directions are pinned by `tests/ssh-live.test.mjs`.
+
+**`reachability` never connects.** It is `-O check` against the socket, bounded
+at 5 s, mirroring docker's "a daemon query, never a round trip INTO the target,
+because this runs on every card render". Its `fingerprint` is
+`ssh:<identity-hash>:<socket ino>:<socket ctimeMs>` — the recipe already locked
+in `.wiki/gotchas/baseline-probe-two-tier.md`, and a new master means a new
+socket means a new inode, which is exactly what makes `needsProbe` re-probe. It
+is `null` on every non-connected answer, including "`-O check` said yes but the
+socket cannot be stat-ed": a fingerprint keyed on nothing would cache a verdict
+we cannot justify. `detail` names the ControlPath verbatim, which is what makes
+an out-of-band `ssh -O exit -o ControlPath=<that>` issuable by an operator.
+
+**The master deliberately SURVIVES launcher shutdown.** Shutdown SIGKILLs the
+launcher's ssh slaves — they are OS descendants, so `Session.shutdown`'s existing
+kill reaches them — and leaves the master running. That is the point of state
+living in the socket: cc restarts launchers, and tearing the connection down on
+every restart would make the multiplexing worthless. `ControlPersist=600` is
+what stops a master orphaned by a crashed launcher living for ever. `reap` still
+has work to do, because killing the local slave does **not** kill the remote
+command (measured).
+
+**How `ssh` reaps: the same token scan `docker` uses.** Extracted to
+`kinds/reapscript.mjs` when this kind landed — identical mechanism, identical
+reason (a far-side child is not the client's OS descendant), so it is shared
+rather than copied. The relay runs `/bin/sh -c <script>` over a new slave
+bounded at 1200 ms, carries **no** token in its own environment so it cannot
+kill itself, and must answer `CCREAP ok` or `Transport.reap` throws. Its one
+benign failure — the host being unreachable — is recognised through the same
+`classifyFailure` the exec path uses, so the two cannot drift.
+
 ## Test patterns
 
 `npm test` is deterministic and needs no docker, no ssh and no network. Every
@@ -502,6 +614,42 @@ global.
   proves that SIGKILLing a `docker exec` host client leaves the container process
   running. Without it, every reap assertion would pass even if `reap` did
   nothing — a kind whose children die with their proxy needs no relay at all.
+- **A real sshd, self-skipping, with the roster proved to have RUN**
+  (`tests/sshFixture.mjs`, `tests/ssh-live.test.mjs`,
+  `tests/fixtures/sshbox/Dockerfile`). Five things about it are deliberate:
+  - **The gate is composed of two probes** — a Docker daemon (to host the sshd)
+    *and* a runnable `ssh`. Either missing skips. Note `ssh -V` writes its
+    banner to **stderr**: a stdout-only probe would skip on a machine with a
+    perfectly good client.
+  - **The roster is proved in BOTH directions by count.** Live tests are
+    registered from a module-level roster, each incrementing a counter, and a
+    final test (which never skips itself) asserts `ran === roster.length` when
+    the gate is open and `ran === 0` with a **non-empty** roster when it is
+    closed. This is the gap the docker suite states outright that it leaves: a
+    live suite that silently skips everything while `npm test` stays green is
+    indistinguishable from one that passes.
+  - **The image is built in-tree with NO build context** (`docker build -`, the
+    Dockerfile on stdin), because this container's filesystem is not the
+    daemon's. It is `debian:13-slim`, not Alpine: busybox fails our tooling
+    baseline in four capabilities, which would gate `fileops` off and make the
+    live suite vacuous — so one test asserts the image *passes* the baseline.
+  - **A throwaway keypair per target, and the operator's agent is walled off.**
+    An agent with real keys is forwarded into this environment, so every
+    generated `ssh_config` sets `IdentitiesOnly yes` and `IdentityAgent none`.
+    The target's host key is read **out of band** with `docker exec` into a real
+    `known_hosts`: no trust-on-first-use anywhere, in the fixture or the
+    provider. The fixture also deliberately does **not** set
+    `StrictHostKeyChecking`, because the provider's policy rests on OpenSSH's
+    default — pinning it would test the fixture instead of the policy.
+  - **Aliases are unique per target.** `controlPathFor` keys on `(user, host)`,
+    so two targets sharing an alias would share one master and a test could
+    silently multiplex onto the previous test's container.
+- **Multiplexing is asserted on sshd's OWN authentication count**, never on "the
+  command worked" — which is what an unmultiplexed run also looks like. The
+  target runs `sshd -D -e`, so `docker logs` carries one `Accepted publickey`
+  per real connection, and the test includes the unmultiplexed **control**
+  (`ControlPath=none` → one authentication each) so the flat count is a
+  measurement rather than a fixture that cannot tell the difference.
 - **Real `/bin/sh` for the far-side scripts.** `tests/fileops.test.mjs` runs the
   generated scripts against a real shell on a temp dir — deterministic and
   local, and the only thing that proves the *scripts* are right rather than just
