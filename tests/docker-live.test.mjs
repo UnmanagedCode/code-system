@@ -1,9 +1,15 @@
 // THE DOCKER TRANSPORT AGAINST A REAL CONTAINER.
 //
-// Every test here calls `skipUnlessDocker` FIRST and returns, so `npm test`
-// stays green and docker-free — each skip prints a reason naming both
-// invocations tried and the CODE_SYSTEM_DOCKER override. On a host where the
-// daemon answers, they run for real.
+// Every test here is registered from a ROSTER and calls `skipUnlessDocker`
+// first, so `npm test` stays green and docker-free — each skip prints a reason
+// naming both invocations tried and the CODE_SYSTEM_DOCKER override. On a host
+// where the daemon answers, they run for real.
+//
+// THE ROSTER IS PROVED TO HAVE RUN, BY COUNT, IN BOTH DIRECTIONS — the last
+// test in this file. Without it a suite that skips everything is
+// indistinguishable from one that passes everything, and a green `npm test`
+// would be evidence of nothing. Add a test with `live(...)`, never a bare
+// `test(...)`, or the proof cannot see it.
 //
 //   npm test                                              # skips, loudly
 //   CODE_SYSTEM_DOCKER='["sudo","-n","docker"]' npm test   # runs
@@ -18,20 +24,23 @@ import { PROBE_SCRIPT, parseProbeOutput } from '../src/baseline.mjs';
 import { createDockerTransport } from '../src/launcher/kinds/docker.mjs';
 import { buildReapScript } from '../src/launcher/kinds/reapscript.mjs';
 import { makeRunner } from '../src/launcher/run.mjs';
+import { SCHEMA } from '../src/store.mjs';
 import { Launcher, tempStore, writeRecord } from './helpers.mjs';
 import {
-  countingShim, inContainer, markerCount, run, settle, skipUnlessDocker, tempDir, withContainer,
+  countingShim, inContainer, markerCount, resolveDockerCli, run, settle, skipUnlessDocker,
+  tempDir, withContainer,
 } from './dockerFixture.mjs';
 
 const BUSYBOX = 'busybox:1.38.0';
 
 function dockerRecord(remoteId, container, over = {}) {
   return {
-    schema: 1,
+    schema: SCHEMA,
     remoteId,
     kind: 'docker',
     label: remoteId,
     config: { container },
+    enabled: true,
     baseline: { state: 'unknown', fingerprint: null, missing: [], checkedAt: null },
     createdAt: '2026-09-04T00:00:00.000Z',
     updatedAt: '2026-09-04T00:00:00.000Z',
@@ -65,6 +74,13 @@ function launcherFor(t, store, cli, extraEnv = {}) {
   return l;
 }
 
+// THE ROSTER. Every live test is registered from here rather than calling
+// `test()` directly, so the count proof at the bottom of this file has
+// something to count. Adding a test means adding a `live(...)` — a bare
+// `test()` would be invisible to the proof.
+const ROSTER = [];
+const live = (name, fn) => ROSTER.push({ name, fn });
+
 // ── L1: the happy path, through the SHIPPED launcher ─────────────────
 
 // PINS the whole shipped path — main.mjs arg parsing, kind dispatch,
@@ -73,8 +89,7 @@ function launcherFor(t, store, cli, extraEnv = {}) {
 // really lands in the environment of the child the exec started. The last is
 // §10's CC_REMOTE row asserted ON THE CONTAINER'S OWN ANSWER rather than on the
 // command merely succeeding, which is what a misroute also looks like.
-test('live: a routed exec reaches the container, at the requested cwd, knowing its remote id', async (t) => {
-  const d = await skipUnlessDocker(t); if (!d) return;
+live('a routed exec reaches the container, at the requested cwd, knowing its remote id', async (t, d) => {
   const box = await withContainer(t, d.cli);
   const store = await tempStore();
   t.after(() => store.cleanup());
@@ -95,8 +110,7 @@ test('live: a routed exec reaches the container, at the requested cwd, knowing i
 // this, every reap test below would pass even if `reap` did nothing — a kind
 // whose children died with their proxy needs no relay at all. This is the test
 // that makes the reap tests discriminating rather than decorative.
-test('live: NEGATIVE CONTROL — killing the host docker client leaves the container process running', async (t) => {
-  const d = await skipUnlessDocker(t); if (!d) return;
+live('NEGATIVE CONTROL — killing the host docker client leaves the container process running', async (t, d) => {
   const box = await withContainer(t, d.cli);
   const marker = newMarker();
   t.after(() => inContainer(d.cli, box,
@@ -152,8 +166,7 @@ async function threeLive(t, cli, box, store) {
 // survive anyway. A no-op `reap` reds the marker assertion, and it reds
 // BECAUSE the negative control above pins that the host-side kill alone leaves
 // them running.
-test('live: stdin EOF SIGKILLs every in-flight exec inside the container, inside the grace', async (t) => {
-  const d = await skipUnlessDocker(t); if (!d) return;
+live('stdin EOF SIGKILLs every in-flight exec inside the container, inside the grace', async (t, d) => {
   const box = await withContainer(t, d.cli);
   const store = await tempStore();
   t.after(() => store.cleanup());
@@ -177,8 +190,7 @@ test('live: stdin EOF SIGKILLs every in-flight exec inside the container, inside
 // mutant reaping by container kills the other two and reds. The MIDDLE of three
 // is chosen so a first/last-live heuristic cannot pass by accident, for the
 // reason tests/launcher-frames.test.mjs sets out.
-test('live: `close` reaps that id alone and leaves the other execs running', async (t) => {
-  const d = await skipUnlessDocker(t); if (!d) return;
+live('`close` reaps that id alone and leaves the other execs running', async (t, d) => {
   const box = await withContainer(t, d.cli);
   const store = await tempStore();
   t.after(() => store.cleanup());
@@ -221,8 +233,7 @@ test('live: `close` reaps that id alone and leaves the other execs running', asy
 // reap here the launcher reports `{code:124, timedOut:true}` — cc's own "the
 // provider killed it" — for a command that is still running in the container.
 // A reap-only-on-`close` mutant reds both halves.
-test('live: a timed-out exec is reaped in the container, not just reported as killed', async (t) => {
-  const d = await skipUnlessDocker(t); if (!d) return;
+live('a timed-out exec is reaped in the container, not just reported as killed', async (t, d) => {
   const box = await withContainer(t, d.cli);
   const store = await tempStore();
   t.after(() => store.cleanup());
@@ -247,8 +258,7 @@ test('live: a timed-out exec is reaped in the container, not just reported as ki
     'and the container-side process is actually gone, not merely reported dead');
 });
 
-test('live: a `signal` frame reaps the container-side process too', async (t) => {
-  const d = await skipUnlessDocker(t); if (!d) return;
+live('a `signal` frame reaps the container-side process too', async (t, d) => {
   const box = await withContainer(t, d.cli);
   const store = await tempStore();
   t.after(() => store.cleanup());
@@ -279,8 +289,7 @@ test('live: a `signal` frame reaps the container-side process too', async (t) =>
 // path — otherwise every command costs a second ~106 ms round trip into the
 // container. (ii) Acceptance 10 END TO END: the launcher really invokes the
 // OVERRIDDEN argv, which no pure test can show.
-test('live: five commands that exit on their own cost exactly five docker invocations', async (t) => {
-  const d = await skipUnlessDocker(t); if (!d) return;
+live('five commands that exit on their own cost exactly five docker invocations', async (t, d) => {
   const box = await withContainer(t, d.cli);
   const store = await tempStore();
   t.after(() => store.cleanup());
@@ -311,8 +320,7 @@ test('live: five commands that exit on their own cost exactly five docker invoca
 // HOME IS THE DISCRIMINATOR. An overlay via `docker exec -e` leaves HOME=/root
 // and would pass every other assertion in this test; only a real replacement
 // makes it UNSET. Measured both ways.
-test('live: an absent env inherits the CONTAINER\'s environment; a supplied env replaces it', async (t) => {
-  const d = await skipUnlessDocker(t); if (!d) return;
+live('an absent env inherits the CONTAINER\'s environment; a supplied env replaces it', async (t, d) => {
   const box = await withContainer(t, d.cli);
   const store = await tempStore();
   t.after(() => store.cleanup());
@@ -351,8 +359,7 @@ test('live: an absent env inherits the CONTAINER\'s environment; a supplied env 
 // PINS acceptance 5 against a real container, and that the one §7 derivation
 // cc's own docs call "the dangerous one" answers with real sub-second precision
 // on this image. A fence on `/`, or a dropped `-w`, reds it.
-test("live: cwd '/' is served, and `stat` answers with sub-second mtime precision", async (t) => {
-  const d = await skipUnlessDocker(t); if (!d) return;
+live("cwd '/' is served, and `stat` answers with sub-second mtime precision", async (t, d) => {
   const box = await withContainer(t, d.cli);
   const store = await tempStore();
   t.after(() => store.cleanup());
@@ -380,8 +387,7 @@ test("live: cwd '/' is served, and `stat` answers with sub-second mtime precisio
 // THE CONTENT ROUND TRIP IS WHAT CATCHES A DROPPED `-i`: without it `base64 -d`
 // sees immediate EOF and writes a ZERO-BYTE FILE WITH EXIT 0, so a
 // mode-and-success-only test would pass a completely broken write.
-test('live: readFile/writeFile work over docker exec, with every code cc branches on', async (t) => {
-  const d = await skipUnlessDocker(t); if (!d) return;
+live('readFile/writeFile work over docker exec, with every code cc branches on', async (t, d) => {
   const box = await withContainer(t, d.cli);
   const store = await tempStore();
   t.after(() => store.cleanup());
@@ -449,8 +455,7 @@ test('live: readFile/writeFile work over docker exec, with every code cc branche
 //
 // FOUR capabilities, not the three cc's own §11 note lists: our `shell` row is
 // `[ -x /bin/bash ]` and busybox has no bash. A test written to three would red.
-test('live: a real busybox container fails the baseline, and the launcher refuses it BY NAME', async (t) => {
-  const d = await skipUnlessDocker(t); if (!d) return;
+live('a real busybox container fails the baseline, and the launcher refuses it BY NAME', async (t, d) => {
   const bb = await withContainer(t, d.cli, { image: BUSYBOX, stem: 'busybox' });
 
   const runner = makeRunner(createDockerTransport({ cli: d.cli }), { container: bb }, 'bb');
@@ -495,9 +500,8 @@ test('live: a real busybox container fails the baseline, and the launcher refuse
 //
 // Plus §9's "one dead remote is not a dead connection": the answers are
 // id-addressed, and the live remote is still served afterwards.
-test('live: a stopped and a non-existent container each answer ENOREMOTE, id-addressed', async (t) => {
-  const d = await skipUnlessDocker(t); if (!d) return;
-  const live = await withContainer(t, d.cli);
+live('a stopped and a non-existent container each answer ENOREMOTE, id-addressed', async (t, d) => {
+  const running = await withContainer(t, d.cli);
   const stopped = await withContainer(t, d.cli, { stem: 'stopped' });
   // THE FIXTURE may stop a container. The provider never may — pinned in
   // tests/dockerkind.test.mjs.
@@ -505,7 +509,7 @@ test('live: a stopped and a non-existent container each answer ENOREMOTE, id-add
 
   const store = await tempStore();
   t.after(() => store.cleanup());
-  await writeRecord(store.dir, dockerRecord('alive', live));
+  await writeRecord(store.dir, dockerRecord('alive', running));
   await writeRecord(store.dir, dockerRecord('dead', stopped));
   await writeRecord(store.dir, dockerRecord('ghost', 'code-system-test-no-such-container'));
 
@@ -539,8 +543,7 @@ test('live: a stopped and a non-existent container each answer ENOREMOTE, id-add
 // PINS acceptance 6. A CC_REMOTE-only assertion passes even if both ids exec
 // into the SAME container, so the container's own hostname is what makes a
 // misroute visible.
-test('live: every operation routes on its remoteId, and the routed container really differs', async (t) => {
-  const d = await skipUnlessDocker(t); if (!d) return;
+live('every operation routes on its remoteId, and the routed container really differs', async (t, d) => {
   const one = await withContainer(t, d.cli);
   const two = await withContainer(t, d.cli, { image: BUSYBOX, stem: 'busybox' });
   const store = await tempStore();
@@ -581,8 +584,7 @@ test('live: every operation routes on its remoteId, and the routed container rea
 // So without the `--` a frame silently relocates the command while cc believes
 // it ran at the `cwd` it sent — and on coreutils 9.7 `--argv0=` spoofs $0 while
 // 9.1 refuses the exec outright. Dropping the `--` reds this.
-test('live: a frame env key shaped like an option cannot hijack the command', async (t) => {
-  const d = await skipUnlessDocker(t); if (!d) return;
+live('a frame env key shaped like an option cannot hijack the command', async (t, d) => {
   const box = await withContainer(t, d.cli);
   const store = await tempStore();
   t.after(() => store.cleanup());
@@ -620,8 +622,7 @@ test('live: a frame env key shaped like an option cannot hijack the command', as
 // invisible; `baselineRefusal` gates exec and fileops, never `reap`.
 //
 // Run in BOTH shells this project meets: node:24-slim's dash and busybox's ash.
-test('live: the reap script reports `blind` instead of success when it cannot read /proc', async (t) => {
-  const d = await skipUnlessDocker(t); if (!d) return;
+live('the reap script reports `blind` instead of success when it cannot read /proc', async (t, d) => {
   const box = await withContainer(t, d.cli);
   const bb = await withContainer(t, d.cli, { image: BUSYBOX, stem: 'busybox' });
   const script = buildReapScript('a-token-nothing-carries');
@@ -645,8 +646,7 @@ test('live: the reap script reports `blind` instead of success when it cannot re
 // report it — while the container simply being gone stays quiet, because its
 // processes went with it and crying wolf on every shutdown would train the
 // warning away.
-test('live: reap throws when the relay cannot be proved, and is quiet when the container is gone', async (t) => {
-  const d = await skipUnlessDocker(t); if (!d) return;
+live('reap throws when the relay cannot be proved, and is quiet when the container is gone', async (t, d) => {
   const box = await withContainer(t, d.cli);
   const tr = createDockerTransport({ cli: d.cli });
 
@@ -668,4 +668,91 @@ test('live: reap throws when the relay cannot be proved, and is quiet when the c
     () => createDockerTransport({ cli: ['/definitely-not-docker-xyz'] })
       .reap({ container: box }, { pid: null, token: 'x', remoteId: 'alpha' }),
     /may have survived/);
+});
+
+// ── L14: the out-of-band half ────────────────────────────────────────
+//
+// tests/ssh-live.test.mjs pins this for ssh; docker had no equivalent. The card
+// UI's whole probe axis rests on it: reachability is re-asked on every render
+// and never cached, so a container stopped BEHIND THE PLUGIN'S BACK must read
+// as not running on the very next probe.
+//
+// THE FIXTURE STOPS THE CONTAINER, and that asymmetry is the point: a fixture
+// may, the provider may not. The counting shim proves the provider issued only
+// `inspect`, so "the container stopped" and "we stopped it" cannot be confused.
+
+live('a container stopped out of band reads as not running, and the provider never stopped it', async (t, d) => {
+  const box = await withContainer(t, d.cli);
+  const dir = await tempDir(t);
+  const shim = await countingShim(dir, d.cli);
+  // Every provider-side call goes through the shim; the FIXTURE's own calls use
+  // d.cli directly, so the log contains the provider's invocations and only
+  // those.
+  const transport = createDockerTransport({ cli: shim.argv });
+
+  const before = await transport.reachability({ container: box });
+  assert.equal(before.connected, true, 'the fixture\'s container is running');
+  assert.notEqual(before.fingerprint, null);
+
+  // `docker stop`, by somebody who is not this provider.
+  const stopped = await run([...d.cli, 'stop', box]);
+  assert.equal(stopped.code, 0, `the fixture could not stop the container: ${stopped.stderr}`);
+
+  const after = await transport.reachability({ container: box });
+  assert.equal(after.connected, false, 'the probe re-asked the daemon — nothing was cached');
+  assert.match(after.detail, /not running/);
+  assert.match(after.detail, /ATTACH-ONLY/, 'and the card says code-system will not start it');
+  assert.equal(after.fingerprint, null, 'a stopped container caches no baseline verdict');
+
+  // THE PROVIDER'S OWN LOG. Attach-only is not a claim here — it is what the
+  // recorded invocations show.
+  const calls = await shim.calls();
+  assert.equal(calls.length, 2, 'exactly the two reachability probes');
+  for (const c of calls) {
+    assert.match(c, /^inspect /, `the provider ran only inspect, not: ${c}`);
+  }
+  assert.equal(calls.some(c => /\b(start|stop|run|rm|create|restart|kill)\b/.test(c)), false,
+    'the provider never mutated the container');
+});
+
+// ── registration, and the count proof ────────────────────────────────
+
+let ran = 0;
+for (const item of ROSTER) {
+  test(`live: ${item.name}`, async (t) => {
+    const d = await skipUnlessDocker(t);
+    if (!d) return;
+    await item.fn(t, d);
+    ran += 1;
+  });
+}
+
+// THE COUNT PROOF, IN BOTH DIRECTIONS — the gap tests/dockerFixture.mjs already
+// admits in a comment ("no skip count is asserted anywhere"), and the one
+// tests/ssh-live.test.mjs has closed for its own roster since card 2026-0004.
+//
+// The wrong implementation it catches is the silent one: anything that makes
+// `resolveDockerCli` answer null — a future edit dropping the `sudo -n docker`
+// fallback from `candidates()`, a probe that stops asking for the SERVER
+// version — turns all 17 tests into green skips while `npm test` stays clean,
+// so a broken transport reads as a clean run.
+//
+// It also makes a skip-arm claim SELF-CERTIFYING: with this here, "the roster
+// skipped" is asserted by the suite rather than argued from someone's terminal.
+//
+// Deterministic because node:test runs a file's top-level tests sequentially, so
+// every roster test has settled before this one is entered. It does NOT skip
+// itself — it must assert in both directions.
+test('the live docker roster ALL ran or ALL skipped, and it is not empty', async () => {
+  const d = await resolveDockerCli();
+  assert.ok(ROSTER.length > 0,
+    'an empty roster must not be able to pass as a clean skip');
+  assert.equal(new Set(ROSTER.map(r => r.name)).size, ROSTER.length, 'no duplicate roster names');
+  if (d) {
+    assert.equal(ran, ROSTER.length,
+      `the gate was OPEN, so every live test must have run: ${ran}/${ROSTER.length}`);
+  } else {
+    assert.equal(ran, 0,
+      `the gate was CLOSED, so no live test may have run: ${ran} did`);
+  }
 });

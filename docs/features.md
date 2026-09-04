@@ -18,16 +18,78 @@ That makes `remoteId` a hand-off contract:
 - **deleting a remote warns** when cc projects still name it, listing them.
   Nothing else would tell you which projects you just stranded.
 
-*(The card UI itself lands in card 2026-0005; the backend every card renders is
-already in place — see `docs/protocol.md` → Backend REST.)*
+## A card shows two things, and they disagree routinely
+
+Every card carries **two independent facts**. Reading one as the other is the
+single most likely way to misdiagnose a remote, so they are two separate
+elements on the card and never share a word:
+
+| | What it is | What moves it |
+|---|---|---|
+| **Enabled / Disabled** | the **operator gate** — what *you* set | the Connect / Disconnect button, and a config edit |
+| the dot and status line | the **probe** — what is true right now | the target itself, re-asked on every refresh |
+
+The gate is the **only** thing that decides whether a command runs. The probe
+never gates anything; it is there so a switched-off card still tells you the
+truth about its target.
+
+All four combinations happen, and each means something different:
+
+| Gate | Probe | The card reads | What to do |
+|---|---|---|---|
+| Disabled | running / up | `Disabled` + the target is fine | turn it on when you want it |
+| Disabled | stopped / down | `Disabled` + the target is not there | nothing — this is what you asked for |
+| Enabled | running / up | `Enabled` + up | ready |
+| Enabled | **stopped / down** | `Enabled` + a **warning** | see below — it differs by kind |
+
+The last row is the one worth reading carefully:
+
+- **Docker.** The container is not running, so nothing can reach it. code-system
+  **will not start it** (see below) — start it yourself and the card clears on
+  the next refresh.
+- **SSH.** The shared connection is down, and **commands still work**. Each one
+  just pays its own authentication instead of sharing one. Connect again to get
+  the multiplexing back. This is a performance warning, not a broken remote.
+
+## Disabled means no command runs
+
+A remote you have not connected is **switched off**, and every operation against
+it is refused — by code-system itself, on cc's host. **The target is not
+contacted at all**, so a refusal is never evidence that anything is wrong with
+it. The message says exactly that, and names the fix: connect it in this UI.
+
+Three consequences worth knowing before they surprise you:
+
+- **A new remote starts disabled.** Add it, then connect it. (For an SSH remote
+  this is simply the truth: no shared connection exists until you connect.)
+- **Connect before you set a project's *Remote*.** cc checks that the provider
+  serves a target before it writes the field, and a remote it has never reached
+  while switched on is refused — so the working order is: add the remote →
+  connect it → then set *Remote*.
+
+  Be precise about what that check does and does not catch, because it is
+  asymmetric. cc remembers a *successful* check for the life of its connection
+  to the provider, and does not re-ask. So **switching a remote back on takes
+  effect immediately** (a refusal is never remembered), while **switching one
+  off does not retroactively unbind it** — a project already pointed at it stays
+  bound, and cc may still accept a fresh binding, until that connection is
+  re-established. Nothing is unsafe about this: every command against a
+  switched-off remote is still refused, by this plugin, before the target is
+  contacted. Only cc's advisory "is this remote real" answer lags.
+- **Changing a connection value switches it off.** A different container or host
+  may be a different target entirely, so the gate and the tooling verdict both
+  reset. Saving with every value unchanged — including editing only the
+  **label** — does not: what counts is whether a value actually changed, not
+  whether you opened the form.
 
 ## Connecting is attach-only
 
 Connecting to a remote never starts or stops anything. This plugin never runs
 `docker start`, `docker stop`, `docker run` or `docker rm` — it only attaches to
 a container that is already running, or opens an ssh connection to a host that
-is already up. A card that shows disconnected means "not reachable right now",
-never "press here to boot it".
+is already up. Connecting a remote whose container is stopped **succeeds** — the
+gate is your setting, not a claim about the target — and the card goes on saying
+the container is not running until you start it.
 
 ## A card tells you when a target cannot work
 
@@ -66,9 +128,10 @@ on the *output shape* — not the exit code — precisely because of that last r
 The card lists all four, each with the probe that caught it and the target's own
 words. Distroless and scratch images have no shell at all and will not work.
 
-A **stopped container reads as unreachable, and the plugin will not start it**
+A **stopped container reads as not running, and the plugin will not start it**
 (see "Connecting is attach-only" above). A request routed at one answers
-`ENOREMOTE` naming the container, not a plausible command failure.
+`ENOREMOTE` naming the container, not a plausible command failure — and that is
+a different refusal from a switched-off remote's, which says so in words.
 
 A remote marked `unsupported` is refused **whole**, with a message naming the
 missing capability: half-working is worse than a clear refusal. The probe costs
@@ -131,9 +194,19 @@ in your own `known_hosts` (`ssh-keyscan`, or verifying the fingerprint by hand).
 
 **Connecting shares one authenticated connection.** The first connect opens an
 SSH ControlMaster and later commands ride it, so five commands cost one
-authentication instead of five. Disconnecting closes that shared connection —
-**it does not lock the remote out**: commands still work afterwards, each paying
-its own authentication, until you connect again.
+authentication instead of five.
+
+**What closing that connection does, and what it does not.** Closing the
+ControlMaster does not lock the remote out: at the transport level commands
+still work afterwards, each paying its own authentication. So when a master
+drops **out of band** — someone else runs `ssh -O exit`, or the connection times
+out — an enabled remote keeps working, just unmultiplexed, and the card says so
+as a warning rather than a failure.
+
+What *does* stop commands is **the gate**, not the connection. Pressing
+Disconnect does both: it switches the remote off (which is what refuses
+commands) and closes the shared connection (which is only about multiplexing).
+Keeping those apart is why the card shows them as two separate things.
 
 ## Registration is automatic, and says why when it fails
 

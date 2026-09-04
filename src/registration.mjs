@@ -16,9 +16,7 @@
 // most often cc's `.git`-ancestor placement refusal.
 
 import { LAUNCHER_MAIN } from './paths.mjs';
-import { REGISTERED_KINDS } from './launcher/kinds/index.mjs';
-
-const LABELS = { docker: 'Docker containers', ssh: 'SSH hosts' };
+import { kindDescriptors } from './launcher/kinds/index.mjs';
 
 // Node's fetch has NO DEFAULT TIMEOUT, so a CONDUCTOR_URL that accepts the
 // connection and then stalls would hang POST /api/registration/retry forever —
@@ -58,11 +56,35 @@ function withTimeout(init = {}) {
 // process.execPath rather than a bare "node": cc spawns without a shell, so a
 // bare name would depend on the ORCHESTRATOR's PATH, which we do not control.
 export function desiredRows() {
-  return REGISTERED_KINDS.map(kind => ({
+  // The label comes from the KIND's own descriptor, so the name a user sees on
+  // the cc System row and the name on a card cannot drift apart.
+  return kindDescriptors().map(({ kind, label }) => ({
     id: kind,
-    label: LABELS[kind] ?? kind,
+    label,
     launch: [process.execPath, LAUNCHER_MAIN, '--kind', kind],
   }));
+}
+
+// UNWRAP CC'S ERROR ENVELOPE.
+//
+// cc answers EVERY /api/settings/systems refusal as `{"error":"<message>"}` and
+// nothing else — its shared router-tail handler strips the `code` its internal
+// errors carry (cc's src/routes.ts at the pin 8b7b10bf). The body has to be
+// unwrapped or the card shows a JSON envelope where docs/protocol.md promises
+// cc's own words, and the `.git`-ancestor placement refusal — the 400 a user is
+// most likely to meet — is exactly the message that must read as a sentence.
+//
+// FALLS BACK TO THE RAW TEXT, deliberately, in two directions: a proxy or a
+// crash page can answer something that is not JSON at all, and a JSON body with
+// no `error` key is somebody else's shape. In both cases that text is still the
+// most useful thing we have, and swallowing it would leave a bare status code.
+function ccMessage(text) {
+  const raw = String(text ?? '');
+  if (!raw.trimStart().startsWith('{')) return raw;
+  try {
+    const json = JSON.parse(raw);
+    return typeof json?.error === 'string' && json.error !== '' ? json.error : raw;
+  } catch { return raw; }
 }
 
 function sameLaunch(a, b) {
@@ -80,16 +102,17 @@ function sameLaunch(a, b) {
 function mapWrite(status, text, id) {
   if (status === 201 || status === 200) return { state: 'ok', httpStatus: status, message: `'${id}' is registered` };
   if (status === 409) return { state: 'ok', httpStatus: status, message: `'${id}' already exists` };
-  if (status === 400) return { state: 'blocked', httpStatus: status, message: text };
+  const message = ccMessage(text);
+  if (status === 400) return { state: 'blocked', httpStatus: status, message };
   if (status === 502) {
     return {
       state: 'unreachable',
       httpStatus: status,
-      message: `${text}\n\ncc spawned the code-system launcher and the handshake failed.`
+      message: `${message}\n\ncc spawned the code-system launcher and the handshake failed.`
         + ' That is a bug signal in this plugin, not a user error.',
     };
   }
-  return { state: 'error', httpStatus: status, message: text || `HTTP ${status}` };
+  return { state: 'error', httpStatus: status, message: message || `HTTP ${status}` };
 }
 
 // Re-GET the collection after a 409 and repair the row if the winner's launch
@@ -157,7 +180,7 @@ export async function register({
       return { state: 'unsupported', detail, rows: [], checkedAt };
     }
     if (!res.ok) {
-      const detail = `GET ${collection} → ${res.status} ${await bodyText(res)}`;
+      const detail = `GET ${collection} → ${res.status} ${ccMessage(await bodyText(res))}`;
       log(`registration: error — ${detail}`);
       return { state: 'error', detail, rows: [], checkedAt };
     }

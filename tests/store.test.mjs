@@ -11,7 +11,7 @@ import path from 'node:path';
 import { migrate } from '../src/migrate.mjs';
 import { quarantineDir, remotesDir } from '../src/paths.mjs';
 import {
-  deleteRemote, isValidRemoteId, listRemotes, makeRecord, readRemote, writeRemote,
+  SCHEMA, deleteRemote, isValidRemoteId, listRemotes, makeRecord, readRemote, writeRemote,
 } from '../src/store.mjs';
 import { tempStore } from './helpers.mjs';
 
@@ -34,7 +34,7 @@ test('a record round-trips through the store unchanged', async (t) => {
     const back = await readRemote('app-ctr');
     assert.equal(back.ok, true);
     assert.deepEqual(back.record, rec);
-    assert.equal(back.record.schema, 1);
+    assert.equal(back.record.schema, SCHEMA);
     assert.equal(back.record.remoteId, 'app-ctr', 'the remoteId equals the filename stem');
   });
 });
@@ -106,11 +106,16 @@ test('a record at another schema is refused BY NAME, never upgraded at read time
   await withStore(t, async () => {
     await fs.mkdir(remotesDir(), { recursive: true });
     await fs.writeFile(path.join(remotesDir(), 'future.json'),
-      JSON.stringify({ schema: 2, remoteId: 'future', kind: 'docker' }));
+      JSON.stringify({ schema: SCHEMA + 1, remoteId: 'future', kind: 'docker' }));
     const r = await readRemote('future');
     assert.equal(r.ok, false);
     assert.equal(r.reason, 'schema');
-    assert.match(r.message, /schema 2/, 'the refusal quotes the schema it found');
+    // Anchored to the `stored at` clause: a bare `/schema N/` would also match
+    // the refusal's own "…reads schema N only" tail.
+    assert.match(r.message, new RegExp(`stored at schema ${SCHEMA + 1}`),
+      'the refusal quotes the schema it FOUND, not the one it reads');
+    assert.doesNotMatch(r.message, new RegExp(`stored at schema ${SCHEMA}\\b`),
+      'and never reports the found schema as our own');
     assert.match(r.message, /backend/, 'and names the repair');
   });
 });
@@ -134,7 +139,7 @@ test('migrate quarantines what it cannot read, leaves good records alone, and is
   await withStore(t, async () => {
     await writeRemote(makeRecord({ remoteId: 'good', kind: 'docker', config: { container: 'g' } }));
     await fs.writeFile(path.join(remotesDir(), 'junk.json'), '{not json');
-    await fs.writeFile(path.join(remotesDir(), 'future.json'), JSON.stringify({ schema: 2, remoteId: 'future' }));
+    await fs.writeFile(path.join(remotesDir(), 'future.json'), JSON.stringify({ schema: SCHEMA + 1, remoteId: 'future' }));
 
     const first = await migrate();
     assert.equal(first.scanned, 3);

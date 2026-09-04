@@ -14,6 +14,19 @@
 //
 // THE BACKEND IS THE ONLY WRITER. The launcher calls readRemote/listRemotes and
 // nothing else.
+//
+// `enabled` IS THE OPERATOR GATE, and it lives here rather than in backend
+// memory because the backend and the launcher are DIFFERENT PROCESSES — cc
+// spawns the launcher per System row, so an in-memory flag would never reach
+// it. Being a store field, it inherits the no-cache property above: a toggle
+// flipped in the UI is visible to the very next request frame the launcher
+// handles, with no restart, no IPC and nothing to invalidate.
+//
+// IT IS NOT `reachability.connected`. That is the PROBED state — whether the
+// container is running, whether an ssh master is up — re-asked on every card
+// render and never stored. `enabled` is what the operator SET, and it is the
+// only thing that decides whether an operation is allowed to run. The two
+// disagree routinely (.wiki/gotchas/gate-versus-probe.md).
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -63,16 +76,15 @@ export async function readRemote(id) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { ok: false, reason: 'malformed', message: `remote '${id}' is not a JSON object` };
   }
-  // REFUSED BY NAME, never guessed at. A launcher can be spawned before the
-  // backend has ever run its migration, so it can genuinely meet a record it
-  // does not understand — and a read-time upgrade here would be the
-  // dual-shape parsing the migration exists to prevent.
+  // REFUSED BY NAME, never guessed at. A read-time upgrade here would be the
+  // dual-shape parsing this codebase does not do; the startup pass moves an
+  // unreadable record aside instead (src/migrate.mjs).
   if (raw.schema !== SCHEMA) {
     return {
       ok: false,
       reason: 'schema',
       message: `remote '${id}' is stored at schema ${JSON.stringify(raw.schema)}, but this version reads schema ${SCHEMA} only`
-        + ' — start the code-system backend, which migrates the store on startup',
+        + ' — start the code-system backend, which moves a record it cannot read aside into the quarantine directory',
     };
   }
   return { ok: true, record: raw };
@@ -139,7 +151,11 @@ export async function deleteRemote(id) {
 
 // The record a create/edit produces. `config` is opaque here — the kind's
 // validateConfig owns it — and `baseline` is written only by the probe.
-export function makeRecord({ remoteId, kind, label, config, baseline = null, createdAt }) {
+//
+// `enabled` DEFAULTS FALSE, which is also what a newly created remote gets: an
+// ssh remote genuinely has no master until `connect` runs, and a default-on
+// gate would claim a state nobody established.
+export function makeRecord({ remoteId, kind, label, config, enabled = false, baseline = null, createdAt }) {
   const now = new Date().toISOString();
   return {
     schema: SCHEMA,
@@ -147,6 +163,7 @@ export function makeRecord({ remoteId, kind, label, config, baseline = null, cre
     kind,
     label: label || remoteId,
     config: config ?? {},
+    enabled: enabled === true,
     baseline: baseline ?? { state: 'unknown', fingerprint: null, missing: [], checkedAt: null },
     createdAt: createdAt ?? now,
     updatedAt: now,

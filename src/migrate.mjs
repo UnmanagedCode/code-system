@@ -1,14 +1,25 @@
-// The store's one-shot, idempotent startup migration.
+// The store's one-shot, idempotent startup pass.
 //
-// Application code — the backend AND the launcher — assumes the current schema
-// only: no read-time dual-shape parsing, no legacy key aliases, no
-// back-compat defaults. This is the single place that knows any other shape
-// ever existed.
+// It has EXACTLY ONE JOB: quarantine a record the current readers cannot
+// understand, so it is moved aside rather than deleted or silently skipped
+// forever. There is no upgrade pass, and there is no version-handling code
+// anywhere in this tree.
 //
-// SCHEMA 1 IS THE FIRST SCHEMA, so there is nothing to upgrade FROM yet and
-// this pass has exactly one job: quarantine anything the current readers cannot
-// understand, so a record we cannot read is moved aside rather than deleted or
-// silently skipped forever. When schema 2 arrives, its upgrade goes here.
+// DO NOT ADD AN UPGRADE PASS FOR SCHEMA 1. There is no earlier shape to upgrade
+// FROM: schema 1 is the first and only schema, and it has always included every
+// field the current readers expect — `enabled` among them. A record at any
+// other `schema` value is from the future or is corrupt, and either way we
+// cannot know what it means, so quarantining it is the honest answer rather
+// than a guess.
+//
+// When a schema 2 genuinely arrives, its upgrade goes here and NOWHERE else:
+// application code — the backend AND the launcher — assumes the current schema
+// only, with no read-time dual-shape parsing, no legacy key aliases and no
+// back-compat defaults. It will also have to run BEFORE the quarantine branch
+// below and read the raw JSON itself, because `readRemote` refuses an
+// unrecognised schema with reason `'schema'`, which is in QUARANTINE_REASONS —
+// an upgrade ordered after it would move every existing remote aside instead of
+// upgrading it.
 //
 // The "already applied" self-check is the store's own contents — every record
 // that reads at the current schema is left untouched — so running it twice is a
@@ -27,7 +38,7 @@ const QUARANTINE_REASONS = new Set(['malformed', 'schema']);
 
 export async function migrate({ log = () => {} } = {}) {
   await fs.mkdir(remotesDir(), { recursive: true });
-  const result = { schema: SCHEMA, scanned: 0, upgraded: 0, quarantined: [] };
+  const result = { schema: SCHEMA, scanned: 0, quarantined: [] };
 
   let names;
   try { names = await fs.readdir(remotesDir()); }

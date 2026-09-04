@@ -1,7 +1,7 @@
 # Architecture
 
 Internals: the two processes, the seam a provider kind plugs into, the on-disk
-store and its migration, the shutdown contract, and the test patterns.
+store and its startup pass, the shutdown contract, and the test patterns.
 
 ## Two processes, one ownership split
 
@@ -69,12 +69,13 @@ kind that needs it puts it on the far side inside its own `spawnPlan`.
 its relay reached the far side must say so rather than return quietly. The core
 reports it and carries on.
 
-`connect(config)` / `disconnect(config)` are **optional** and exist only for a
-kind whose transport multiplexes. Nothing in the core calls them: the launcher
-never needs them (see the ControlMaster section below), the live fixture's
-setup/teardown do, and card 2026-0005's buttons will. **What they do and do not
-govern is part of the seam contract, so the typedef owns it** —
-`src/launcher/kinds/index.mjs`, which is what card 2026-0005 programs against.
+`connect(config)` / `disconnect(config)` are **required on every registered
+kind** — they are the operator gate's per-kind side effect, not a multiplexing
+feature, so a kind with nothing to open still implements them. Nothing in the
+frame loop calls them; the backend's two gate routes and the live fixtures do.
+**The typedef at `src/launcher/kinds/index.mjs` is the single home** for what
+they govern, what may throw, and what the backend does when one does — read it
+there rather than here.
 
 `classifyFailure(config, {code, stdout, stderr})` is **optional** and reads the
 *transport's* own error vocabulary — a docker daemon response — turning a
@@ -346,6 +347,87 @@ between frames, so there is nothing for the backend to invalidate. Pinned by
 **Writes are backend-only and atomic**: a unique temp beside the target
 (`<id>.json.<pid>.<seq>.tmp`), `fsync`, `rename` over, unlink on any failure.
 
+### The operator gate (`record.enabled`)
+
+**Where it lives, and why the store rather than memory.** The backend and the
+launcher are different processes — cc spawns the launcher per System row — so a
+gate in backend memory would never reach it. As a store field it inherits the
+no-cache property above: `readRemote` is `readFile` + `JSON.parse` per call and
+`lookup` runs on every request frame, so **a toggle flipped in the UI is visible
+to the very next frame**, with no restart, no IPC and nothing to invalidate. The
+absence of a cache *is* the mechanism. `tests/gate.test.mjs` pins it end to end
+in one launcher process, both directions.
+
+**Where it is enforced: exactly one site.** `gateRefusal(rec)` in
+`StoreRemoteSource.lookup()` (`src/launcher/remotes.mjs`), which `session.mjs`
+calls once for all four REQUEST frames and nowhere else. Follow-on frames
+(`data`, `end`, `signal`, `close`) are addressed by an id already bound to a
+remote, so nothing slips past — a `writeFile` was gated when it opened. The wire
+shape and the `ENOREMOTE` argument are in `docs/protocol.md` → `remoteId`
+routing; they are not restated here.
+
+**It runs before `baselineRefusal`.** A switched-off remote must say *switched
+off*, not *fails the tooling baseline*.
+
+**Three things are deliberately NOT gated**, each for its own reason:
+
+| Not gated | Why |
+|---|---|
+| `Transport.reachability` | it queries a host-side artifact only (`docker inspect`, the ControlPath socket) and never the target, and it is how a disabled card still shows probed reality |
+| `Transport.reap` | it does not pass through `lookup`, and gating it would abandon far-side processes at shutdown — the MUST 3 leak. An operator disabling a remote *over live work* is the reachable form of that hazard, and is what the test drives |
+| `FlagRemoteSource` | it reads no store, so it has no record to carry a gate. That is why cc's conformance suite (`--kind host`) is unaffected **by construction** rather than by luck — proven twice: a unit test, and an actual suite run |
+
+**The backend has one path that must be gated separately.** The tooling-baseline
+probe execs INTO the target but runs in the backend, bypassing `lookup`
+entirely, so `enabled` is part of `refreshBaseline`'s condition
+(`src/baseline.mjs`). A disabled remote is never probed.
+
+### The card UI
+
+Four files under `frontend/`, vanilla ES modules, no build step — code-hub's
+layout.
+
+| File | Owns |
+|---|---|
+| `index.html` | the static shell |
+| `styles.css` | all styling. cc injects **no CSS and no tokens** across the iframe and hard-codes `#plugin-frame { background: #fff }` while its own shell is dark, so the token block is load-bearing, not decoration |
+| `app.js` | fetch, poll, state, `render()` — **DOM only** |
+| `cardState.mjs` | **pure, DOM-free**: the gate/probe vocabulary, the alerts, the routing |
+
+**The split is the test strategy.** Every decision a card makes lives in
+`cardState.mjs` and is unit tested with `node --test` and no browser
+(`tests/cardstate.test.mjs`); `app.js` is wiring. `tests/frontend.test.mjs`
+additionally reads the files off disk for the compliance items that fail only
+once mounted under cc, and asserts `cardState.mjs` touches no browser global —
+the moment it does, the seam is gone.
+
+Two divergences from code-hub, each with its reason:
+
+- **The poll is 10 s and visible-tab-only** (code-hub polls a flat 2 s). Each
+  refresh costs one `docker inspect` / `ssh -O check` **per remote**, each
+  bounded at 5 s. The manual refresh and the refresh after every action are
+  unconditional.
+- **Routing is query-string only** (`?add`, `?edit=<id>`), never a path segment.
+  cc's proxy guarantees a trailing slash by `301`, but relative URLs resolve
+  wrongly under a no-trailing-slash deep link; a constant path makes that
+  hazard unreachable. `history.replaceState` plus a `popstate` listener, because
+  cc's bridge demotes `pushState` to `replaceState` and delivers its own
+  navigation as a synthetic `popstate`.
+
+### `KIND_META` and `kindDescriptors()`
+
+Each kind exports a `KIND_META` — its human label and the `configFields` the
+card's form is generated from — and `kindDescriptors()`
+(`src/launcher/kinds/index.mjs`) collects them, **throwing** for a registered
+kind that has none rather than serving a card with an empty form. `host` has no
+meta deliberately: it is never registered and never gets a card.
+
+The label lives there and nowhere else: `src/registration.mjs` reads it for the
+cc System row, so the name in cc and the name on a card cannot drift.
+`tests/kindmeta.test.mjs` pins `configFields` against what each kind's
+`validateConfig` actually accepts — same field names, and every `required` flag
+really required — because that drift would fail only in a browser.
+
 ### The environment seams
 
 Every variable this plugin reads, in one place. All are **operator-set**: cc
@@ -373,14 +455,28 @@ re-registration, because `src/registration.mjs` makes the launch argv a function
 of **(install path, kind) only** — which is what holds cc's connection cache
 while remotes come and go.
 
-### Migration
+### The startup pass
 
-`src/migrate.mjs` runs once at backend start, before anything serves. Schema 1
-is the first schema, so its only job today is to **quarantine** a record the
-current readers cannot understand — moved aside, never deleted. Its
-"already applied" self-check is the store's own contents, so it needs no marker
-file. When schema 2 arrives, its upgrade goes here and nowhere else:
-application code assumes the current format only.
+`src/migrate.mjs` runs once at backend start, before anything serves, and has
+**exactly one job**: **quarantine** a record the current readers cannot
+understand — moved aside, never deleted. Its "already applied" self-check is the
+store's own contents, so it needs no marker file.
+
+**There is no upgrade pass and no version-handling code anywhere in this tree,
+deliberately.** Schema 1 is the first and only schema, and it has always
+included every field the readers expect — `enabled` among them — so there is no
+earlier shape to upgrade FROM. A record at any other `schema` value is from the
+future or is corrupt; either way we cannot know what it means, and quarantining
+it is the honest answer rather than a guess. `migrate.mjs`'s header says this
+explicitly, so the omission reads as a decision rather than as something
+missing.
+
+**When a schema 2 genuinely arrives**, its upgrade goes there and nowhere else,
+and it will have to run **before** the quarantine branch and read the raw JSON
+itself: `readRemote` refuses an unrecognised schema with reason `'schema'`, and
+`'schema'` is in `QUARANTINE_REASONS`, so an upgrade ordered after it would move
+every existing remote aside instead of upgrading it. That ordering hazard is
+recorded in the header for whoever adds the second schema.
 
 A launcher that meets a record at another schema refuses **that remote** with
 `ENOREMOTE`, quoting the schema it found and naming the backend as the repair.
@@ -596,12 +692,43 @@ global.
 - **Real docker, self-skipping** (`tests/dockerFixture.mjs`,
   `tests/docker-live.test.mjs`). Every such test calls `skipUnlessDocker(t)` and
   returns, so `npm test` stays green with no daemon and each skip prints a reason
-  naming both invocations tried and `CODE_SYSTEM_DOCKER`. **The gate is a daemon
-  probe, not a `which`**: `docker version --format '{{.Server.Version}}'`, because
+  naming both invocations tried and `CODE_SYSTEM_DOCKER`.
+
+  **`candidates()` TRIES TWO INVOCATIONS: the `CODE_SYSTEM_DOCKER` one (default
+  `["docker"]`), then `["sudo","-n","docker"]` as a fallback.** That fallback is
+  deliberate — it is what lets the live suites run on a host whose docker socket
+  is root-owned — but it means **a green live run does not tell you which
+  invocation answered**, and in particular is not evidence that bare `docker`
+  reaches the daemon. Anything asserted about a host has to name the invocation
+  and show it (`resolveDockerCli()` reports the resolved argv), and a gate claim
+  needs both arms by count: the roster running with the gate open, and the same
+  roster skipping with `docker` and `sudo` off `PATH`.
+
+  **The gate is a daemon probe, not a `which`**: `docker version --format '{{.Server.Version}}'`, because
   a host can have the CLI installed and the socket unreadable — measured here,
   unprivileged `docker version` prints its whole Client block to stdout and exits
   1. That distinction is itself pinned, docker-free, in
   `tests/dockerkind.test.mjs`.
+- **Shared stub CLIs** (`tests/helpers.mjs` → `stubDockerCli` / `stubSshCli`) —
+  a real executable on disk that logs its argv one element per line and answers
+  on a branch of what it was asked, so the **real** spawn path (argv, exit code,
+  stream separation) is part of what is under test. `argv()` answers `[]` when
+  the stub was never run at all, which is what makes "zero invocations"
+  assertable. They live in `helpers.mjs` because the kind suites and the API
+  suite all drive them; a second copy would be a second place for the argv
+  contract to drift.
+- **The answers-file stub mode** (`answers: {...}` on either stub) models an
+  **out-of-band change** deterministically: the reachability branch reads its
+  stdout/stderr/exit from files a test rewrites BETWEEN two calls to the same
+  server. That is the only way to model `docker stop` / `ssh -O exit` happening
+  behind the plugin's back without a daemon, and it is what proves the probe
+  re-asks rather than serving a cached verdict.
+- **A DOM stub for the frontend** (`tests/render.test.mjs`) — about 60 lines,
+  no layout and no CSS. It exists because `cardState.mjs` covers every
+  *decision* but leaves `app.js` with no *execution* coverage, and a
+  ReferenceError in `card()` is a blank page nothing else here would catch. It
+  answers one question: does the render path run, and does what it produces
+  carry both states.
 - **In-container assertions read `/proc`, never `ps`** — `node:24-slim` has no
   `ps`. The marker being counted is passed to the scanning shell **in its
   environment**, so the scanner's own `/proc/<pid>/cmdline` cannot match and

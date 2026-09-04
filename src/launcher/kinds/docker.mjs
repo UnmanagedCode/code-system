@@ -38,6 +38,25 @@ import { REAP_TAG, TOKEN_VAR, buildReapScript } from './reapscript.mjs';
 //    function in-process, so one implementation serves both surfaces.
 export const DOCKER_ENV = 'CODE_SYSTEM_DOCKER';
 
+// WHAT THE CARD UI RENDERS FOR THIS KIND, and the one home for its human label
+// — src/registration.mjs reads it for the cc System row's label too, so the
+// name a user sees in cc and on a card cannot drift apart.
+//
+// `configFields` is the form, and it must stay exactly what `validateConfig`
+// below accepts; tests/kindmeta.test.mjs pins the two together.
+export const KIND_META = {
+  label: 'Docker containers',
+  configFields: [
+    {
+      name: 'container',
+      label: 'Container',
+      required: true,
+      placeholder: 'my-app',
+      hint: 'The container name or id, as `docker ps` shows it. It must already be running — code-system never starts one.',
+    },
+  ],
+};
+
 // THE SHIPPED DEFAULT HARDCODES NO `sudo`. Pinned by tests/dockerkind.test.mjs.
 const DEFAULT_CLI = ['docker'];
 
@@ -287,6 +306,20 @@ export function createDockerTransport({ cli } = {}) {
         fingerprint: `docker:${image}:${startedAt}`,
       };
     },
+
+    // THE OPERATOR GATE'S PER-KIND SIDE EFFECT — and for docker there is
+    // nothing to do. Every `docker exec` is a fresh client, so no channel
+    // exists to open or close; the gate itself is a store field the backend
+    // writes, and moving it is the whole of what Connect does here.
+    //
+    // NOT A STUB, and not an omission. A `docker start`/`stop` here is named as
+    // possible LATER work and would break attach-only outright — it cannot even
+    // be written, because every docker invocation goes through `runDocker` and
+    // `assertAttachOnly` refuses any subcommand outside ALLOWED_SUBCOMMANDS.
+    // tests/kindmeta.test.mjs asserts ZERO docker invocations for both, which
+    // fails for an added `inspect` as well as for a `start`.
+    async connect() { return {}; },
+    async disconnect() {},
 
     // PROTOCOL MUST 3. A `docker exec` child is not the host client's OS
     // descendant: SIGKILLing the client leaves the container process running

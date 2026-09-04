@@ -19,6 +19,7 @@ import {
   CONTROL_PATH_MAX, SSH_ENV, controlDir, controlPathFor, createSshTransport, sshBaseArgs,
   sshCliArgv,
 } from '../src/launcher/kinds/ssh.mjs';
+import { stubSshCli as stubSsh } from './helpers.mjs';
 
 const CONFIG = { host: 'box', user: 'me' };
 const DEST = 'me@box';
@@ -617,51 +618,6 @@ test('classifyFailure: a LEADING blank is normalised away; an INTERIOR one stops
  * `socket: true` makes it CREATE a file at the requested ControlPath, so
  * `reachability`'s fingerprint has a real inode and ctime to read.
  */
-async function stubSsh(t, {
-  checkExit = 0, checkStdout = '', checkStderr = 'Master running (pid=4242)\n',
-  exitExit = 0, exitStdout = '', exitStderr = 'Exit request sent.\n',
-  connectExit = 0, connectStderr = '',
-  execStdout = 'CCREAP ok 0 7\n', execStderr = '', execExit = 0,
-  socket = false,
-} = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'code-system-sshstub-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
-  const argvLog = path.join(dir, 'argv.txt');
-  const bin = path.join(dir, 'ssh');
-  const q = JSON.stringify;
-  await fs.writeFile(bin, [
-    '#!/bin/sh',
-    `printf '%s\\n' "$@" >> ${q(argvLog)}`,
-    // Recover the ControlPath the caller asked for, so the stub can materialise
-    // a socket there — reachability's fingerprint is read off that file.
-    'cp=""; verb=""; prev=""',
-    'for a in "$@"; do',
-    '  case "$a" in -o) : ;; ControlPath=*) cp=${a#ControlPath=} ;; esac',
-    '  case "$prev" in -O) verb=$a ;; esac',
-    '  prev=$a',
-    'done',
-    // Quiet: with the control directory absent — the normal state for every
-    // operation except `connect` — this simply does not happen, and its
-    // complaint must not reach the stderr under assertion.
-    socket ? '[ -n "$cp" ] && [ -d "$(dirname "$cp")" ] && : > "$cp"' : ':',
-    `if [ "$verb" = check ]; then printf '%b' ${q(checkStdout)}; printf '%b' ${q(checkStderr)} >&2; exit ${checkExit}; fi`,
-    `if [ "$verb" = exit ]; then printf '%b' ${q(exitStdout)}; printf '%b' ${q(exitStderr)} >&2; exit ${exitExit}; fi`,
-    // A master start: -N with no remote command.
-    `case " $* " in *" -N "*) printf '%b' ${q(connectStderr)} >&2; exit ${connectExit} ;; esac`,
-    `printf '%b' ${q(execStdout)}; printf '%b' ${q(execStderr)} >&2; exit ${execExit}`,
-  ].join('\n'));
-  await fs.chmod(bin, 0o755);
-  return {
-    cli: [bin],
-    dir,
-    // Empty when the stub was never invoked at all — every caller passes
-    // arguments, so `[]` is unambiguously "never run" rather than "run bare".
-    async argv() {
-      try { return (await fs.readFile(argvLog, 'utf8')).split('\n').filter(Boolean); }
-      catch { return []; }
-    },
-  };
-}
 
 // PINS tier 1 of the two-tier baseline probe for this kind: reachability reads a
 // HOST-SIDE artifact — the ControlPath socket — and never makes a round trip

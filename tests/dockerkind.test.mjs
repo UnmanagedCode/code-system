@@ -19,6 +19,7 @@ import {
 // MOVED to kinds/reapscript.mjs when card 2026-0004 landed: `ssh` needs the
 // identical relay, so the script is shared rather than copied.
 import { buildReapScript } from '../src/launcher/kinds/reapscript.mjs';
+import { stubDockerCli as stubCli } from './helpers.mjs';
 
 const CONFIG = { container: 'app' };
 
@@ -314,37 +315,6 @@ test('classifyFailure: a command cannot forge a transport verdict', () => {
 // A shell script is the cheapest way to make the real spawn path — argv, exit
 // code, stream separation — part of what is under test.
 
-async function stubCli(t, {
-  exitCode = 0, stdout = '', stderr = '',
-  execStdout = 'CCREAP ok 0 7\n', execStderr = '', execExitCode = 0,
-} = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'code-system-dockerstub-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
-  const argvLog = path.join(dir, 'argv.txt');
-  const bin = path.join(dir, 'docker');
-  await fs.writeFile(bin, [
-    '#!/bin/sh',
-    `printf '%s\\n' "$@" >> ${JSON.stringify(argvLog)}`,
-    // `exec` and `inspect` answer differently: a reap that gets an inspect-shaped
-    // answer must (and does) report failure, which would otherwise make every
-    // stub-driven test that calls reap throw.
-    `if [ "$1" = exec ]; then printf '%b' ${JSON.stringify(execStdout)};`
-      + ` printf '%b' ${JSON.stringify(execStderr)} >&2; exit ${execExitCode}; fi`,
-    stdout ? `printf '%b' ${JSON.stringify(stdout)}` : ':',
-    stderr ? `printf '%b' ${JSON.stringify(stderr)} >&2` : ':',
-    `exit ${exitCode}`,
-  ].join('\n'));
-  await fs.chmod(bin, 0o755);
-  return {
-    cli: [bin],
-    // Empty when the stub was never invoked at all — every caller passes
-    // arguments, so `[]` is unambiguously "never run" rather than "run bare".
-    async argv() {
-      try { return (await fs.readFile(argvLog, 'utf8')).split('\n').filter(Boolean); }
-      catch { return []; }
-    },
-  };
-}
 
 // PINS: the fingerprint is image id + State.StartedAt from THE SAME call the
 // card render is already making (the two-tier probe's tier 1), and it is `null`

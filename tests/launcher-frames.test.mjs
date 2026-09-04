@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { MAX_LINE_BYTES } from '../src/launcher/protocol.mjs';
+import { SCHEMA } from '../src/store.mjs';
 import { FAKE_TRANSPORT, Launcher, record, tempStore, writeRecord } from './helpers.mjs';
 
 function fakeEnv(storeDir, extra = {}) {
@@ -81,7 +82,7 @@ test('a wrong-kind and a wrong-schema record are ENOREMOTE by name, not a guess'
   const store = await tempStore();
   t.after(() => store.cleanup());
   await writeRecord(store.dir, record('wrongkind', { kind: 'docker' }));
-  await writeRecord(store.dir, record('future', { schema: 2 }));
+  await writeRecord(store.dir, record('future', { schema: SCHEMA + 1 }));
   const l = new Launcher(['--kind', 'fake'], fakeEnv(store.dir));
   t.after(() => l.kill());
   await l.hello();
@@ -93,7 +94,14 @@ test('a wrong-kind and a wrong-schema record are ENOREMOTE by name, not a guess'
   assert.equal(k.code, 'ENOREMOTE');
   assert.match(k.message, /docker/, 'the refusal names the kind it actually is');
   assert.equal(s.code, 'ENOREMOTE');
-  assert.match(s.message, /schema 2/, 'the refusal quotes the schema it found');
+  // ANCHORED TO THE `stored at` CLAUSE, and DERIVED from SCHEMA. A bare
+  // `/schema N/` matches the refusal's OWN tail ("…reads schema N only"), so
+  // the previous form asserted the reader's schema while claiming to assert the
+  // found one — it passed no matter what the record said.
+  assert.match(s.message, new RegExp(`stored at schema ${SCHEMA + 1}`),
+    'the refusal quotes the schema it FOUND, not the one it reads');
+  assert.doesNotMatch(s.message, new RegExp(`stored at schema ${SCHEMA}\\b`),
+    'and never reports the found schema as our own');
   assert.match(s.message, /backend/, 'and names the repair');
 });
 
