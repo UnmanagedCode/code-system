@@ -40,6 +40,13 @@ Plain ESM JavaScript (`.mjs`), Node ≥ 20, no build step. Not TypeScript, for o
 
 ### Quick start
 
+In a cc-created worktree, `.code-conductor/post-worktree-create.sh` runs automatically after
+creation: it installs `node_modules` into the **parent** checkout once (if absent) and
+symlinks it into the worktree, so `npm install` above is a no-op there. Caution: because
+the worktree's `node_modules` is a symlink, running `npm install`/`npm ci` *inside* a
+worktree writes through into the parent, which every other worktree shares. Kill-switch:
+`ORCH_DISABLE_POST_WORKTREE_HOOK=1`.
+
 ```sh
 npm install
 npm start                 # backend on $PORT, default 4310
