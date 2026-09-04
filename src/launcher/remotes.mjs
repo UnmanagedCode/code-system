@@ -43,6 +43,11 @@ export class FlagRemoteSource {
     this.#mirrors = mirrors;
   }
 
+  // NO GATE HERE, AND THE OMISSION IS LOAD-BEARING. The operator gate is a
+  // property of a STORE RECORD; this source synthesises its targets from
+  // `--remote id=root` argv and has none. That is why cc's conformance suite
+  // (`--kind host`) is unaffected by the gate BY CONSTRUCTION rather than by
+  // luck — pinned in tests/gate.test.mjs.
   hasRemotes() { return this.#remotes.size > 0; }
   hasMirrors() { return this.#mirrors.size > 0; }
   ids() { return [...this.#remotes.keys()]; }
@@ -115,6 +120,12 @@ export class StoreRemoteSource {
         message: `remote '${remoteId}' is a '${rec.kind}' remote — this launcher serves '${this.#kind}' remotes`,
       };
     }
+    // THE OPERATOR GATE FIRST. A switched-off remote must say "switched off",
+    // not "fails the tooling baseline": the operator's own action is the more
+    // actionable answer, and a disabled remote's stale baseline verdict is not
+    // what they need to hear.
+    const off = gateRefusal(rec);
+    if (off) return off;
     const gate = baselineRefusal(rec);
     if (gate) return gate;
     return {
@@ -124,6 +135,53 @@ export class StoreRemoteSource {
   }
 
   mirrorFor() { return { mirrorRoot: null, exclude: [] }; }
+}
+
+// THE OPERATOR GATE, launcher side — the whole enforcement of `record.enabled`.
+//
+// It is checked on the RECORD, before any Transport method is reached, at the
+// single site `StoreRemoteSource.lookup()`. session.mjs calls that once, for
+// all four REQUEST frames, so no kind can bypass it and no operation escapes
+// it. Follow-on frames (`data`, `end`, `signal`, `close`) are addressed by an
+// id already bound to a remote, so they cannot slip past: a `writeFile` was
+// already gated when it opened.
+//
+// `reap` DELIBERATELY DOES NOT PASS THROUGH HERE, and must not — gating it
+// would abandon far-side processes at shutdown, which is the leak MUST 3
+// exists to prevent.
+//
+// WHY ENOREMOTE, WHICH IS NOT THE OBVIOUS CODE. There is nothing 503-shaped in
+// the taxonomy (protocol.mjs), and the choice is FORCED rather than preferred:
+// cc's `assertRemoteKnown` treats ENOREMOTE as its SOLE failure and every other
+// code as a PASS — "each of them is the provider answering ABOUT that remote,
+// which is itself proof it serves it". So EUNKNOWN, EACCES or an invented code
+// would let cc resolve the project as healthy, and the gate would surface only
+// as unexplained per-operation failures with no system-level signal.
+// EUNSUPPORTED is worse: it maps to 501 SYSTEM_NO_REMOTES, whose advice sends
+// the operator to entirely the wrong repair. Full argument in
+// docs/protocol.md's routing table.
+//
+// TWO CONSTRAINTS ON THE MESSAGE, both measured:
+//  1. EVERYTHING READABLE RIDES `message`. cc drops the frame's `stderr` on the
+//     exec path and never reads it on the request path, so this refusal sets
+//     none.
+//  2. NO STANDALONE FS ERRNO TOKEN. cc's runGit and ProviderShell ignore the
+//     structured code and re-derive one from the prose with `\bENOENT\b`-style
+//     matching, silently downgrading an administrative refusal into "git
+//     answered non-zero" (.wiki/gotchas/refusal-message-errno-tokens.md).
+// Both are pinned by tests/gate.test.mjs.
+export function gateRefusal(rec) {
+  if (rec?.enabled === true) return null;
+  return {
+    ok: false,
+    code: 'ENOREMOTE',
+    // Worded to read correctly after cc's own `…does not serve it: ` preamble,
+    // which interpolates this verbatim and untruncated into the sidebar system
+    // pill and into a session's redirected Bash.
+    message: `remote '${rec?.remoteId}' is switched OFF in the code-system UI`
+      + ' — connect it there and retry. This is an operator setting, not a fault:'
+      + ' nothing is wrong with the target, and code-system did not contact it.',
+  };
 }
 
 // THE TOOLING-BASELINE GATE, launcher side.
