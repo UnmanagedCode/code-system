@@ -68,7 +68,7 @@ position rather than re-deriving it:
 Why it still ships as `false`: advertising `true` obliges **signal fidelity**
 (§5: "delivers exactly that signal"), which means a new `Transport.signal` seam
 relaying into the container plus a SIGTERM→SIGKILL backstop across a round trip —
-for a capability whose only consumer at cc `bf5f2afe` is one call site meaning
+for a capability whose only consumer at cc `8b7b10bf` is one call site meaning
 "kill the command". `false` costs nothing: the core sets
 `descendantsMaySurvive: true` on every exit it terminated, and the token reap
 SIGKILLs the container-side subtree regardless. Advertising `true` falsely is,

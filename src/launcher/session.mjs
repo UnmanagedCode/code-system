@@ -173,8 +173,9 @@ export class Session {
     const stdinMode = f.stdin === 'ignore' ? 'ignore' : 'pipe';
     // THE FRAME'S OWN env, or null. NOT `process.env` when the field is absent:
     // `null` means "inherit the FAR SIDE's environment", which for docker is the
-    // container's PATH/HOME/toolchain — cc sends no `env` on any of its seven
-    // derivations for exactly that reason (§7). Substituting cc's host
+    // container's PATH/HOME/toolchain — cc sends no `env` on ANY `exec` it
+    // issues, its own plumbing and a caller's command alike, for exactly that
+    // reason (§7). Substituting cc's host
     // environment here would run every derivation inside the container with
     // cc's PATH (measured: `env: 'git': No such file or directory`, exit 127).
     // The kind composes, with `execEnv` (kinds/config.mjs), which is also where

@@ -53,12 +53,13 @@ import { createSshTransport } from './ssh.mjs';
  * the environment exactly as posix_spawn does (§5), and `null` means inherit
  * THE FAR SIDE's — cc's own host for `host`, the container's own PATH/HOME/
  * toolchain for `docker`. The core never substitutes its own `process.env` for
- * an absent field: cc sends no `env` on any of its seven derivations precisely
- * because "they inherit the far side's environment" (§7), and a launcher that
- * collapsed the two would run every derivation inside a container with cc's host
- * PATH. Each kind composes with `execEnv` (kinds/config.mjs), which is also
- * where `CC_REMOTE` is overlaid — after the replacement, so the provider's
- * binding beats a frame-supplied value.
+ * an absent field: cc sends no `env` on ANY `exec` it issues — its own plumbing
+ * and a caller's command alike, so every command runs in the provider's own
+ * environment (§7) — and a launcher that collapsed the two would run every
+ * derivation inside a container with cc's host PATH. Each kind composes with
+ * `execEnv` (kinds/config.mjs), which is also where `CC_REMOTE` is overlaid —
+ * after the replacement, so the provider's binding beats a frame-supplied
+ * value.
  *
  * `token` is a per-exec nonce the core generates for `reap` to find
  * its own far-side processes by — a kind that needs it puts it into the remote

@@ -10,9 +10,10 @@ never substitutes its own `process.env` for an absent field.
 exec path. For `host` the two are identical, which is why it survived. For
 `docker` they are not:
 
-- cc sends **no `env` field** on all seven of its §7 derivations (`stat`,
-  `readDir`, `realpath`, `mkdir`, `removeTree`, `unlink`, `chmod`), and §7 says
-  why: *"they inherit the far side's environment (its PATH, its toolchain)"*.
+- cc sends **no `env` field on any `exec` it issues** — its own §7 plumbing
+  (`stat`, `readDir`, `realpath`, `mkdir`, `removeTree`, `unlink`, `chmod`) and a
+  caller's command alike. §7 at cc `8b7b10bf`: *"Every command therefore runs in
+  the provider's own environment … the far side's PATH and toolchain, not cc's."*
 - `run.mjs` sets `env: null` for every `fileops` script and for the baseline probe.
 
 Under the collapse, a kind honouring `env` as a replacement would run every one
@@ -40,24 +41,54 @@ docker exec <ctr> env -i -- PATH=/usr/local/nvm/versions/node/v24.0.0/bin git --
   `CC_EXEC_TOKEN` ride as `-e` flags. See
   [docker-exec-transport.md](docker-exec-transport.md) §4.
 
-## The interim limitation, and the card that tracks it
+## What cc sends at `8b7b10bf`, and how the REPLACE branch is fenced
 
-At cc `bf5f2afe`, cc's **non-derived** `exec` sends cc's own host environment as
-a wholesale `env`: `providerSystem.ts`'s `exec()` is
-`this.#exec(spec, opts, opts.env ?? process.env)`, with a comment defending it.
-§5's `env` row still says **REPLACES**, so implementing it faithfully is correct —
-and the consequence is that a container command sees cc's host `HOME` and `PATH`.
-The `shell` form largely self-repairs (`/bin/bash -lc` re-sets PATH from
-`/etc/profile`); the **argv** form does not, and a host PATH lacking the
-container's binary directories yields exit 127.
+cc card 2026-0317 landed. `providerSystem.ts`'s `exec()` is now
+`this.#exec(spec, opts, opts.env ?? null)`; `ProviderShell` no longer holds an
+`env` field at all; and the post-worktree hook — the only cc caller that ever
+named one — ships its `CC_*` vars **in argv** through `env(1)`
+(`src/worktrees.ts`). No cc call site names `opts.env`, so nothing cc issues puts
+an `env` on the wire.
 
-cc has an **unmerged** branch fixing its side —
-`code-conductor/systems-exec-env-plan` @ `47446c24`, cc card 2026-0317,
-*"Stop sending cc's process.env across the System wire"*, which makes cc send
-`env` only when a caller named one. It is live, unmerged and **off the pin**:
-treat it as corroboration, never as authority, and do **not** design around cc's
-current behaviour either.
+**The REPLACE branch stays anyway** — the contract and the reason are in
+`docs/protocol.md` → *"A frame `env` is still REPLACE, and every kind still
+implements it"*. What lives here is how it is fenced:
+`tests/dockerkind.test.mjs` → *"a frame env REPLACES via `env -i`, with
+CC_REMOTE overlaid last"*, and against a real container
+`tests/docker-live.test.mjs` L7, where **`HOME` is the discriminator** — an `-e`
+overlay leaves `HOME=/root` and passes every other assertion; only a real
+replacement makes it UNSET.
 
-Tracked on this side as **code-system card 2026-0008**, "Re-verify exec env
-across the transport boundary once cc 2026-0317 lands". Card 2026-0004 (`ssh`)
-inherits all of the above unchanged.
+## Name the interpreter absolutely (§5's `shell` row at `8b7b10bf`)
+
+§5 now notes that in cc's reference provider an unqualified interpreter resolves
+through **the `env` the frame carried**, not the provider's own, and that naming
+it absolutely removes the dependence on either side's PATH.
+
+`docker` already names it absolutely, everywhere:
+
+- `/bin/bash -lc` for the `shell` form — `src/launcher/kinds/docker.mjs:237`
+- `/bin/sh -c` for the reap script — `src/launcher/kinds/docker.mjs:341`
+- `/bin/sh -c` for every fileops script and the baseline probe —
+  `src/launcher/run.mjs:39`
+
+`host` uses a bare `bash` (`src/launcher/kinds/host.mjs:119`), so **which
+side's PATH resolves it depends on which branch of `execEnv` ran** — both
+measured on Node 24:
+
+- **A materialised env** (a frame `env`, or a `CC_REMOTE` overlay): resolved
+  through THAT object, the direction §5 names for cc's reference provider.
+  `spawnSync('bash', …, { env: { PATH: '/var/empty' } })` → `ENOENT`, so a frame
+  `env` whose PATH lacks `bash` makes the `shell` form unspawnable rather than
+  falling back to the launcher's PATH.
+- **`env: null`**: `execEnv` returns `null` when there is no frame `env` and no
+  `remoteId` (`src/launcher/kinds/config.mjs:62`), so the child inherits the
+  launcher's environment and `bash` resolves through the PARENT's PATH — the
+  opposite direction. With the parent's PATH scrubbed,
+  `spawnSync('bash', …, { env: null })` → `ENOENT`; with it intact the command
+  runs. **This is the branch usually taken**, since cc sends this kind no frame
+  `env` at the pin.
+
+Either way `host` is a test vehicle on cc's own machine, so this is a note, not a
+defect — recorded so card 2026-0004's `ssh` names its interpreter absolutely from
+the start and depends on neither side's PATH.

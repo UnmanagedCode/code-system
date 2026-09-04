@@ -414,7 +414,7 @@ async function driveExec(transport, frame) {
 // absent one — never its own `process.env`. That substitution was the shipped
 // behaviour before this card, and for `host` it is indistinguishable, which is
 // why it has to be asserted on the ExecRequest itself rather than on an outcome.
-// For docker it decides whether every cc derivation runs with the CONTAINER's
+// For docker it decides whether every `exec` cc sends runs with the CONTAINER's
 // PATH or with cc's (measured: `env: 'git': No such file or directory`).
 test("an absent frame `env` reaches the kind as null, not as the launcher's process.env", async () => {
   const t1 = recordingTransport();

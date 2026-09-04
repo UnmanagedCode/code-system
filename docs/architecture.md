@@ -82,11 +82,11 @@ case, and every kind without the member — leaves behaviour exactly as it was.
 
 **`ExecRequest.env` is THE FRAME'S OWN `env`**, with `null` meaning "inherit the
 **far side's**". The core never substitutes its own `process.env` for an absent
-field: cc sends no `env` on any of its seven derivations because they inherit the
-far side's PATH and toolchain (§7), and collapsing the two would run every
-derivation inside a container with cc's host PATH. Each kind composes with the
-shared `execEnv` (`kinds/config.mjs`), which is also where `CC_REMOTE` is
-overlaid — **after** the replacement, so the provider's binding beats a
+field: cc sends no `env` on **any** `exec` it issues — its own plumbing and a
+caller's command alike (§7) — so every command runs in the provider's own
+environment, and collapsing the two would run every derivation inside a
+container with cc's host PATH. Each kind composes with the shared `execEnv`
+(`kinds/config.mjs`), which is also where `CC_REMOTE` is overlaid — **after** the replacement, so the provider's binding beats a
 frame-supplied value.
 
 ## The `host` kind
@@ -122,7 +122,7 @@ path to keep correct.
 
 **The old justification was FALSE and has been deleted.** It held that an
 always-`remotes:true` kind was permanently barred from the suite's core
-capability configurations. Three measurements at cc `bf5f2afe` refute it: `IS_REFERENCE_PROVIDER` is an
+capability configurations. Three measurements at cc `8b7b10bf` refute it: `IS_REFERENCE_PROVIDER` is an
 *identity* gate (`!process.env[PROVIDER_ARGV_ENV]?.trim()`), not a shape gate;
 `assertNegotiatedCapabilities` deep-equals the whole object only for the
 reference provider and otherwise loops `TOGGLED_CAPABILITIES`, which derives to
@@ -254,7 +254,7 @@ this section needs re-checking.
 
 ### The consequence for cards 2026-0003 and 2026-0004
 
-`docker` and `ssh` always advertise `remotes:true`. Since cc `bf5f2afe` that no
+`docker` and `ssh` always advertise `remotes:true`. Since cc `8b7b10bf` that no
 longer bars them from the battery: `CC_CONFORMANCE_REMOTE_ID` binds every
 fixture handle to one named target, and the third-party capability assertion
 tolerates `remotes`/`remoteDescriptors` as a **superset**. **A bound run against
