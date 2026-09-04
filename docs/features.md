@@ -46,6 +46,10 @@ requirements: cc derives `stat`, `readDir`, `realpath`, `mkdir`, `removeTree`,
 `unlink` and `chmod` by sending commands with GNU-specific arguments. So a
 target needs **GNU coreutils, GNU findutils and a POSIX shell**.
 
+A **Docker** target specifically needs GNU coreutils and findutils, a POSIX
+`/bin/sh`, an executable **`/bin/bash`** (the `shell` exec form is a login
+`bash -lc`), plus `base64`, `tr` and `env`.
+
 Alpine (busybox) is the common surprise, and it fails in three ways of which
 only two announce themselves: `find` has no `-printf` (so `readDir` breaks
 outright), `realpath` accepts neither `-e` nor `--`, and — the dangerous one —
@@ -53,6 +57,15 @@ outright), `realpath` accepts neither `-e` nor `--`, and — the dangerous one �
 probe checks the exact commands cc sends, in their exact forms, and asserts on
 the *output shape* for that last one. Distroless and scratch images have no
 shell at all and will not work.
+
+Run against a live `busybox:1.38.0` container the verdict is **four** missing
+capabilities — `readDir`, `realpath`, `stat` and `shell` — the last because
+busybox ships no `/bin/bash`. The card lists all four, each with the probe that
+caught it and busybox's own words (`find: unrecognized: -printf`).
+
+A **stopped container reads as unreachable, and the plugin will not start it**
+(see "Connecting is attach-only" above). A request routed at one answers
+`ENOREMOTE` naming the container, not a plausible command failure.
 
 A remote marked `unsupported` is refused **whole**, with a message naming the
 missing capability: half-working is worse than a clear refusal. The probe costs
@@ -84,6 +97,17 @@ Three further differences the mode really has, stated rather than glossed:
 
 If you need a `cd`, exported variables or a background job to survive, put them
 in a single command, or in a profile file on the target.
+
+## Operator settings
+
+The plugin reads its Docker access from the environment of the process that
+runs it, not from a card field — a card field taking a command line would be an
+HTTP-writable executable on cc's host.
+
+| Variable | For |
+|---|---|
+| `CODE_SYSTEM_DOCKER` | a host where the docker CLI needs a prefix. It is the **whole invocation** as a JSON array: `CODE_SYSTEM_DOCKER='["sudo","-n","docker"]'`. Default: `["docker"]` — the shipped default never uses `sudo`. A malformed value makes the provider refuse to start and say so, rather than silently falling back |
+| `CODE_SYSTEM_STORE` | where remote records live. Default `<home>/.code-system` |
 
 ## Registration is automatic, and says why when it fails
 

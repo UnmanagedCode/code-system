@@ -2,7 +2,7 @@
 
 A code-conductor plugin that lets [Claude Code](https://claude.com/claude-code) (`cc`) reach remote development targets — Docker containers and SSH hosts — without installing anything on the target itself.
 
-The skeleton is in place: the plugin manifest, the backend, the per-`remoteId` config store, auto-registration of the two cc System rows, and the launcher every provider kind plugs into. The `docker` and `ssh` transports themselves (cards 2026-0003 and 2026-0004) and the card UI (card 2026-0005) land next; each is one file dropped into an existing seam.
+The `docker` transport is live: `exec` over `docker exec`, reachability over `docker inspect`, inherited `readFile`/`writeFile`, and the kill relay a container-side process needs. The `ssh` transport (card 2026-0004) and the card UI (card 2026-0005) land next; each is one file dropped into an existing seam.
 
 ## Functional description
 
@@ -45,6 +45,10 @@ npm install
 npm start                 # backend on $PORT, default 4310
 npm test                  # deterministic: no docker, no ssh, no network
 CC_CHECKOUT=/path/to/code-conductor npm run conformance
+
+# On a host where the docker CLI needs a prefix — this also makes the live
+# docker tests run instead of skipping. The shipped default is bare `docker`.
+CODE_SYSTEM_DOCKER='["sudo","-n","docker"]' npm test
 ```
 
 ### Top-level subsystems
@@ -77,7 +81,7 @@ See [`.wiki/decisions/architecture-shape.md`](.wiki/decisions/architecture-shape
 
 ### Testing
 
-`npm test` is deterministic and needs no docker, no ssh and no network; every test gets its own temp store. `npm run conformance` runs **code-conductor's own conformance suite** — the definition of a valid provider — against this launcher's `host` kind, gated on `CC_CHECKOUT` and skipping cleanly without it. It first runs `tests/protocol-constants.test.mjs` with that checkout and aborts on drift, so a conformance run also proves our mirrored protocol constants still match cc's.
+`npm test` is deterministic and needs no docker, no ssh and no network; every test gets its own temp store. The real-container suite (`tests/docker-live.test.mjs`) **skips cleanly and loudly** when no Docker daemon answers, each skip naming what was tried and the `CODE_SYSTEM_DOCKER` override that would run it. `npm run conformance` runs **code-conductor's own conformance suite** — the definition of a valid provider — against this launcher's `host` kind, gated on `CC_CHECKOUT` and skipping cleanly without it. It first runs `tests/protocol-constants.test.mjs` with that checkout and aborts on drift, so a conformance run also proves our mirrored protocol constants still match cc's.
 
 ## Known limitations
 

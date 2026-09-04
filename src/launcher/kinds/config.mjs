@@ -7,9 +7,10 @@
 // stored remote into argument injection against docker or ssh.
 //
 // REFUSED HERE, at the store's front door, rather than defended against in each
-// kind's spawnPlan. Cards 2026-0003 and 2026-0004 build argv from these values,
-// so the rule has to hold before either exists — a validator that accepts an
-// option-shaped value is a latent hole even while spawnPlan throws.
+// kind's spawnPlan. `docker`'s spawnPlan places `container` after `--` today and
+// card 2026-0004's will interpolate `host`/`user`; the rule had to hold before
+// either existed, because a validator that accepts an option-shaped value is a
+// latent hole even while spawnPlan throws.
 //
 // Not a general shell-escaping scheme: nothing here reaches a shell (the core
 // spawns argv directly, and fileops quotes everything it interpolates). This is
@@ -37,4 +38,25 @@ export function operand(raw, field, { required = true } = {}) {
 
 export function asObject(raw) {
   return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+}
+
+// THE ENVIRONMENT A COMMAND RUNS WITH, composed once for every host-shaped kind.
+//
+// `frameEnv` is THE FRAME'S OWN `env`, and `null` means "inherit the FAR SIDE's
+// environment" — which on cc's own host is `process.env` and inside a container
+// is the container's own PATH/HOME/toolchain (see kinds/docker.mjs, which does
+// not call this for the inherit case at all). session.mjs must not collapse the
+// two: cc sends no `env` on any of its seven derivations precisely because
+// "they inherit the far side's environment, its PATH, its toolchain"
+// (systems-protocol.md §7).
+//
+// CC_REMOTE is overlaid AFTER the frame's wholesale replacement, so THE
+// PROVIDER'S BINDING BEATS A FRAME-SUPPLIED VALUE — §10's CC_REMOTE row, and
+// the routing lie it exists to prevent. Pinned by tests/hostkind.test.mjs →
+// "the provider's binding beats a frame-supplied value".
+export function execEnv(frameEnv, remoteId, base = process.env) {
+  const overlay = remoteId ? { CC_REMOTE: remoteId } : {};
+  // Nothing to compose: let the child inherit, rather than materialising a copy.
+  if (frameEnv === null && !remoteId) return null;
+  return { ...(frameEnv ?? base), ...overlay };
 }

@@ -18,7 +18,7 @@ Sent once, before any other frame, in answer to cc's `hello`.
 
 | Capability | `docker` | `ssh` | `host` |
 |---|---|---|---|
-| `processGroupSignal` | `false` until card 2026-0003 | `false` until card 2026-0004 | `true` unless `--no-process-group-signal` |
+| `processGroupSignal` | **`false`, final** — see below | `false` until card 2026-0004 | `true` unless `--no-process-group-signal` |
 | `remotes` | `true` always | `true` always | at least one `--remote` |
 | `remoteDescriptors` | `false` | `false` | at least one `--mirror`/`--exclude` |
 
@@ -32,6 +32,19 @@ descriptor the hello used to carry (`os`, `pathSep`, `shell`, `home`) is
 deleted: `shell` was the only field cc ever read — it opened the long-lived
 shell with it — and that shell is gone. **Do not reintroduce a per-kind
 `defaultShell`, a per-remote `shell` field, or a probe for either.**
+
+**`docker`'s `false` is a decision, not a placeholder.** It is *achievable*:
+measured, a `docker exec`'d process is already its own process-group and session
+leader (so §11 item 2's `setsid` prerequisite is unnecessary) and
+`kill -9 -<pgid>` works inside the container, although §11's own
+`kill -- -<pgid>` is refused by dash's builtin. It stays `false` because `true`
+obliges **signal fidelity** — §5's `signal` row is "delivers exactly that signal"
+— i.e. a whole `Transport.signal` seam relaying into the container, for a
+capability whose only consumer meant "kill the command". `false` costs nothing:
+the core sets `descendantsMaySurvive: true` on every exit it terminated, and the
+kind's `reap` SIGKILLs the container-side subtree anyway. Both measurements are
+in `.wiki/gotchas/docker-exec-transport.md` so a later card can raise it from a
+known position.
 
 `docker` and `ssh` advertise `remotes:true` **always**, never derived from what
 is in the store — cc memoises the handshake per connection generation, so a
@@ -53,6 +66,8 @@ and we never look for a `remoteId` on them.
 | record whose `kind` is not this launcher's | `ENOREMOTE`, naming the kind it actually is |
 | record whose `baseline.state` is `unsupported` | `EUNKNOWN`, id-addressed, naming the missing capability, `stderr` carrying the target's own words |
 | record whose `baseline.state` is `unknown` | **served** — absence of evidence is not evidence |
+| `docker` record whose container is **stopped** | `ENOREMOTE`, id-addressed, naming the container and that this provider is attach-only |
+| `docker` record whose container **does not exist** | `ENOREMOTE`, id-addressed, naming the **configured** container |
 | path or non-placeholder `cwd` outside a fenced remote's root | `EACCES`, id-addressed |
 | `describeRemote` without `remoteDescriptors` | `EUNSUPPORTED`, id-addressed |
 | a frame for an unknown or already-settled id | **dropped**, not an error |
@@ -72,7 +87,72 @@ working.
 **`CC_REMOTE`** is injected into the remote command's environment whenever a
 frame named a remote. It is positive routing evidence: on a host where two
 targets may be the same filesystem, "the command worked" is what a misroute also
-looks like.
+looks like. It is overlaid **after** a frame's wholesale `env` replacement
+(`execEnv`, `src/launcher/kinds/config.mjs`), so the provider's binding beats a
+frame-supplied value.
+
+**An `exec` frame with no `env` means "inherit the FAR SIDE's environment"**, and
+the launcher passes exactly that — `null` — to the kind. It never substitutes its
+own `process.env`: cc sends no `env` on any of its seven derivations precisely
+because they inherit the far side's PATH and toolchain (§7). For `docker` that is
+the difference between `git` resolving in the container and `env: 'git': No such
+file or directory`, exit 127.
+
+## `docker` — what goes on the wire
+
+```
+<docker-cli> exec [-i] -w <cwd> [-e CC_REMOTE=<id> -e CC_EXEC_TOKEN=<tok>]
+            -- <container> <command…>
+```
+
+| Element | Rule |
+|---|---|
+| `<docker-cli>` | `["docker"]`, or the whole argv named by **`CODE_SYSTEM_DOCKER`** (JSON array of non-empty strings). The shipped default hardcodes no `sudo`; a malformed value throws at transport construction → launcher exit 2 before any frame |
+| subcommand | `exec` only. `reachability` uses `inspect`. **Nothing else, ever** — attach-only is enforced in code (`ALLOWED_SUBCOMMANDS`), never `start`/`stop`/`run`/`rm` |
+| `-i` | iff the frame's `stdin` is `pipe`. This is how `writeFile`'s base64 payload reaches the container, and EOF propagates through it |
+| `-w <cwd>` | the frame's `cwd`, verbatim, **including `/`** — the plan leaves the host client's own `cwd` unset |
+| `--` | always, so the container name is unambiguously an operand |
+| `<command…>` | `argv` form: the argv verbatim. `shell` form: `/bin/bash -lc <shell>` — **absolute**, so it resolves under `env -i` regardless of the frame's PATH, and it is the same interpreter the baseline probe requires |
+| `env` absent (`null`) | no `env -i`: the container keeps its own PATH/HOME/toolchain. The two plumbing variables ride as `-e` flags |
+| `env` supplied | `env -i NAME=VALUE…` prefixed to the command — a **replacement**, which `-e` flags cannot express — and **no** `-e` flags, which `env -i` would wipe. `CC_REMOTE` and `CC_EXEC_TOKEN` are the last entries |
+| `detached` | never. The container process is not an OS descendant of the host client, so a group kill does not reach it — claiming otherwise would make every terminated exec falsely omit `descendantsMaySurvive` |
+
+`CC_EXEC_TOKEN` is the per-exec nonce `reap` finds this exec's container-side
+processes by (`docs/architecture.md` → Shutdown and reaping).
+
+### How a docker failure becomes a code
+
+Measured against Docker Engine 29.7.2. **Note the channel**: a daemon-level
+refusal is on **stderr** with exit 1, but a command that never started is on
+**stdout** with exit 127 — so a stderr-only classifier is blind to it, and
+`fileops`' header parse sees the text as file content.
+
+| Exit | Stream | Text | Verdict |
+|---|---|---|---|
+| 1 | stderr | `Error response from daemon: No such container: <name>` | `ENOREMOTE` |
+| 1 | stderr | `Error response from daemon: container <64-hex> is not running` | `ENOREMOTE`, saying the provider is attach-only |
+| 1 | stderr | `permission denied while trying to connect…` / `Cannot connect to the Docker daemon…` | `EUNKNOWN` naming `CODE_SYSTEM_DOCKER` — **never `ENOREMOTE`**: our access failing is not the remote being absent |
+| 127 | **stdout** | `OCI runtime exec failed: exec failed: unable to start container process: …` (missing binary, or a `-w` that does not exist) | `ENOENT` — §5's "a command that never started is an `error` frame, not an `exit` frame" |
+| anything else | — | — | **not a transport failure**: the command's own `exit` frame |
+
+Every row is guarded so a command cannot forge a verdict: the daemon rows
+additionally require an **empty stdout** (docker writes none there), and the
+`127` row requires an **empty stderr** plus the full docker-internal sentence as
+the very first bytes of stdout. This runs on two paths —
+`session.mjs`'s exec close handler and `run.mjs`'s single funnel for `fileops`
+and the baseline probe — through one optional `Transport.classifyFailure` member.
+
+### Known limitation: `env` across the transport boundary
+
+At cc `bf5f2afe`, cc's non-derived `exec` sends **its own host environment** as a
+wholesale `env` (`providerSystem.ts`: `opts.env ?? process.env`). §5 says `env`
+REPLACES, so honouring it faithfully means a container command sees cc's host
+`HOME` and `PATH`. The `shell` form largely self-repairs (`/bin/bash -lc`
+re-sets PATH from `/etc/profile`); the **argv** form does not, and a host PATH
+without the container's binary directories yields exit 127. cc's own card
+2026-0317 removes the cause upstream (unmerged, off the pin). Tracked on this
+side as **code-system card 2026-0008**; see
+`.wiki/gotchas/exec-env-across-a-boundary.md`.
 
 ## `readFile` / `writeFile` — derived over `exec`
 
@@ -154,9 +234,11 @@ bash on this host. Two gaps are **stated rather than claimed away**:
   canary asserts the real shell refuses the redirect and leaves the file intact.
 - **The canary covers this host's `/bin/sh` only.** A docker or ssh target whose
   shell ignores noclobber silently converts `exclusive` into a **truncating
-  write**, and nothing this plugin ships can detect it. **A concern for cards
-  2026-0003 and 2026-0004**, which are the first to reach a shell that is not
-  ours; the tooling-baseline probe is where such a check would belong.
+  write**, and nothing this plugin ships can detect it. Card 2026-0003 landed the
+  first kind that reaches a shell which is not ours; its live suite exercises
+  `exclusive` against `node:24-slim`'s dash and gets `EEXIST`, but that is one
+  image, not a guarantee. **Still open for card 2026-0004 and for any target
+  image**; the tooling-baseline probe is where such a check would belong.
 
 ### What an abandoned write leaves behind
 
@@ -168,7 +250,9 @@ residue. All three cases are accepted, not defects:
   ran. The temp name is unique per call, so it cannot interfere with anything,
   and cc's own reference provider leaves the same residue. Adding a SIGTERM
   grace so a trap could clean up would weaken `close` from a hard kill to tidy a
-  file. **Far-side cleanup belongs in a kind's `reap`** (card 2026-0003).
+  file. **Far-side cleanup belongs in a kind's `reap`**, which for `docker` is a
+  token scan that SIGKILLs the container-side subtree — it does not remove a temp
+  file the killed script had already created.
 - **An aborted plain or `exclusive` write leaves a truncated target.** Inherent
   to a truncating redirect, matches the reference provider, and §6 promises
   nothing here.
@@ -236,8 +320,9 @@ far-side binary as an **option**, not an operand, turning a stored remote into
 argument injection against `docker` or `ssh`.
 
 **This is refused at the store's front door, not defended against in
-`spawnPlan`** — cards 2026-0003 and 2026-0004 build argv from these values, so
-the rule has to hold before either exists. A validator that accepts an
+`spawnPlan`** — `docker`'s `spawnPlan` builds argv from `container` today and
+card 2026-0004's will from `host`/`user`, so the rule has to hold before either
+exists. A validator that accepts an
 option-shaped value is a latent hole even while `spawnPlan` throws. Any new
 config field a kind adds gets the same treatment.
 

@@ -30,6 +30,10 @@ const PLACEHOLDER_CWD = '/';
 // mid-reap and the orphans survive anyway.
 export const REAP_DEADLINE_MS = 1500;
 
+// How much of each stream is retained for `classifyFailure`. The transport
+// diagnostics it reads are a single short line arriving before anything else.
+const HEAD_BYTES = 512;
+
 const sleep = (ms) => new Promise(r => setTimeout(r, ms).unref?.());
 
 function errMsg(e) { return e instanceof Error ? e.message : String(e); }
@@ -159,12 +163,17 @@ export class Session {
   #exec(f, remote) {
     const id = String(f.id);
     const stdinMode = f.stdin === 'ignore' ? 'ignore' : 'pipe';
-    const baseEnv = (f.env && typeof f.env === 'object' && !Array.isArray(f.env)) ? f.env : process.env;
-    // POSITIVE ROUTING EVIDENCE. On a host where every target may be the same
-    // filesystem, "the command worked" is what a MISROUTE also looks like, so
-    // the far side is told which remote it is on and a test can assert on that
-    // rather than on success. Pinned by cc's conformance suite at :456.
-    const env = remote?.remoteId ? { ...baseEnv, CC_REMOTE: remote.remoteId } : baseEnv;
+    // THE FRAME'S OWN env, or null. NOT `process.env` when the field is absent:
+    // `null` means "inherit the FAR SIDE's environment", which for docker is the
+    // container's PATH/HOME/toolchain — cc sends no `env` on any of its seven
+    // derivations for exactly that reason (§7). Substituting cc's host
+    // environment here would run every derivation inside the container with
+    // cc's PATH (measured: `env: 'git': No such file or directory`, exit 127).
+    // The kind composes, with `execEnv` (kinds/config.mjs), which is also where
+    // CC_REMOTE is overlaid — the POSITIVE ROUTING EVIDENCE cc's conformance
+    // suite asserts on, since on a host where every target may be the same
+    // filesystem "the command worked" is what a MISROUTE also looks like.
+    const env = (f.env && typeof f.env === 'object' && !Array.isArray(f.env)) ? f.env : null;
     const token = randomBytes(12).toString('hex');
     const req = {
       argv: Array.isArray(f.argv) ? f.argv.map(String) : null,
@@ -203,6 +212,13 @@ export class Session {
       timedOut: false,
       orphaned: false,
       closed: false,
+      terminated: false,
+      // A BOUNDED HEAD of each stream, for `classifyFailure` only. The
+      // transport's own diagnostics are one short line and arrive first, so a
+      // cap is enough — and it is what stops a chatty command turning this into
+      // an unbounded buffer beside the frames we already streamed.
+      head: '',
+      errHead: '',
       detached: plan.detached === true,
       config: remote?.config ?? {},
       handle: { pid: child.pid ?? null, token, remoteId: remote?.remoteId ?? null },
@@ -211,9 +227,11 @@ export class Session {
     this.#execs.set(id, state);
 
     child.stdout?.on('data', (b) => {
+      if (state.head.length < HEAD_BYTES) state.head = (state.head + b.toString('utf8')).slice(0, HEAD_BYTES);
       if (!state.closed) this.#write({ type: 'stdout', id, seq: state.seq++, dataB64: b.toString('base64') });
     });
     child.stderr?.on('data', (b) => {
+      if (state.errHead.length < HEAD_BYTES) state.errHead = (state.errHead + b.toString('utf8')).slice(0, HEAD_BYTES);
       if (!state.closed) this.#write({ type: 'stderr', id, seq: state.seq++, dataB64: b.toString('base64') });
     });
     child.on('error', (e) => {
@@ -228,20 +246,43 @@ export class Session {
       state.closed = true;
       if (state.timer) clearTimeout(state.timer);
       this.#execs.delete(id);
-      this.#write({
-        type: 'exit',
-        id,
-        // 124 on timeout, matching timeout(1) — the convention cc's callers
-        // already branch on.
-        code: state.timedOut ? 124 : code ?? 1,
-        signal: signal ?? null,
-        timedOut: state.timedOut,
-        ...(state.orphaned ? { descendantsMaySurvive: true } : {}),
-      });
-      // NO reap here on purpose: a command that ran to completion has already
-      // ended on the far side, and reaping every finished exec would cost a
-      // round trip into the container per command. Reap is for the case the
-      // host-side proxy was KILLED — `close` and shutdown, below.
+      // THE TRANSPORT'S OWN FAILURE, not the command's: a stopped or missing
+      // container is a non-zero exit of the docker CLI and nothing else, so
+      // without this it would be reported as the command's `exit`. The kind
+      // decides; a null verdict is the common case. §1 MUST 5 only requires the
+      // id to TERMINATE in a frame, and an `error` frame is one — the stdout and
+      // stderr frames already streamed are not retracted.
+      // Not consulted for an exec WE killed: that failure is ours, and reading
+      // it through the transport's vocabulary could only mislabel it.
+      const verdict = code !== 0 && !state.timedOut && !state.terminated
+        ? this.#transport.classifyFailure?.(state.config, { code: code ?? 1, stdout: state.head, stderr: state.errHead })
+        : null;
+      if (verdict) {
+        this.#fail(id, verdict.code, verdict.message, {
+          exitCode: code ?? 1,
+          ...(verdict.stderr ? { stderr: verdict.stderr } : {}),
+        });
+      } else {
+        this.#write({
+          type: 'exit',
+          id,
+          // 124 on timeout, matching timeout(1) — the convention cc's callers
+          // already branch on.
+          code: state.timedOut ? 124 : code ?? 1,
+          signal: signal ?? null,
+          timedOut: state.timedOut,
+          ...(state.orphaned ? { descendantsMaySurvive: true } : {}),
+        });
+      }
+      // A command that exited ON ITS OWN is NOT reaped: it has already ended on
+      // the far side, and a round trip into the container per command buys
+      // nothing. But one WE TERMINATED is exactly the case reap exists for —
+      // a `timeoutMs` expiry and a `signal` frame kill the host-side docker
+      // client while the container process keeps running, so without this the
+      // launcher would report code 124 ("the provider killed it") for a command
+      // still running in the container. `close` and shutdown reap on their own
+      // paths, which is why they set no `terminated`.
+      if (state.terminated) void this.#reap(state);
     });
 
     if (typeof f.timeoutMs === 'number') {
@@ -255,6 +296,7 @@ export class Session {
   // SIGTERM now, SIGKILL after the grace — a script that traps or ignores
   // SIGTERM would otherwise never die.
   #terminate(state, signal, group) {
+    state.terminated = true;
     const reach = group && state.detached;
     // Without group reach we terminated the direct child only, so grandchildren
     // may still be running and every result we terminated must say so.

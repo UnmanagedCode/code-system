@@ -36,7 +36,19 @@ mark the whole row broken. It is per-remote and belongs on the card.
   `-c` but ignores the `.3`, so it **succeeds and is wrong** — one-second
   granularity with no error anywhere. That silent degradation is the one cc will
   never surface on its own, and the only reason the probe exists rather than
-  waiting for a failure.
+  waiting for a failure. Measured live against `busybox:1.38.0`:
+  `stat -L -c '%f %s %.3Y' -- /` → exit 0 with `41ed 4096 1788505069` — no dot.
+- **The live busybox verdict is FOUR capabilities, not three.**
+  `systems-protocol.md` §11 item 3 lists three (`readDir`, `realpath`, `stat`);
+  our probe also has a `shell` row, `[ -x /bin/bash ]` (`src/baseline.mjs`), and
+  **busybox ships no `/bin/bash`** — so the fourth is `shell`. A test written to
+  §11's three reds. (`tests/baseline.test.mjs`'s hand-written `BUSYBOX_OUT`
+  fixture says `OK\tshell`; it is a different, correct thing — leave it alone.)
+- **A non-running target must return `fingerprint: null`.** `needsProbe` treats a
+  falsy fingerprint as "probe again", and `refreshBaseline` only probes a
+  `connected` target, so a null fingerprint is what stops a stale verdict being
+  cached against a container we could not reach. `docker`'s `reachability`
+  returns null on every non-`true` answer for exactly this reason.
 - **Three states, and the launcher treats them differently.** `unsupported`
   refuses every request frame for that remote with an id-addressed `EUNKNOWN`
   naming the capability (refused *whole* — busybox is partly working, and
