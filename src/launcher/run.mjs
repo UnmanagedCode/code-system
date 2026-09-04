@@ -11,8 +11,13 @@
 
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { ProtocolError } from './protocol.mjs';
 
 const PLACEHOLDER_CWD = '/';
+
+// Bytes of each stream shown to a kind's `classifyFailure`. Same bound
+// session.mjs uses, for the same reason.
+const CLASSIFY_HEAD_BYTES = 512;
 
 /**
  * @param {import('./kinds/index.mjs').Transport} transport
@@ -81,7 +86,32 @@ export function makeRunner(transport, config, remoteId = null, { token = null, o
     child.on('error', settle(reject));
     child.on('close', settle((code) => {
       if (signal?.aborted) { reject(new Error('operation was closed by the client')); return; }
-      resolve({ code: code ?? 1, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString('utf8') });
+      const stdout = Buffer.concat(out);
+      const stderr = Buffer.concat(err).toString('utf8');
+      // THE TRANSPORT'S OWN FAILURE, not the script's. A stopped or missing
+      // container is a non-zero exit of the docker CLI carrying a daemon
+      // message — the script never ran at all — so reporting it as the script's
+      // result would surface a bare EUNKNOWN with a parse failure behind it.
+      // This is the single funnel for fileops.mjs AND the baseline probe, which
+      // is why neither needs a line of transport-specific code. A null verdict
+      // (the common case, and every kind without the hook) resolves as before.
+      const verdict = code !== 0
+        ? transport.classifyFailure?.(config ?? {}, {
+            code: code ?? 1,
+            // A bounded HEAD, matching session.mjs: the transport diagnostics this
+            // reads are one short line, and a failed multi-megabyte read must
+            // not be re-materialised as a string to look at its first 60 bytes.
+            stdout: stdout.subarray(0, CLASSIFY_HEAD_BYTES).toString('utf8'),
+            stderr: stderr.slice(0, CLASSIFY_HEAD_BYTES),
+          })
+        : null;
+      if (verdict) {
+        reject(new ProtocolError(verdict.code, verdict.message, {
+          exitCode: code ?? 1, stderr: verdict.stderr ?? stderr,
+        }));
+        return;
+      }
+      resolve({ code: code ?? 1, stdout, stderr });
     }));
     if (stdinData && child.stdin) {
       // A far side that exits before draining its stdin is not our error to

@@ -38,6 +38,8 @@
 
 import os from 'node:os';
 
+import { execEnv } from './config.mjs';
+
 // The test seam, sibling to CODE_SYSTEM_STORE. cc spawns the launcher with the
 // ORCHESTRATOR's environment (providerConnection.ts, the provider spawn), so a
 // hand-registered row inherits whatever the orchestrator has — which will not
@@ -120,7 +122,11 @@ export function createHostTransport({
         file,
         args,
         cwd: req.cwd,
-        env: req.env,
+        // The frame's env (an object REPLACES, null inherits — and on this kind
+        // the far side IS cc's own host, so inheriting is process.env), with
+        // CC_REMOTE overlaid last. Composed in kinds/config.mjs so docker and
+        // host cannot disagree about the overlay order.
+        env: execEnv(req.env, req.remoteId),
         // `detached` makes the child its own process-GROUP leader, which is the
         // whole of the processGroupSignal capability: without it one kill
         // cannot reach a grandchild.
@@ -135,8 +141,8 @@ export function createHostTransport({
     },
 
     // A host child IS our OS descendant, so killing its group — which the core
-    // already does before calling this — suffices. docker and ssh implement
-    // this for real in cards 2026-0003 and 2026-0004.
+    // already does before calling this — suffices. `docker` implements this for
+    // real (a token scan inside the container); `ssh` in card 2026-0004.
     async reap() {},
   };
 }

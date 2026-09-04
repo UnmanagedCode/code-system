@@ -13,7 +13,13 @@ import { fakeConductor, tempStore } from './helpers.mjs';
 async function withApi(t, deps = {}) {
   const store = await tempStore();
   const before = process.env.CODE_SYSTEM_STORE;
+  const beforeDocker = process.env.CODE_SYSTEM_DOCKER;
   process.env.CODE_SYSTEM_STORE = store.dir;
+  // A card render asks each remote's kind for LIVE reachability, and `docker`'s
+  // now really runs `docker inspect`. Pointed at an invocation that cannot
+  // exist, so this suite answers the same on a machine with docker and on one
+  // without — and never touches a real container that happens to share a name.
+  process.env.CODE_SYSTEM_DOCKER = '["/definitely-not-docker-xyz"]';
   const app = express();
   app.use('/api', createApi(deps));
   const server = app.listen(0, '127.0.0.1');
@@ -22,6 +28,8 @@ async function withApi(t, deps = {}) {
   t.after(async () => {
     if (before === undefined) delete process.env.CODE_SYSTEM_STORE;
     else process.env.CODE_SYSTEM_STORE = before;
+    if (beforeDocker === undefined) delete process.env.CODE_SYSTEM_DOCKER;
+    else process.env.CODE_SYSTEM_DOCKER = beforeDocker;
     await new Promise(r => server.close(r));
     await store.cleanup();
   });
@@ -57,7 +65,11 @@ test('a remote is created, listed, edited and deleted', async (t) => {
   assert.equal(listed.body.remotes.length, 1);
   assert.equal(listed.body.remotes[0].remoteId, 'app-ctr');
   assert.equal(listed.body.remotes[0].reachability.connected, false,
-    'the docker transport lands in card 2026-0003, and says so rather than pretending');
+    'no docker daemon is reachable through this suite\'s CODE_SYSTEM_DOCKER, and the card says so');
+  assert.equal(listed.body.remotes[0].reachability.fingerprint, null,
+    'an unreachable target caches no baseline verdict');
+  assert.match(listed.body.remotes[0].reachability.detail, /CODE_SYSTEM_DOCKER/,
+    'and names the seam an operator would fix it with');
 
   const edited = await call('PATCH', '/remotes/app-ctr', { label: 'Renamed', config: { container: 'other' } });
   assert.equal(edited.status, 200);

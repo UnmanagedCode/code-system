@@ -358,3 +358,170 @@ test('a record rewritten mid-connection is seen by the very next frame', async (
   l.send({ type: 'exec', id: 'fixed', remoteId: 'alpha', cwd: '/tmp', argv: ['printf', 'served'] });
   assert.equal((await l.waitFor(f => f.type === 'exit' && f.id === 'fixed')).code, 0);
 });
+
+// ── the exec seam, driven in-process ─────────────────────────────────
+//
+// Two obligations of the frame loop that no kind-level test can reach, because
+// they are about what the CORE hands a kind and what it does with the kind's
+// answer. Driven through `Session` directly with a recording stub transport, so
+// they hold with no docker anywhere.
+
+/** Records every ExecRequest and answers with a canned exit code / streams. */
+function recordingTransport({ code = 0, stdout = '', stderr = '', classifyFailure } = {}) {
+  const seen = [];
+  return {
+    seen,
+    kind: 'stub',
+    processGroupSignal: false,
+    remotes: true,
+    remoteDescriptors: false,
+    validateConfig(raw) { return { ok: true, config: raw ?? {} }; },
+    spawnPlan(_config, req) {
+      seen.push(req);
+      return {
+        file: '/bin/sh',
+        args: ['-c', `printf %s ${JSON.stringify(stdout)}; printf %s ${JSON.stringify(stderr)} >&2; exit ${code}`],
+        env: null,
+        detached: false,
+      };
+    },
+    async reachability() { return { connected: true, detail: 'stub', fingerprint: 'stub:1' }; },
+    async reap() {},
+    ...(classifyFailure ? { classifyFailure } : {}),
+  };
+}
+
+async function driveExec(transport, frame) {
+  const { Session } = await import('../src/launcher/session.mjs');
+  const out = [];
+  const session = new Session({
+    transport,
+    source: { hasRemotes: () => true, ids: () => ['alpha'], mirrorFor: () => ({ mirrorRoot: null, exclude: [] }),
+      async lookup(id) { return { ok: true, remote: { remoteId: id, config: { container: 'app' }, root: null } }; } },
+    capabilities: { processGroupSignal: false, remotes: true, remoteDescriptors: false },
+    write: f => out.push(f),
+    onFatal: (m) => { throw new Error(m); },
+  });
+  await session.deliver({ type: 'hello', protocol: 1 });
+  await session.deliver(frame);
+  for (let i = 0; i < 200 && !out.some(f => f.id === frame.id && (f.type === 'exit' || f.type === 'error')); i++) {
+    await new Promise(r => setTimeout(r, 10));
+  }
+  return out;
+}
+
+// PINS that the core hands the kind THE FRAME'S OWN env, with `null` for an
+// absent one — never its own `process.env`. That substitution was the shipped
+// behaviour before this card, and for `host` it is indistinguishable, which is
+// why it has to be asserted on the ExecRequest itself rather than on an outcome.
+// For docker it decides whether every cc derivation runs with the CONTAINER's
+// PATH or with cc's (measured: `env: 'git': No such file or directory`).
+test("an absent frame `env` reaches the kind as null, not as the launcher's process.env", async () => {
+  const t1 = recordingTransport();
+  await driveExec(t1, { type: 'exec', id: 'a', remoteId: 'alpha', cwd: '/tmp', argv: ['true'] });
+  assert.equal(t1.seen[0].env, null, "'inherit the far side' must not be spelled as cc's own environment");
+  assert.equal(t1.seen[0].remoteId, 'alpha', 'and the binding travels beside it, not inside it');
+
+  // A supplied env is passed through UNTOUCHED — CC_REMOTE is the kind's
+  // overlay, not the core's, so a frame-supplied one survives to this point.
+  const t2 = recordingTransport();
+  await driveExec(t2, {
+    type: 'exec', id: 'b', remoteId: 'alpha', cwd: '/tmp', argv: ['true'],
+    env: { PATH: '/p', CC_REMOTE: 'frame-supplied' },
+  });
+  assert.deepEqual(t2.seen[0].env, { PATH: '/p', CC_REMOTE: 'frame-supplied' });
+});
+
+// PINS that `classifyFailure` is WIRED, not merely implemented: a kind's verdict
+// replaces the `exit` frame with an id-addressed `error`. Without the wiring a
+// stopped container is reported as the command's own non-zero exit — which is
+// exactly what acceptance 8 forbids, and it is invisible in a kind-level test of
+// the classifier alone.
+test('a kind\'s classifyFailure verdict replaces the exit frame with an id-addressed error', async () => {
+  const verdict = { code: 'ENOREMOTE', message: "container 'app' is not running", stderr: 'daemon said so' };
+  const withHook = recordingTransport({
+    code: 1, stderr: 'Error response from daemon: …',
+    classifyFailure: (config, res) => {
+      assert.deepEqual(config, { container: 'app' }, 'the kind is handed the remote\'s own config');
+      assert.equal(res.code, 1);
+      assert.match(res.stderr, /Error response from daemon/, 'and a head of the streams to read');
+      return verdict;
+    },
+  });
+  const out = await driveExec(withHook, { type: 'exec', id: 'c', remoteId: 'alpha', cwd: '/tmp', argv: ['true'] });
+  const err = out.find(f => f.type === 'error' && f.id === 'c');
+  assert.ok(err, `expected an error frame; got ${JSON.stringify(out)}`);
+  assert.equal(err.code, 'ENOREMOTE');
+  assert.equal(err.exitCode, 1, 'the transport exit code is still reported');
+  assert.equal(out.some(f => f.type === 'exit' && f.id === 'c'), false, 'and NO exit frame');
+
+  // A null verdict — every kind without the hook, and the common case within
+  // one — leaves the exit frame exactly as it was.
+  const noVerdict = recordingTransport({ code: 3, classifyFailure: () => null });
+  const out2 = await driveExec(noVerdict, { type: 'exec', id: 'd', remoteId: 'alpha', cwd: '/tmp', argv: ['true'] });
+  assert.equal(out2.find(f => f.type === 'exit' && f.id === 'd').code, 3);
+  assert.equal(out2.some(f => f.type === 'error' && f.id === 'd'), false);
+
+  // A kind with no hook at all must be unaffected.
+  const noHook = recordingTransport({ code: 3 });
+  const out3 = await driveExec(noHook, { type: 'exec', id: 'e', remoteId: 'alpha', cwd: '/tmp', argv: ['true'] });
+  assert.equal(out3.find(f => f.type === 'exit' && f.id === 'e').code, 3);
+});
+
+// PINS the bound on what `classifyFailure` is shown, and — the part that
+// matters — that it is the LEADING bytes. Both guards in every kind's
+// classifier anchor at byte 0 (`startsWith`, `=== ''`), so a mutant taking the
+// TAIL of a chatty stream would silently stop recognising a transport failure
+// whose message arrived first, which is every one of them.
+test('classifyFailure sees a bounded HEAD of each stream, taken from the front', async () => {
+  let seen = null;
+  // BOTH PAYLOADS MUST DIFFER HEAD FROM TAIL, or the leg pins nothing: 600
+  // identical bytes capped to 512 are byte-identical whichever end you take, and
+  // a `slice(-512)` mutant passes.
+  const noisy = recordingTransport({
+    code: 1,
+    stdout: `OPENS-HERE${'A'.repeat(580)}ENDS-HERE`,
+    stderr: `Error response from daemon: ${'B'.repeat(560)}ENDS-HERE`,
+    classifyFailure: (_config, res) => { seen = res; return null; },
+  });
+  await driveExec(noisy, { type: 'exec', id: 'h', remoteId: 'alpha', cwd: '/tmp', argv: ['true'] });
+  assert.ok(seen, 'the hook was consulted');
+  assert.equal(seen.stdout.length, 512, 'stdout is capped');
+  assert.equal(seen.stderr.length, 512, 'stderr is capped');
+
+  assert.ok(seen.stdout.startsWith('OPENS-HERE'), 'stdout is the HEAD…');
+  assert.equal(seen.stdout.includes('ENDS-HERE'), false, '…and not the tail');
+  assert.ok(seen.stderr.startsWith('Error response from daemon: '),
+    'a transport message arrives first, so a tail-shaped head would lose it');
+  assert.equal(seen.stderr.includes('ENDS-HERE'), false, 'stderr is the head too');
+});
+
+// PINS that a failed reap is REPORTED rather than swallowed, and that reporting
+// it does not take the connection down. Both halves matter: a silent catch makes
+// a relay that could not run indistinguishable from a clean shutdown (the MUST-3
+// hazard itself), and a throw that escaped would fail every other target's
+// in-flight work over one container's leftovers.
+test('a reap that could not be proved to have run is reported, and does not kill the session', async () => {
+  const { Session } = await import('../src/launcher/session.mjs');
+  const warnings = [];
+  const out = [];
+  const transport = recordingTransport({ code: 0 });
+  transport.reap = async () => { throw new Error('reap could not be proved to have run'); };
+  const session = new Session({
+    transport,
+    source: { hasRemotes: () => true, ids: () => ['alpha'], mirrorFor: () => ({ mirrorRoot: null, exclude: [] }),
+      async lookup(id) { return { ok: true, remote: { remoteId: id, config: {}, root: null } }; } },
+    capabilities: { processGroupSignal: false, remotes: true, remoteDescriptors: false },
+    write: f => out.push(f),
+    warn: m => warnings.push(m),
+    onFatal: (m) => { throw new Error(`the session died on a failed reap: ${m}`); },
+  });
+  await session.deliver({ type: 'hello', protocol: 1 });
+  await session.deliver({ type: 'exec', id: 'r', remoteId: 'alpha', cwd: '/tmp', argv: ['sleep', '30'] });
+  await session.deliver({ type: 'close', id: 'r' });
+  await session.shutdown();
+
+  assert.equal(warnings.length >= 1, true, `the failure must be surfaced; warnings=${JSON.stringify(warnings)}`);
+  assert.match(warnings[0], /reap/);
+  assert.match(warnings[0], /alpha/, 'and it names the remote whose far side may have leaked');
+});

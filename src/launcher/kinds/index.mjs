@@ -30,6 +30,18 @@ import { createSshTransport } from './ssh.mjs';
  *                                   docker and no ssh.
  * @property {(config:object) => Promise<Reachability>} reachability
  * @property {(config:object, handle:ExecHandle) => Promise<void>} reap
+ *   MAY THROW. A kind that cannot prove its relay reached the far side must say
+ *   so rather than return quietly — "nothing was killed" and "the kill could not
+ *   run" are indistinguishable from the core, and only one of them is a leak.
+ *   session.mjs reports a throw on stderr and carries on.
+ * @property {(config:object, res:{code:number, stdout:string, stderr:string})
+ *            => {code:string, message:string, stderr?:string}|null} [classifyFailure]
+ *   OPTIONAL. Reads THE TRANSPORT's own error vocabulary — a docker daemon
+ *   response, an ssh refusal — and turns a non-zero exit into a named protocol
+ *   failure instead of an `exit` frame. Returns null when the failure is the
+ *   COMMAND's own, which is the common case. Only the kind knows its transport's
+ *   vocabulary, and remotes.mjs cannot help: for a stopped container the store
+ *   record exists, so the lookup succeeds and the failure appears only here.
  */
 
 /**
@@ -37,8 +49,18 @@ import { createSshTransport } from './ssh.mjs';
  *            env:Record<string,string>|null, stdinMode:'pipe'|'ignore',
  *            remoteId:string|null, token:string}} ExecRequest
  *
- * `env` REPLACES the environment exactly as posix_spawn does; null means
- * inherit. `token` is a per-exec nonce the core generates for `reap` to find
+ * `env` is THE FRAME'S OWN `env`, passed through unchanged: an object REPLACES
+ * the environment exactly as posix_spawn does (§5), and `null` means inherit
+ * THE FAR SIDE's — cc's own host for `host`, the container's own PATH/HOME/
+ * toolchain for `docker`. The core never substitutes its own `process.env` for
+ * an absent field: cc sends no `env` on any of its seven derivations precisely
+ * because "they inherit the far side's environment" (§7), and a launcher that
+ * collapsed the two would run every derivation inside a container with cc's host
+ * PATH. Each kind composes with `execEnv` (kinds/config.mjs), which is also
+ * where `CC_REMOTE` is overlaid — after the replacement, so the provider's
+ * binding beats a frame-supplied value.
+ *
+ * `token` is a per-exec nonce the core generates for `reap` to find
  * its own far-side processes by — a kind that needs it puts it into the remote
  * command's environment itself, inside spawnPlan, which is why the core never
  * injects it into `env` and cannot pollute a frame-supplied environment.

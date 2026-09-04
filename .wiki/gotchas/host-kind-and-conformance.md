@@ -60,8 +60,8 @@ A **fifth** skip, or a different reason string, means the harness changed.
    **THE `--remote` ROOT IS NOT A FENCE THE SUITE ASKS YOU TO ENFORCE** — §10's
    own row says so, and cc's architecture doc calls the reference provider's
    root fence "this provider's property, not a protocol obligation", exercised
-   by no row in the battery. **Cards 2026-0003 / 2026-0004 must not implement
-   root fencing as a conformance requirement.** `host` fences because a test
+   by no row in the battery. **`docker` implements none, and card 2026-0004 must
+   not implement root fencing as a conformance requirement either.** `host` fences because a test
    vehicle on cc's own machine needs a misroute to be *refusable*; production
    `docker`/`ssh` remotes carry no root at all.
 
@@ -80,7 +80,25 @@ added, and cc memoises the handshake per connection generation). Since
 `CC_CONFORMANCE_REMOTE_ID` exists, that no longer bars them from the battery —
 **a bound run against the real `docker` kind is supported and worth doing**. It
 needs a container sharing the test process's filesystem (a bind mount), so it
-belongs to cards **2026-0003 / 2026-0006**.
+belongs to card **2026-0006** — card 2026-0003 landed the transport and its own
+live suite (`tests/docker-live.test.mjs`), not the bound conformance rig.
+
+**RUN cc's SUITE AGAINST A CLONE OF THE PIN, NEVER A LIVE cc WORKTREE.**
+`tests/conformance.mjs` runs cc's own test runner with `cwd: <checkout>`, and a
+`code-conductor` worktree somebody else is working in has a moving HEAD and may
+be read-only to you. Clone it (a clone reads the source and writes only to the
+destination), check out the pin, and point `CC_CHECKOUT` at the clone:
+
+```sh
+git clone --no-hardlinks <cc-worktree> /tmp/cc-pin
+git -C /tmp/cc-pin checkout <pin-sha>
+ln -s <cc-worktree>/node_modules /tmp/cc-pin/node_modules   # or npm ci in the clone
+CC_CHECKOUT=/tmp/cc-pin npm run conformance
+```
+
+Confirm `git -C <cc-worktree> status --porcelain` is empty **before and after** —
+that is what proves the other team's tree was not disturbed. Note
+`code-conductor` **main** does not carry the suite; only the systems branch does.
 
 **How to apply:**
 
@@ -107,8 +125,8 @@ belongs to cards **2026-0003 / 2026-0006**.
   against the root with no `realpath`, so a symlink inside the root escapes it.
   Deliberate: on `host`, `exec` is arbitrary by design, so `cat` reads the same
   file anyway, and the fence exists only for the test vehicle — production
-  `docker`/`ssh` remotes carry no root at all. **Cards 2026-0003 and 2026-0004
-  must not reach for it as a containment primitive.**
+  `docker`/`ssh` remotes carry no root at all. **`docker` does not reach for it as
+  a containment primitive, and card 2026-0004 must not either.**
 - The guard that ships is **one** general seam
   (`CODE_SYSTEM_ALLOW_HOST_KIND=1`) plus a **second** one gating only the
   unfenced-serving path (`CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED=1`, which **no
@@ -126,5 +144,7 @@ belongs to cards **2026-0003 / 2026-0006**.
   same treatment.
 - What makes this acceptable is the seam: the codec, the frame loop and fileops
   are kind-agnostic and `spawnPlan` is pure, so **`host` passing the core suite
-  proves the core for every kind.** The per-kind residue is argv construction
-  and `reap`.
+  proves the core for every kind.** The per-kind residue is argv construction,
+  `reap` and the optional `classifyFailure` — for `docker`, covered by
+  `tests/dockerkind.test.mjs` (pure) and `tests/docker-live.test.mjs` (a real
+  container, self-skipping).

@@ -65,6 +65,30 @@ per-exec `token` — the core generates the token and passes it in the
 frame-supplied `env` (which **replaces** the environment) is never polluted; a
 kind that needs it puts it on the far side inside its own `spawnPlan`.
 
+`reap` may **throw**, and that is part of the contract: a kind that cannot prove
+its relay reached the far side must say so rather than return quietly. The core
+reports it and carries on.
+
+`classifyFailure(config, {code, stdout, stderr})` is **optional** and reads the
+*transport's* own error vocabulary — a docker daemon response — turning a
+non-zero exit into a named protocol failure instead of an `exit` frame. Only the
+kind can own it: for a stopped container the store record exists, so
+`remotes.mjs` resolves the target happily and the failure appears solely as a
+non-zero exit of the docker CLI. It is consulted on **both** exec paths, so one
+implementation covers `exec`, `readFile`/`writeFile` and the baseline probe:
+`session.mjs`'s child-`close` handler (which keeps a bounded 512-byte head of
+each stream for it), and `run.mjs`'s single funnel. Returning `null` — the common
+case, and every kind without the member — leaves behaviour exactly as it was.
+
+**`ExecRequest.env` is THE FRAME'S OWN `env`**, with `null` meaning "inherit the
+**far side's**". The core never substitutes its own `process.env` for an absent
+field: cc sends no `env` on any of its seven derivations because they inherit the
+far side's PATH and toolchain (§7), and collapsing the two would run every
+derivation inside a container with cc's host PATH. Each kind composes with the
+shared `execEnv` (`kinds/config.mjs`), which is also where `CC_REMOTE` is
+overlaid — **after** the replacement, so the provider's binding beats a
+frame-supplied value.
+
 ## The `host` kind
 
 `kinds/host.mjs` execs directly on cc's own machine. It is **not** one of
@@ -160,7 +184,7 @@ against the root with no `realpath`, so a symlink inside the root points whereve
 it likes and is not refused. This is deliberate and not worth fixing: on `host`,
 `exec` is arbitrary by design (`cat` reads the same file), and the fence exists
 only for the test vehicle — production `docker`/`ssh` remotes carry no root at
-all. **Cards 2026-0003 and 2026-0004 must not treat it as a containment
+all. **`docker` does not, and card 2026-0004 must not, treat it as a containment
 primitive.**
 
 **Its capabilities are DERIVED FROM ITS FLAGS, and that is load-bearing.**
@@ -206,8 +230,8 @@ fails that whole configuration at the handshake. Neither is skipped.
 says so in the row itself — *"the root is where the suite places that target's
 fixtures, **not a fence it asks you to enforce**"* — and cc's own architecture
 doc says the reference provider's root fence is *"this provider's property, not
-a protocol obligation"*, exercised by no row in the suite. **Cards 2026-0003 and
-2026-0004 must not implement root fencing as a conformance requirement.** Our
+a protocol obligation"*, exercised by no row in the suite. **`docker` implements
+no root fencing, and card 2026-0004 must not either.** Our
 `host` kind fences because a test vehicle on cc's own machine needs a misroute to
 be *refusable*, not because the battery demands it — and production
 `docker`/`ssh` remotes carry no root at all.
@@ -237,13 +261,25 @@ tolerates `remotes`/`remoteDescriptors` as a **superset**. **A bound run against
 the real `docker` kind is therefore supported and worth doing** — it measures
 the shipped kind rather than a generalisation from `host`. What it needs is a
 container that shares the test process's filesystem (a bind mount), which is rig
-territory: **cards 2026-0003 and 2026-0006**.
+territory and **stays with card 2026-0006**: card 2026-0003 landed the transport,
+not the bound conformance rig.
 
 Until then, the seam is what carries the argument: `protocol.mjs`, `session.mjs`
 and `fileops.mjs` are kind-agnostic and `spawnPlan` is pure, so **`host` passing
-the core suite proves the core for every kind.** The per-kind residue is only
-argv construction and `reap` — covered by unit tests on the pure `spawnPlan`
-plus the live `code-system-test` rig.
+the core suite proves the core for every kind.** The per-kind residue is argv
+construction, `reap` and `classifyFailure` — covered for `docker` by unit tests
+on the pure `spawnPlan` plus `tests/docker-live.test.mjs` against a real
+container.
+
+**Run cc's suite against a CLONE of the pin, never against a live cc worktree.**
+`tests/conformance.mjs` runs cc's own test runner with `cwd: <checkout>`, so
+`CC_CHECKOUT` must not point at a checkout somebody else is working in:
+
+```sh
+git clone --no-hardlinks <cc-checkout> /tmp/cc-pin && git -C /tmp/cc-pin checkout <pin>
+ln -s <cc-checkout>/node_modules /tmp/cc-pin/node_modules   # or: npm ci in the clone
+CC_CHECKOUT=/tmp/cc-pin npm run conformance
+```
 
 **Do not add a flag to docker or ssh to fake `remotes:false`.** That would be a
 test-only divergence in the one field cc negotiates on, and cc's own harness
@@ -253,7 +289,8 @@ note). It is also unnecessary — a bound run needs no such lie.
 **Two obligations that land on those cards specifically:**
 
 1. **Every config field that becomes an argv operand must reject a leading `-`**
-   (`src/launcher/kinds/config.mjs`). `container`, `host` and `user` already do.
+   (`src/launcher/kinds/config.mjs`). `container`, `host` and `user` already do,
+   and `docker`'s `spawnPlan` now really does place `container` after `--`.
    A leading dash turns an operand into an option — `container: "-v /:/host"` is
    argument injection against `docker` — and the refusal belongs in
    `validateConfig`, not in `spawnPlan`, so a bad value never reaches the store.
@@ -273,8 +310,7 @@ Not under cc's store because the launcher's environment carries no
 thing both processes compute identically from nothing. It is also right on the
 merits: a container or an ssh host is a fact about the *host machine*, not about
 one cc store, so two cc servers on the same box see the same remotes.
-`CODE_SYSTEM_STORE` exists for test isolation and is the only env seam this
-plugin adds beyond the `host` guard.
+`CODE_SYSTEM_STORE` exists for test isolation.
 
 ```
 <store>/remotes/<remoteId>.json      one file per remote
@@ -295,6 +331,31 @@ between frames, so there is nothing for the backend to invalidate. Pinned by
 
 **Writes are backend-only and atomic**: a unique temp beside the target
 (`<id>.json.<pid>.<seq>.tmp`), `fsync`, `rename` over, unlink on any failure.
+
+### The environment seams
+
+Every variable this plugin reads, in one place. All are **operator-set**: cc
+spawns the launcher with the *orchestrator's* environment, and the backend reads
+the same names in-process, so one function serves both surfaces.
+
+| Variable | Read by | Effect |
+|---|---|---|
+| `CODE_SYSTEM_STORE` | `src/paths.mjs` | store root; else `<homedir>/.code-system`. Test isolation |
+| `CODE_SYSTEM_DOCKER` | `kinds/docker.mjs` → `dockerCliArgv` | the **whole docker invocation** as a JSON array, e.g. `["sudo","-n","docker"]`. Default `["docker"]` — no `sudo` in the shipped default. Malformed → throws → launcher exit 2 before any frame |
+| `CODE_SYSTEM_ALLOW_HOST_KIND` | `kinds/host.mjs` | permits `--kind host` at all |
+| `CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED` | `kinds/host.mjs` | permits `--kind host` with no `--remote` fence. **No shipped path sets it** |
+| `CODE_SYSTEM_FAKE_TRANSPORT` | `main.mjs` | module path for `--kind fake`. Tests only |
+| `CC_CHECKOUT` | `tests/conformance.mjs` | gates the conformance run |
+
+**Why the docker CLI is an env var rather than a store field or a launch flag.**
+A store field would be an **HTTP-writable executable argv** on cc's host — the
+REST surface writes remote records, so a card-UI field taking an argv is remote
+code execution by design, and `kinds/config.mjs` can keep a stored value from
+becoming an *option* but not from becoming an *executable*. A launch flag would
+have to get its value from somewhere anyway and changing it would force
+re-registration, because `src/registration.mjs` makes the launch argv a function
+of **(install path, kind) only** — which is what holds cc's connection cache
+while remotes come and go.
 
 ### Migration
 
@@ -323,7 +384,7 @@ launcher can legitimately be spawned before the backend has ever run.
 
 **1500 ms is chosen against cc's own number.** cc closes our stdin and SIGKILLs
 us after `DEFAULT_SHUTDOWN_GRACE_MS = 2000`
-(`src/systems/providerConnection.ts:75`). Reaping must finish inside that window
+(`src/systems/providerConnection.ts`, :75 at the pin). Reaping must finish inside that window
 or cc kills us mid-reap and the orphans survive anyway.
 
 `close` on one id takes the same kill-then-reap path for that id alone and emits
@@ -351,10 +412,43 @@ between a far-side pipeline being reaped and being abandoned.
 **A command that exited on its own is NOT reaped, and that is deliberate.** §5
 gives `exit` as a terminal frame with no cleanup obligation attached; MUST 3
 binds at *provider exit*, not at operation completion; and cc's own reference
-provider behaves identically. `reap` exists for the case where the host-side
-proxy was **killed** while the far side kept running — `close` and shutdown.
-Reaping every finished exec would cost a round trip into the container per
-command, buying nothing. (Reviewed twice; do not re-litigate.)
+provider behaves identically. Reaping every finished exec would cost a round
+trip into the container per command, buying nothing. (Reviewed twice; do not
+re-litigate. Fenced by `tests/docker-live.test.mjs` → *"five commands that exit
+on their own cost exactly five docker invocations"*.)
+
+**A command WE TERMINATED is reaped — that is the same case, at four sites.**
+`reap` exists for the case where the host-side proxy was **killed** while the far
+side kept running. `close` and shutdown are two such sites; a **`timeoutMs`
+expiry** and a **`signal` frame** are the other two, because
+`Session.#terminate` kills the host-side proxy and — measured for `docker` — the
+container process keeps running. Without it the launcher emits
+`{code:124, timedOut:true}`, cc's own "the provider killed it", for a command
+still running in the container. `#terminate` therefore sets `state.terminated`,
+and the child's `close` handler reaps when it is set.
+
+**How `docker` reaps: a token scan, not a pgid.** Every `docker exec` carries
+`CC_EXEC_TOKEN=<per-exec nonce>` in the container process's environment; `reap`
+sends one bounded `docker exec … /bin/sh -c` that SIGKILLs every process whose
+`/proc/<pid>/environ` contains it. Children inherit an environment, so one pass
+reaches the whole subtree with **no discovery step**, and it survives a
+descendant that called `setsid` — which a group kill does not. It uses only `tr`
+and shell built-ins (no `ps`: `node:24-slim` has none), and the reap exec itself
+carries no token, so it cannot kill itself. Measured cost **~121 ms** per handle,
+run in parallel across handles, comfortably inside the 1500 ms deadline.
+
+**A REAP MUST PROVE IT RAN, and a failed one is REPORTED.** Without `tr`, or on a
+target whose `/proc/<pid>/environ` is unreadable, every match simply fails and an
+unconditional `exit 0` would report a clean shutdown while the container-side
+subtree survived — the MUST-3 hazard made invisible, and `baselineRefusal` gates
+exec and fileops but never `reap`. So the script counts the environs it could
+read and answers `CCREAP blind` / exit 3 when that count is zero (the scanning
+process can always read its own, so zero is unambiguous); `Transport.reap` throws
+unless it sees a `CCREAP ok` line; and `Session.#reap` writes that to **stderr**
+through the session's `warn` seam instead of swallowing it. It still does not
+take the connection down — one target's leftovers are not a dead session. The one
+benign failure is the container being gone or stopped, recognised through the
+same `classifyFailure` the exec path uses so the two cannot drift.
 
 ## Test patterns
 
@@ -387,6 +481,27 @@ global.
   (`systems-protocol-conformance.test.mjs` → "process-group signalling").
 - **Scripted fake cc** (`tests/helpers.mjs` → `fakeConductor`) for registration,
   asserted on the recorded request log, never on timing.
+- **Real docker, self-skipping** (`tests/dockerFixture.mjs`,
+  `tests/docker-live.test.mjs`). Every such test calls `skipUnlessDocker(t)` and
+  returns, so `npm test` stays green with no daemon and each skip prints a reason
+  naming both invocations tried and `CODE_SYSTEM_DOCKER`. **The gate is a daemon
+  probe, not a `which`**: `docker version --format '{{.Server.Version}}'`, because
+  a host can have the CLI installed and the socket unreadable — measured here,
+  unprivileged `docker version` prints its whole Client block to stdout and exits
+  1. That distinction is itself pinned, docker-free, in
+  `tests/dockerkind.test.mjs`.
+- **In-container assertions read `/proc`, never `ps`** — `node:24-slim` has no
+  `ps`. The marker being counted is passed to the scanning shell **in its
+  environment**, so the scanner's own `/proc/<pid>/cmdline` cannot match and
+  count itself.
+- **A counting CLI shim** (`countingShim`) — an executable that logs its argv and
+  then `exec`s the real docker CLI. It is how "a natural exit costs exactly one
+  docker invocation" and "the overridden argv is really what runs" are asserted;
+  no pure test can show either.
+- **A NEGATIVE CONTROL for every relay test.** `tests/docker-live.test.mjs` first
+  proves that SIGKILLing a `docker exec` host client leaves the container process
+  running. Without it, every reap assertion would pass even if `reap` did
+  nothing — a kind whose children die with their proxy needs no relay at all.
 - **Real `/bin/sh` for the far-side scripts.** `tests/fileops.test.mjs` runs the
   generated scripts against a real shell on a temp dir — deterministic and
   local, and the only thing that proves the *scripts* are right rather than just

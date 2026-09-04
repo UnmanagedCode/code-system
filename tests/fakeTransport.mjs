@@ -11,6 +11,8 @@
 
 import { appendFileSync } from 'node:fs';
 
+import { execEnv } from '../src/launcher/kinds/config.mjs';
+
 export function createTransport(opts = {}) {
   const reapLog = process.env.CODE_SYSTEM_FAKE_REAP_LOG ?? null;
   const processGroupSignal = opts.processGroupSignal !== false;
@@ -28,7 +30,8 @@ export function createTransport(opts = {}) {
       const [file, args] = req.shell !== null
         ? ['bash', ['-lc', req.shell]]
         : [String(req.argv?.[0]), (req.argv ?? []).slice(1)];
-      return { file, args, cwd: req.cwd, env: req.env, detached: processGroupSignal };
+      // Same composer the real kinds use: the frame's env, CC_REMOTE last.
+      return { file, args, cwd: req.cwd, env: execEnv(req.env, req.remoteId), detached: processGroupSignal };
     },
 
     async reachability() {

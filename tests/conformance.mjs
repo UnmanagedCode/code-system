@@ -4,7 +4,12 @@
 // That suite is the definition of a valid provider ("If a claim [in
 // systems-protocol.md] and that suite disagree, the suite is right"), so this
 // is the real check on the frame loop, the routing, fileops.mjs and the
-// shutdown path — and it is the bar cards 2026-0003 and 2026-0004 are held to.
+// shutdown path — and it is the bar every kind is held to, `docker` included.
+//
+// POINT CC_CHECKOUT AT A CLONE OF THE PIN, never at a code-conductor worktree
+// somebody is working in: this script runs cc's test runner with `cwd:
+// <checkout>`. See docs/architecture.md → "The consequence for cards 2026-0003
+// and 2026-0004" for the clone recipe.
 //
 // It runs against the `host` kind because the suite BUILDS ITS FIXTURES WITH
 // NODE'S OWN `fs` AND THEN ASKS THE PROVIDER ABOUT THEM, so it verifies a

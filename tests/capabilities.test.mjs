@@ -9,6 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ALL_KINDS, REGISTERED_KINDS, createTransport } from '../src/launcher/kinds/index.mjs';
+import { createDockerTransport } from '../src/launcher/kinds/docker.mjs';
 import { FAKE_TRANSPORT, Launcher, tempStore } from './helpers.mjs';
 
 // cc's `Capabilities` interface, verbatim: processGroupSignal, remotes,
@@ -92,15 +93,47 @@ test('an option-shaped config value is refused, not stored', () => {
   assert.equal(ssh.validateConfig({ host: 'build-box-2', user: 'ci-runner' }).ok, true);
 });
 
-test('the docker and ssh transports fail LOUDLY where their card has not landed', async () => {
-  for (const [kind, card] of [['docker', '2026-0003'], ['ssh', '2026-0004']]) {
-    const t = createTransport(kind);
-    assert.throws(() => t.spawnPlan({}, { argv: ['true'], shell: null, cwd: '/', env: null }),
-      new RegExp(card), 'a stub that returned a plausible plan would be worse than one that throws');
-    const reach = await t.reachability({});
-    assert.equal(reach.connected, false);
-    assert.match(reach.detail, new RegExp(card));
-  }
+// NARROWED TO `ssh` when card 2026-0003 landed the docker transport. Deleting
+// it instead would drop ssh's fence, and leaving it whole would red.
+test('the ssh transport fails LOUDLY where its card has not landed', async () => {
+  const t = createTransport('ssh');
+  assert.throws(() => t.spawnPlan({}, { argv: ['true'], shell: null, cwd: '/', env: null }),
+    /2026-0004/, 'a stub that returned a plausible plan would be worse than one that throws');
+  const reach = await t.reachability({});
+  assert.equal(reach.connected, false);
+  assert.match(reach.detail, /2026-0004/);
+});
+
+// THE OTHER HALF of the same claim: docker's seams answer for real now, and
+// filling them changed NOTHING cc negotiates on. In particular
+// `processGroupSignal` is deliberately still false — see the decision recorded
+// in kinds/docker.mjs and .wiki/gotchas/docker-exec-transport.md — so a card
+// that "finished" by flipping it to true reds here as well as lying to cc.
+test('docker\'s seams answer for real, and its negotiated capabilities did not move', async () => {
+  const t = createTransport('docker');
+  assert.deepEqual(
+    { g: t.processGroupSignal, r: t.remotes, d: t.remoteDescriptors },
+    { g: false, r: true, d: false });
+
+  // An explicit cli, so this does not depend on whether the environment running
+  // the suite has CODE_SYSTEM_DOCKER set (it does on a host where docker needs
+  // a prefix, and tests/dockerkind.test.mjs owns the seam's own behaviour).
+  const plan = createDockerTransport({ cli: ['docker'] }).spawnPlan({ container: 'app' },
+    { argv: ['true'], shell: null, cwd: '/', env: null, stdinMode: 'ignore', remoteId: null, token: 'tok' });
+  assert.equal(plan.file, 'docker');
+  assert.equal(plan.args[0], 'exec');
+  assert.doesNotMatch(JSON.stringify(plan), /2026-0003/, 'no card placeholder survives anywhere in the plan');
+
+  // Reachability really talks to a daemon now. Driven through a docker
+  // invocation that CANNOT exist, so the answer does not depend on whether the
+  // machine running the suite happens to have docker: it must be unreachable,
+  // and it must name the override rather than the card.
+  const reach = await createDockerTransport({ cli: ['/definitely-not-docker-xyz'] })
+    .reachability({ container: 'app' });
+  assert.equal(reach.connected, false);
+  assert.equal(reach.fingerprint, null);
+  assert.match(reach.detail, /CODE_SYSTEM_DOCKER/);
+  assert.doesNotMatch(reach.detail, /2026-0003/);
 });
 
 test('host advertises what it was flagged with — createTransport does not hardcode', () => {
