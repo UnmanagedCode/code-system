@@ -109,10 +109,8 @@ const ENV_BIN = '/usr/bin/env';
 const REAP_SHELL = '/bin/sh';
 
 /**
- * The per-uid directory the ControlPath sockets live in. NOT a bare /tmp entry:
- * /tmp is world-writable, so another local user could pre-create a socket at
- * our (derivable) path and have a slave attach OUR commands to THEIR master.
- * A 0700 directory we own closes that.
+ * The per-uid directory the ControlPath sockets live in. NOT a bare /tmp entry —
+ * see `ensureControlDir` for what the directory's ownership and mode buy.
  */
 export function controlDir() {
   return path.join(os.tmpdir(), `code-system-ssh-${process.getuid()}`);
@@ -189,25 +187,22 @@ export async function ensureControlDir() {
  * The option block EVERY invocation shares, so no call site can drift from
  * another. `master` is the only thing that varies.
  *
- * NO `-M` ANYWHERE, and that is measured, not stylistic. `ssh -G` on
- * OpenSSH_10.0p2: `-o ControlMaster=yes` → `controlmaster true`; `-M` → `true`;
- * but `-o ControlMaster=yes -M` — this block followed by an appended flag —
- * → `controlmaster ASK`, and `ask` cannot be answered under `BatchMode=yes`.
- * One mechanism only, from one builder.
+ * Three of these are easy to get wrong, so each says what it prevents. The
+ * measurements are all in .wiki/gotchas/ssh-controlmaster-transport.md §6-§8;
+ * the user-facing policy is docs/features.md.
  *
- * NO `StrictHostKeyChecking` AND NO `UserKnownHostsFile`: THAT IS THE POLICY,
- * not an omission, and it works by an interaction worth stating. OpenSSH's
- * default is `StrictHostKeyChecking=ask` (measured with `ssh -G`), and combined
- * with the `BatchMode=yes` set here an unknown or changed host key FAILS —
- * `Host key verification failed.`, exit 255. It never prompts and never
- * trusts-on-first-use. Adding a key is the operator's own out-of-band action,
- * against the operator's own known_hosts.
+ * NO `-M` ANYWHERE: appended after `-o ControlMaster=yes` it yields an
+ * EFFECTIVE `ask`, which `BatchMode=yes` cannot answer. One mechanism only,
+ * from one builder.
  *
- * `-T` IS LOAD-BEARING. We honour the operator's ssh config, so a
- * `RequestTTY force` in it would give us a pty, and a pty applies CR
- * translation. Measured against the live fixture: `printf 'CCSTAT …\n'` came
- * back `CCSTAT 81a4 12\r\n` without `-T` and `…\n` with it — and that `\r`
- * corrupts fileops' header parse (src/launcher/fileops.mjs).
+ * NO `StrictHostKeyChecking` AND NO `UserKnownHostsFile`: that is THE POLICY,
+ * not an omission. OpenSSH's default `ask` plus the `BatchMode=yes` set here
+ * makes an unknown or changed host key FAIL rather than prompt or
+ * trust-on-first-use; repairing it is the operator's own out-of-band action.
+ *
+ * `-T` IS LOAD-BEARING: we honour the operator's ssh config, so a `RequestTTY
+ * force` in it would give us a pty, and a pty's CR translation corrupts
+ * fileops' `CCSTAT` header parse (src/launcher/fileops.mjs).
  *
  * NO CONFIG VALUE EVER BECOMES AN `-o`. Every value here is a provider-owned
  * constant or the provider-computed ControlPath.
@@ -333,19 +328,11 @@ export function createSshTransport({ cli } = {}) {
     // is what makes the whole argv assertable with no ssh present.
     //
     // `master: 'no'` ON EVERY OPERATION, AND THAT IS WHAT KEEPS THIS PURE.
-    // Measured, with controls:
-    //   ControlMaster=no,   master live, 5 execs → 0 further authentications,
-    //                                              socket inode unchanged
-    //   ControlPath=none,   5 execs             → 5 authentications (the control)
-    //   ControlMaster=no,   no dir, no socket   → exit 0, nothing created
-    //   ControlMaster=auto, no dir              → exit 255, `unix_listener:
-    //                                              cannot bind to path …`
-    // So `no` multiplexes onto a master when one exists and connects normally
-    // when none does, while `auto` would have to BIND — and nothing on the exec
-    // path may create the directory to bind in, because this function is pure.
-    // ssh_config(5)'s "will fall back to connecting normally if the control
-    // socket does not exist" is about a missing SOCKET, not a missing
-    // DIRECTORY; that distinction is the whole reason this is `no`.
+    // `no` means "use a master if one exists, never create one" — so this path
+    // multiplexes when it can, connects normally when it cannot, and needs no
+    // control directory. `auto` would have to BIND one, and nothing here may
+    // create it, because this function is pure. Measurements, with controls, in
+    // .wiki/gotchas/ssh-controlmaster-transport.md §4-§5.
     spawnPlan(config, req) {
       const dest = destFor(config);
       const controlPath = controlPathFor(config);

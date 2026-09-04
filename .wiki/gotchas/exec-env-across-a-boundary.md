@@ -90,5 +90,20 @@ measured on Node 24:
   `env` at the pin.
 
 Either way `host` is a test vehicle on cc's own machine, so this is a note, not a
-defect — recorded so card 2026-0004's `ssh` names its interpreter absolutely from
-the start and depends on neither side's PATH.
+defect — it was recorded so `ssh` would name its interpreter absolutely from the
+start and depend on neither side's PATH.
+
+**`ssh` did.** `/bin/bash -lc` for the `shell` form, `/usr/bin/env` for the
+environment and cwd, `/bin/sh -c` for the reap relay — all absolute. It has ONE
+unavoidable tokenization step (ssh hands the far side a shell string, so the
+target's login shell parses it), and that step is **stated in the contract**
+rather than hidden: `docs/protocol.md` → "`ssh` — what goes on the wire" owns
+the sentence. `host.mjs`'s bare `bash` remains, unfixed and out of scope.
+
+**One trap this kind hits that `docker` does not, recorded because an
+outcome-shaped test cannot see it:** `ssh` is always `remotes:true`, so
+`remoteId` is always set, so `execEnv(null, id)` takes branch 2 and returns
+`{...process.env, CC_REMOTE}` — shipping the LAUNCHER's environment across the
+wire. `kinds/ssh.mjs` therefore does not call `execEnv` on the inherit branch at
+all (and passes `{}` as `base` on the other), and `tests/sshkind.test.mjs` seeds
+a unique key into `process.env` and asserts its absence from the plan.

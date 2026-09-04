@@ -103,14 +103,37 @@ in a single command, or in a profile file on the target.
 
 ## Operator settings
 
-The plugin reads its Docker access from the environment of the process that
-runs it, not from a card field — a card field taking a command line would be an
-HTTP-writable executable on cc's host.
+The plugin reads its Docker and SSH access from the environment of the process
+that runs it, not from a card field — a card field taking a command line would
+be an HTTP-writable executable on cc's host.
 
 | Variable | For |
 |---|---|
 | `CODE_SYSTEM_DOCKER` | a host where the docker CLI needs a prefix. It is the **whole invocation** as a JSON array: `CODE_SYSTEM_DOCKER='["sudo","-n","docker"]'`. Default: `["docker"]` — the shipped default never uses `sudo`. A malformed value makes the provider refuse to start and say so, rather than silently falling back |
+| `CODE_SYSTEM_SSH` | a host where the ssh invocation must differ (a pinned config file, a wrapper). Also the **whole invocation** as a JSON array: `CODE_SYSTEM_SSH='["ssh","-F","/etc/code-system/ssh_config"]'`. Default: `["ssh"]` — your own `~/.ssh/config` and agent. Malformed values refuse the same way |
 | `CODE_SYSTEM_STORE` | where remote records live. Default `<home>/.code-system` |
+
+## An SSH remote is a Host alias from your own ssh config
+
+An SSH card's **host** field is a `Host` alias out of the `~/.ssh/config`
+belonging to whoever runs the plugin — not a hostname the plugin resolves
+itself. Everything about *how* to reach the machine lives there: `HostName`,
+`Port`, `User`, `IdentityFile`, `ProxyJump`, `IdentityAgent`. The plugin adds
+only its own connection options and never turns a card field into an ssh
+option.
+
+**Host keys are never accepted for you.** The plugin does not set
+`StrictHostKeyChecking` and does not point ssh at a `known_hosts` of its own, so
+ssh's own default applies — and because the plugin also never allows a prompt,
+an **unknown or changed host key fails** rather than being trusted on first use.
+The card shows the refusal and names the fix. Adding the key is your own action,
+in your own `known_hosts` (`ssh-keyscan`, or verifying the fingerprint by hand).
+
+**Connecting shares one authenticated connection.** The first connect opens an
+SSH ControlMaster and later commands ride it, so five commands cost one
+authentication instead of five. Disconnecting closes that shared connection —
+**it does not lock the remote out**: commands still work afterwards, each paying
+its own authentication, until you connect again.
 
 ## Registration is automatic, and says why when it fails
 
