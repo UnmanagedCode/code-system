@@ -9,28 +9,40 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import { createApi } from '../src/api.mjs';
 import { SCHEMA } from '../src/store.mjs';
-import { fakeConductor, tempStore } from './helpers.mjs';
+import { fakeConductor, stubDockerCli, stubSshCli, tempStore } from './helpers.mjs';
 
-async function withApi(t, deps = {}) {
+// What a GNU coreutils target answers the baseline probe, so a stub-driven
+// probe lands on a definite verdict rather than an incidental one.
+const GNU_OUT = ['OK\treadDir', 'OK\trealpath', 'OK\tstat', 'OK\tbase64', 'OK\tshell', ''].join('\n');
+
+async function withApi(t, deps = {}, env = {}) {
   const store = await tempStore();
-  const before = process.env.CODE_SYSTEM_STORE;
-  const beforeDocker = process.env.CODE_SYSTEM_DOCKER;
-  process.env.CODE_SYSTEM_STORE = store.dir;
-  // A card render asks each remote's kind for LIVE reachability, and `docker`'s
-  // now really runs `docker inspect`. Pointed at an invocation that cannot
-  // exist, so this suite answers the same on a machine with docker and on one
-  // without — and never touches a real container that happens to share a name.
-  process.env.CODE_SYSTEM_DOCKER = '["/definitely-not-docker-xyz"]';
+  const set = {
+    CODE_SYSTEM_STORE: store.dir,
+    // A card render asks each remote's kind for LIVE reachability, and `docker`'s
+    // now really runs `docker inspect`. Pointed at an invocation that cannot
+    // exist, so this suite answers the same on a machine with docker and on one
+    // without — and never touches a real container that happens to share a name.
+    CODE_SYSTEM_DOCKER: '["/definitely-not-docker-xyz"]',
+    // Same for ssh: no test may reach a real host. A test that wants a stub
+    // overrides these two through `env`.
+    CODE_SYSTEM_SSH: '["/definitely-not-ssh-xyz"]',
+    // ssh's ControlPath lives under TMPDIR, and `connect` creates that
+    // directory. Per-test so two runs cannot share a socket path.
+    TMPDIR: store.dir,
+    ...env,
+  };
+  const prior = {};
+  for (const [k, v] of Object.entries(set)) { prior[k] = process.env[k]; process.env[k] = v; }
   const app = express();
   app.use('/api', createApi(deps));
   const server = app.listen(0, '127.0.0.1');
   await new Promise(r => server.once('listening', r));
   const base = `http://127.0.0.1:${server.address().port}/api`;
   t.after(async () => {
-    if (before === undefined) delete process.env.CODE_SYSTEM_STORE;
-    else process.env.CODE_SYSTEM_STORE = before;
-    if (beforeDocker === undefined) delete process.env.CODE_SYSTEM_DOCKER;
-    else process.env.CODE_SYSTEM_DOCKER = beforeDocker;
+    for (const [k, v] of Object.entries(prior)) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
     await new Promise(r => server.close(r));
     await store.cleanup();
   });
@@ -41,7 +53,17 @@ async function withApi(t, deps = {}) {
     });
     return { status: res.status, body: await res.json() };
   };
-  return { call, store };
+  // A raw fetch, for the paths where the point is that the body IS json.
+  const raw = (url, init) => fetch(`${base}${url}`, init);
+  return { call, raw, store, base };
+}
+
+// Read a stored record straight off disk — the API's answer and what it
+// actually persisted are different claims, and the gate tests need both.
+async function stored(store, id) {
+  const { promises: fs } = await import('node:fs');
+  const path = await import('node:path');
+  return JSON.parse(await fs.readFile(path.join(store.dir, 'remotes', `${id}.json`), 'utf8'));
 }
 
 test('health answers, which is all the conductor asks of it', async (t) => {
@@ -174,4 +196,286 @@ test('the API refuses an option-shaped config rather than storing it', async (t)
   assert.equal(patched.status, 400);
   const still = (await call('GET', '/remotes')).body.remotes[0];
   assert.equal(still.config.host, 'box', 'the stored value is unchanged');
+});
+
+// ── THE OPERATOR GATE, backend side ──────────────────────────────────
+//
+// Two states live on a card and they disagree routinely: the GATE
+// (`record.enabled`, what the operator set, the only thing that decides whether
+// an operation runs) and the PROBE (`reachability`, re-asked on every GET and
+// never gated). These tests are about the gate; the probe's own rules stay
+// where they were. See .wiki/gotchas/gate-versus-probe.md.
+
+// PINS: a new remote starts SWITCHED OFF. An ssh remote genuinely has no master
+// until `connect` runs, so a default-on gate would claim a state nobody
+// established — and the refusal a disabled remote gives names the fix.
+test('a newly created remote is switched OFF', async (t) => {
+  const { call, store } = await withApi(t);
+  const made = await call('POST', '/remotes', {
+    remoteId: 'app-ctr', kind: 'docker', config: { container: 'app' },
+  });
+  assert.equal(made.status, 201);
+  assert.equal(made.body.remote.enabled, false);
+  assert.equal((await stored(store, 'app-ctr')).enabled, false, 'and that is what was persisted');
+});
+
+// PINS: `connect` moves the gate AND drives the kind's own seam, and the card
+// it answers with is a REAL RE-PROBE rather than a claim. A successful ssh
+// connect changes the control socket's inode, which moves the fingerprint,
+// which re-probes the baseline — all inside the action's own response.
+test('connect opens the ssh master, sets the gate, and answers a freshly probed card', async (t) => {
+  const stub = await stubSshCli(t, { socket: true, checkExit: 0, execStdout: GNU_OUT });
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_SSH: JSON.stringify(stub.cli) });
+  await call('POST', '/remotes', { remoteId: 'box', kind: 'ssh', config: { host: 'box', user: 'me' } });
+
+  const res = await call('POST', '/remotes/box/connect');
+  assert.equal(res.status, 200);
+  assert.equal(res.body.remote.enabled, true);
+  assert.equal((await stored(store, 'box')).enabled, true, 'the gate is persisted, not just reported');
+  assert.equal(res.body.remote.reachability.connected, true,
+    'the response carries a probe, not an assumption');
+
+  const argv = await stub.argv();
+  assert.ok(argv.includes('-N'), 'a dedicated master was started');
+  assert.ok(argv.indexOf('check') > argv.indexOf('-N'),
+    'and PROVEN with `-O check` afterwards, rather than trusting exit 0');
+});
+
+// PINS ATTACH-ONLY AT ITS SHARPEST POINT: the one situation in which a provider
+// that was NOT attach-only would start the container. Connecting a docker
+// remote whose container is stopped SUCCEEDS — the gate is an operator setting,
+// not a claim about the target — and the only docker invocation the whole route
+// makes is the card's own read-only `inspect`.
+test('connecting a docker remote whose container is STOPPED never starts it', async (t) => {
+  const stub = await stubDockerCli(t, { stdout: 'false img 2026-09-01T00:00:00Z\n' });
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_DOCKER: JSON.stringify(stub.cli) });
+  await call('POST', '/remotes', { remoteId: 'app-ctr', kind: 'docker', config: { container: 'app' } });
+
+  const res = await call('POST', '/remotes/app-ctr/connect');
+  assert.equal(res.status, 200, 'the gate is the operator\'s setting, not a claim about the target');
+  assert.equal((await stored(store, 'app-ctr')).enabled, true);
+  // The card still tells the truth about the container.
+  assert.equal(res.body.remote.reachability.connected, false);
+  assert.match(res.body.remote.reachability.detail, /not running/);
+
+  const argv = await stub.argv();
+  assert.deepEqual(argv.filter(a => ['start', 'stop', 'run', 'rm', 'create', 'restart'].includes(a)), [],
+    'code-system never starts a container, and assertAttachOnly makes that unwritable');
+  assert.deepEqual(argv.filter(a => a === 'inspect').length, 1, 'exactly one read-only inspect, for the card');
+  assert.equal(argv.includes('exec'), false, 'and an unreachable target is not probed');
+});
+
+// PINS: "enabled" must never mean "enabled but we could not". The kind's
+// `connect` runs FIRST and the gate is written only if it succeeded — the
+// reverse order would leave a remote reporting itself usable while every
+// operation against it failed at the transport.
+test('a connect the transport refuses leaves the gate OFF, carrying ssh\'s own words', async (t) => {
+  const stub = await stubSshCli(t, { connectExit: 255, connectStderr: 'Permission denied (publickey).\n' });
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_SSH: JSON.stringify(stub.cli) });
+  await call('POST', '/remotes', { remoteId: 'box', kind: 'ssh', config: { host: 'box' } });
+
+  const res = await call('POST', '/remotes/box/connect');
+  assert.equal(res.status, 502);
+  assert.match(res.body.error, /Permission denied \(publickey\)/, "the transport's own line, not a paraphrase");
+  assert.equal((await stored(store, 'box')).enabled, false, 'the gate did NOT move');
+  // The card still comes back, so the UI can show the failure against the card
+  // rather than as a detached alert.
+  assert.equal(res.body.remote.remoteId, 'box');
+});
+
+// PINS: DISABLING CANNOT BE BLOCKED. It is a safety action — the operator is
+// withdrawing permission — so a transport that cannot close its channel is a
+// WARNING on an otherwise-successful disable, never a failure that leaves the
+// remote enabled. The gate is written FIRST for exactly this reason.
+test('a disconnect the transport refuses still switches the remote off, with a warning', async (t) => {
+  const stub = await stubSshCli(t, {
+    socket: true, execStdout: GNU_OUT,
+    exitExit: 255, exitStderr: 'something went wrong closing the master\n',
+  });
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_SSH: JSON.stringify(stub.cli) });
+  await call('POST', '/remotes', { remoteId: 'box', kind: 'ssh', config: { host: 'box' } });
+  await call('POST', '/remotes/box/connect');
+
+  const res = await call('POST', '/remotes/box/disconnect');
+  assert.equal(res.status, 200, 'withdrawing permission must not be blockable');
+  assert.equal((await stored(store, 'box')).enabled, false);
+  assert.equal(res.body.remote.enabled, false);
+  assert.match(res.body.warning, /something went wrong closing the master/,
+    'and the operator is told the channel is still open');
+});
+
+// PINS: a DISABLED remote is never probed. The baseline probe is a round trip
+// INTO the target, and it bypasses the launcher's gate entirely because it runs
+// in the backend — so the gate has to be part of its condition, or a switched-
+// off remote would still be executed against on every card render.
+test('a disabled remote is never probed, however reachable it is', async (t) => {
+  const stub = await stubDockerCli(t, { stdout: 'true img 2026-09-01T00:00:00Z\n', execStdout: GNU_OUT });
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_DOCKER: JSON.stringify(stub.cli) });
+  await call('POST', '/remotes', { remoteId: 'app-ctr', kind: 'docker', config: { container: 'app' } });
+
+  const listed = await call('GET', '/remotes');
+  const card = listed.body.remotes[0];
+  assert.equal(card.enabled, false);
+  // The PROBE is NOT gated — this is how a disabled card still shows reality.
+  assert.equal(card.reachability.connected, true, 'reachability still tells the truth');
+  assert.notEqual(card.reachability.fingerprint, null, 'and the fingerprint moved');
+  // But the round trip into the target did not happen.
+  assert.equal(card.baseline.state, 'unknown');
+  assert.equal((await stored(store, 'app-ctr')).baseline.state, 'unknown');
+  assert.equal((await stub.argv()).includes('exec'), false,
+    'no command was run against a remote the operator has switched off');
+
+  // The control: enable it, and the very same setup DOES probe.
+  await call('POST', '/remotes/app-ctr/connect');
+  assert.equal((await stored(store, 'app-ctr')).baseline.state, 'ok');
+  assert.equal((await stub.argv()).includes('exec'), true);
+});
+
+// PINS: a CONFIG edit resets the gate, a LABEL edit preserves it — by exactly
+// the argument the route already makes for resetting `baseline`. For ssh it is
+// not merely cautious: `controlPathFor` keys on (user, host), so editing `host`
+// yields a DIFFERENT socket, the old master is irrelevant, and a carried-over
+// "enabled" would be factually stale.
+test('a config edit switches the remote off; a label-only edit does not', async (t) => {
+  const stub = await stubSshCli(t, { socket: true, execStdout: GNU_OUT });
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_SSH: JSON.stringify(stub.cli) });
+  await call('POST', '/remotes', { remoteId: 'box', kind: 'ssh', config: { host: 'box' } });
+  await call('POST', '/remotes/box/connect');
+  assert.equal((await stored(store, 'box')).enabled, true);
+
+  const relabelled = await call('PATCH', '/remotes/box', { label: 'The box' });
+  assert.equal(relabelled.body.remote.enabled, true, 'a rename points at the same target');
+  assert.equal((await stored(store, 'box')).enabled, true);
+
+  const reconfigured = await call('PATCH', '/remotes/box', { config: { host: 'other-box' } });
+  assert.equal(reconfigured.body.remote.enabled, false,
+    'a changed config may point at a different target entirely');
+  assert.equal((await stored(store, 'box')).enabled, false);
+  assert.equal(reconfigured.body.remote.baseline.state, 'unknown', 'and the old verdict goes with it');
+});
+
+// PINS THE OUT-OF-BAND CASE FOR DOCKER, which had no coverage: a container
+// stopped behind the plugin's back reads as not running on the next refresh, in
+// the SAME server process, with nothing restarted and the gate untouched. This
+// is the docker half of what tests/ssh-live.test.mjs pins for ssh.
+test('a container stopped out of band shows on the next refresh, gate untouched', async (t) => {
+  const stub = await stubDockerCli(t, {
+    answers: { stdout: 'true img 2026-09-01T00:00:00Z\n', exitCode: 0 },
+    execStdout: GNU_OUT,
+  });
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_DOCKER: JSON.stringify(stub.cli) });
+  await call('POST', '/remotes', { remoteId: 'app-ctr', kind: 'docker', config: { container: 'app' } });
+  await call('POST', '/remotes/app-ctr/connect');
+  assert.equal((await call('GET', '/remotes')).body.remotes[0].reachability.connected, true);
+
+  // `docker stop`, by somebody else.
+  await stub.setAnswer({ stdout: 'false img 2026-09-01T00:00:00Z\n', exitCode: 0 });
+
+  const after = (await call('GET', '/remotes')).body.remotes[0];
+  assert.equal(after.reachability.connected, false, 'the probe re-asked — nothing was cached');
+  assert.match(after.reachability.detail, /not running/);
+  assert.equal(after.enabled, true, 'and the operator gate did not move on its own');
+  assert.equal((await stored(store, 'app-ctr')).enabled, true);
+});
+
+// PINS THE SAME FOR SSH, and the distinction that matters most in the UI: a
+// master dropped out of band leaves the remote ENABLED. Commands still run,
+// unmultiplexed — losing the master is losing multiplexing, not losing
+// capability, and the card must not say otherwise.
+test('an ssh master dropped out of band shows on the next refresh, gate untouched', async (t) => {
+  const stub = await stubSshCli(t, {
+    socket: true, execStdout: GNU_OUT,
+    answers: { stderr: 'Master running (pid=4242)\n', exitCode: 0 },
+  });
+  const { call } = await withApi(t, {}, { CODE_SYSTEM_SSH: JSON.stringify(stub.cli) });
+  await call('POST', '/remotes', { remoteId: 'box', kind: 'ssh', config: { host: 'box' } });
+  await call('POST', '/remotes/box/connect');
+  assert.equal((await call('GET', '/remotes')).body.remotes[0].reachability.connected, true);
+
+  // `ssh -O exit`, by somebody else. The measured wording for a dead socket.
+  await stub.setAnswer({
+    stderr: 'Control socket connect(/tmp/x): No such file or directory\n',
+    exitCode: 255,
+  });
+
+  const after = (await call('GET', '/remotes')).body.remotes[0];
+  assert.equal(after.reachability.connected, false);
+  assert.equal(after.enabled, true,
+    'a dropped master is NOT a withdrawn permission — commands still run, unmultiplexed');
+});
+
+// PINS: an edit takes effect on the NEXT operation, with no restart — the same
+// no-cache property the launcher relies on, asserted from the backend side.
+test('an edited config is what the next probe actually addresses', async (t) => {
+  const stub = await stubDockerCli(t, { stdout: 'true img 2026-09-01T00:00:00Z\n', execStdout: GNU_OUT });
+  const { call } = await withApi(t, {}, { CODE_SYSTEM_DOCKER: JSON.stringify(stub.cli) });
+  await call('POST', '/remotes', { remoteId: 'app-ctr', kind: 'docker', config: { container: 'first' } });
+  await call('GET', '/remotes');
+  assert.ok((await stub.argv()).includes('first'));
+
+  await call('PATCH', '/remotes/app-ctr', { config: { container: 'second' } });
+  await call('GET', '/remotes');
+  assert.ok((await stub.argv()).includes('second'), 'the SAME server addressed the new container');
+});
+
+// PINS the two routes' edge answers, which mirror PATCH's: an absent record is
+// 404, and a record the readers cannot understand is 409 carrying the store's
+// own message rather than a generic failure.
+test('connect and disconnect answer 404 for an absent remote and 409 for an unreadable one', async (t) => {
+  const { call, store } = await withApi(t);
+  const { promises: fs } = await import('node:fs');
+  const path = await import('node:path');
+
+  for (const route of ['connect', 'disconnect']) {
+    assert.equal((await call('POST', `/remotes/ghost/${route}`)).status, 404);
+  }
+  await fs.mkdir(path.join(store.dir, 'remotes'), { recursive: true });
+  await fs.writeFile(path.join(store.dir, 'remotes', 'broken.json'), '{not json');
+  for (const route of ['connect', 'disconnect']) {
+    const res = await call('POST', `/remotes/broken/${route}`);
+    assert.equal(res.status, 409);
+    assert.match(res.body.error, /not valid JSON/, "the store's own message");
+  }
+});
+
+// PINS: the kind descriptors are SERVED, so the card UI's form comes from the
+// kinds themselves rather than a copy in the frontend.
+test('GET /kinds serves one descriptor per registered kind, with its form', async (t) => {
+  const { call } = await withApi(t);
+  const res = await call('GET', '/kinds');
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.kinds.map(k => k.kind), ['docker', 'ssh']);
+  for (const k of res.body.kinds) {
+    assert.ok(k.label, 'a human label');
+    assert.ok(Array.isArray(k.configFields) && k.configFields.length > 0);
+    for (const f of k.configFields) assert.ok(f.name && f.label);
+  }
+  // GET /health keeps its PLAIN kind list: the conductor's liveness probe has
+  // no use for descriptors.
+  assert.deepEqual((await call('GET', '/health')).body.kinds, ['docker', 'ssh']);
+});
+
+// PINS: an unexpected failure answers JSON, not express's HTML page. The
+// client's `api()` reads `{error}` off every response; an HTML body makes it
+// throw a JSON parse error and show the user nothing about what went wrong.
+// Driven through express's own body parser, which is a REACHABLE path — a
+// proxy, a bug or an oversized config all reach it.
+test('an unexpected error answers JSON, never express\'s HTML page', async (t) => {
+  const { raw } = await withApi(t);
+
+  for (const [label, body] of [
+    ['a malformed body', '{not json'],
+    ['an oversized body', JSON.stringify({ remoteId: 'a', kind: 'docker', config: { container: 'x'.repeat(300 * 1024) } })],
+  ]) {
+    const res = await raw('/remotes', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+    });
+    assert.ok(res.status >= 400, `${label}: refused`);
+    assert.match(res.headers.get('content-type') ?? '', /application\/json/, `${label}: content-type`);
+    const parsed = await res.json();
+    assert.equal(typeof parsed.error, 'string', `${label}: the client can read {error}`);
+    assert.ok(parsed.error.length > 0);
+  }
 });

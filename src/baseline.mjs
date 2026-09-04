@@ -136,9 +136,17 @@ export async function probeBaseline(transport, record, fingerprint, { run = null
 
 // The decision the backend actually makes per card render, in one place so the
 // caching rule is testable without an HTTP round trip: probe only when the
-// target is reachable AND the fingerprint moved. A probe that could not run
-// leaves the stored verdict exactly as it was.
+// remote is SWITCHED ON, the target is reachable, AND the fingerprint moved. A
+// probe that could not run leaves the stored verdict exactly as it was.
+//
+// THE GATE BELONGS IN THIS CONDITION because the probe is the one backend path
+// that execs INTO a target, and it bypasses the launcher's gate entirely — it
+// runs in this process, not through StoreRemoteSource.lookup. Without it a
+// switched-off remote would still be executed against on every card render,
+// which is precisely what the operator withdrew permission for. It also saves a
+// round trip per disabled card.
 export async function refreshBaseline(transport, rec, reach, { run = null } = {}) {
+  if (rec?.enabled !== true) return { record: rec, probed: false };
   if (!reach?.connected || !needsProbe(rec, reach.fingerprint)) return { record: rec, probed: false };
   const baseline = await probeBaseline(transport, rec, reach.fingerprint, { run });
   if (!baseline) return { record: rec, probed: false };
