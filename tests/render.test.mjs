@@ -56,7 +56,9 @@ class El {
 
 const SHELL_IDS = ['reg-pill', 'registration', 'updated', 'refresh', 'empty', 'remotes', 'add'];
 
-function installDom() {
+// `clipboard` is passed explicitly, never defaulted here: a default parameter
+// would swallow the very case under test (an ABSENT clipboard is `undefined`).
+function installDom(clipboard) {
   const byId = new Map(SHELL_IDS.map(id => [id, new El('div')]));
   const define = (name, value) =>
     Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
@@ -70,7 +72,9 @@ function installDom() {
   define('location', { pathname: '/', search: '' });
   define('history', { replaceState: () => {} });
   define('addEventListener', () => {});
-  define('navigator', { clipboard: { writeText: () => {} } });
+  // Scriptable, including ABSENT — which is the real deployment shape in a
+  // non-secure iframe context under cc's proxy.
+  define('navigator', clipboard === undefined ? {} : { clipboard });
   define('confirm', () => true);
   // The 10 s poll would otherwise hold the process open. The manual and
   // post-action refreshes are what these tests drive anyway.
@@ -123,13 +127,21 @@ const REMOTES = [
 
 const REGISTRATION = { state: 'ok', rows: [{ id: 'docker', state: 'ok', message: 'ok' }], checkedAt: 'x' };
 
-function installFetch({ remotes = REMOTES, registration = REGISTRATION } = {}) {
+// `reply` lets a test script one non-GET route's answer — which is how the
+// action handlers, not just the render path, get put under test.
+function installFetch({ remotes = REMOTES, registration = REGISTRATION, reply = null } = {}) {
   const calls = [];
   Object.defineProperty(globalThis, 'fetch', {
     configurable: true,
     writable: true,
     value: async (path, init = {}) => {
-      calls.push({ path, method: init.method ?? 'GET' });
+      calls.push({
+        path,
+        method: init.method ?? 'GET',
+        body: init.body ? JSON.parse(init.body) : null,
+      });
+      const scripted = reply?.(path, init.method ?? 'GET');
+      if (scripted) return { ok: scripted.ok !== false, status: scripted.status ?? 200, json: async () => scripted.body ?? {} };
       const body = path === 'api/remotes' ? { remotes, kinds: KINDS }
         : path === 'api/registration' ? registration
           : {};
@@ -142,8 +154,8 @@ function installFetch({ remotes = REMOTES, registration = REGISTRATION } = {}) {
 // A fresh module instance per test: app.js runs its first refresh at import
 // time, so the cache buster is what makes each test independent.
 let seq = 0;
-async function mount(opts) {
-  const byId = installDom();
+async function mount(opts = {}) {
+  const byId = installDom('clipboard' in opts ? opts.clipboard : { writeText: async () => {} });
   const calls = installFetch(opts);
   await import(`../frontend/app.js?t=${seq++}`);
   return { byId, calls, cards: () => byId.get('remotes').children };
@@ -312,4 +324,109 @@ test('an empty store and a blocked registration both say so', async () => {
   assert.match(banner.text, /is a git repository. Move the store./, "cc's own words, verbatim");
   assert.ok(banner.all(e => e.tagName === 'button' && e.text === 'Retry').length === 1);
   assert.match(byId.get('reg-pill').text, /blocked/);
+});
+
+// ── the ACTION handlers, not just the render path ────────────────────
+//
+// Everything above clicks `add` and `Edit`, which only re-render. The bugs that
+// actually reached users were in the handlers that talk to the backend, and no
+// test could have caught them because none dispatched those clicks.
+
+const controlsOf = (card) => card.all(e => e.className === 'controls')[0];
+const button = (card, text) =>
+  controlsOf(card).all(e => e.tagName === 'button' && e.text === text)[0];
+
+// PINS: Connect actually issues the connect POST for THAT remote, and the card
+// re-reads from the server rather than flipping optimistically.
+test('Connect POSTs to its own remote and re-reads the list', async () => {
+  const { cards, calls } = await mount();
+  calls.length = 0;
+  button(cardFor(cards(), 'off-up'), 'Connect').click();
+  await new Promise(r => setImmediate(r));
+
+  const posted = calls.filter(c => c.method === 'POST');
+  assert.deepEqual(posted.map(c => c.path), ['api/remotes/off-up/connect'],
+    'exactly one POST, at the clicked card\'s own remote');
+  assert.ok(calls.some(c => c.path === 'api/remotes' && c.method === 'GET'),
+    'and the new state is re-read, never assumed');
+});
+
+// PINS: a DISCONNECT WARNING REACHES THE OPERATOR. The route answers
+// 200 {remote, warning} by design when the transport could not close its
+// channel — disabling must not be blockable — but `action()` re-renders from a
+// fresh GET that carries no warning, so discarding the response showed plain
+// success while the ssh master was still open. `remove()` already had the right
+// shape; this makes the gate routes match it.
+test('a disconnect warning is surfaced, not swallowed', async () => {
+  const { byId, cards } = await mount({
+    reply: (path, method) => (method === 'POST' && path.endsWith('/disconnect')
+      ? { body: { remote: {}, warning: 'ssh could not close the master for me@box' } }
+      : null),
+  });
+  button(cardFor(cards(), 'on-up'), 'Disconnect').click();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+
+  assert.match(byId.get('registration').text, /could not close the master/,
+    'the operator is told the channel is still open');
+});
+
+// PINS the same for CONNECT's failure body. The route answers 502
+// {error, remote}; `api()` throws with `error`, and `action()` must show it.
+test('a refused connect shows the transport\'s own words', async () => {
+  const { byId, cards } = await mount({
+    reply: (path, method) => (method === 'POST' && path.endsWith('/connect')
+      ? { ok: false, status: 502, body: { error: 'Permission denied (publickey).' } }
+      : null),
+  });
+  button(cardFor(cards(), 'off-up'), 'Connect').click();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+
+  assert.match(byId.get('registration').text, /Permission denied \(publickey\)/);
+});
+
+// PINS: THE COPY BUTTON DOES NOT CLAIM SUCCESS IT DID NOT EARN.
+//
+// `navigator.clipboard` is absent in a NON-SECURE context, which is exactly
+// this deployment inside cc's iframe over plain http. Firing it unawaited and
+// flipping to "Copied" regardless means the operator pastes nothing into cc's
+// Remote field believing the hand-off worked — and the remoteId is the ONLY
+// channel between a card and a project.
+test('Copy reports failure when the clipboard is unavailable', async () => {
+  const { cards } = await mount({ clipboard: undefined });
+  const card = cardFor(cards(), 'on-up');
+  const copy = card.all(e => e.className === 'cred-copy')[0];
+  copy.click();
+  await new Promise(r => setImmediate(r));
+
+  assert.notEqual(copy.text, 'Copied', 'it must not claim a copy that never happened');
+  assert.match(copy.text, /copy|select/i, 'and says what the operator should do instead');
+  // The id itself stays on screen and selectable, so the fallback is real.
+  assert.equal(card.all(e => e.className === 'cred-val')[0].text, 'on-up');
+});
+
+// PINS the same for a clipboard that EXISTS and REJECTS — a denied permission
+// prompt, which is the other way this fails in a browser.
+test('Copy reports failure when the clipboard rejects', async () => {
+  const { cards } = await mount({
+    clipboard: { writeText: async () => { throw new Error('NotAllowedError'); } },
+  });
+  const copy = cardFor(cards(), 'on-up').all(e => e.className === 'cred-copy')[0];
+  copy.click();
+  await new Promise(r => setImmediate(r));
+  assert.notEqual(copy.text, 'Copied');
+});
+
+// PINS the success arm, so the two above cannot pass by never saying "Copied".
+test('Copy confirms only after the write actually resolves', async () => {
+  let wrote = null;
+  const { cards } = await mount({
+    clipboard: { writeText: async (v) => { wrote = v; } },
+  });
+  const copy = cardFor(cards(), 'on-up').all(e => e.className === 'cred-copy')[0];
+  copy.click();
+  await new Promise(r => setImmediate(r));
+  assert.equal(wrote, 'on-up', 'the remoteId, verbatim');
+  assert.equal(copy.text, 'Copied');
 });

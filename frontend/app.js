@@ -139,11 +139,29 @@ function credRow(remoteId) {
       el('span', { class: 'cred-val' }, remoteId),
       el('button', {
         class: 'cred-copy',
-        onclick: (e) => {
-          navigator.clipboard?.writeText(remoteId);
+        // AWAITED, AND ONLY CONFIRMED ON RESOLVE. `navigator.clipboard` is
+        // ABSENT in a non-secure context — which is exactly this plugin inside
+        // cc's iframe over plain http — and present-but-rejecting when the
+        // permission is denied. Firing it unawaited and flipping to "Copied"
+        // regardless means the operator pastes nothing into cc's Remote field
+        // believing the hand-off worked, and that string is the ONLY channel
+        // between this card and a project.
+        onclick: async (e) => {
           const btn = e.target;
-          btn.textContent = 'Copied';
-          setTimeout(() => { btn.textContent = 'Copy'; }, 1200);
+          try {
+            if (typeof navigator?.clipboard?.writeText !== 'function') {
+              throw new Error('no clipboard in this context');
+            }
+            await navigator.clipboard.writeText(remoteId);
+            btn.textContent = 'Copied';
+            setTimeout(() => { btn.textContent = 'Copy'; }, 1200);
+          } catch {
+            // LEFT ON SCREEN rather than reset: the operator has to do
+            // something, and the id beside it is selectable text.
+            btn.textContent = 'Select & copy';
+            btn.setAttribute('title', 'The browser would not give this page the clipboard'
+              + ' — select the id and copy it by hand.');
+          }
         },
       }, 'Copy'),
     ),
@@ -246,6 +264,14 @@ async function submit(mode) {
   });
 }
 
+// A gate route's response carries more than its status. `remove()` has always
+// read its `warning` this way; these two now match it, so every route that can
+// answer one has exactly one handling shape.
+async function gateAction(path) {
+  const res = await api('POST', path);
+  if (res.warning) state.notice = { level: 'warn', text: res.warning };
+}
+
 // STATE AND ACTION ARE SEPARATE, deliberately: the gate WORD above reports what
 // the operator set, and this button is how they change it. A switch widget
 // would merge the two and make an in-flight failure look like a state.
@@ -257,11 +283,16 @@ function controls(remote) {
     gate.enabled
       ? el('button', {
         class: 'danger', disabled: isBusy,
-        onclick: () => action(remote.remoteId, () => api('POST', `api/remotes/${id}/disconnect`)),
+        // THE RESPONSE IS READ, not discarded. Disconnect answers 200 with a
+        // `warning` when the transport could not close its channel — disabling
+        // is a safety action and must not be blockable — and `action()`
+        // re-renders from a fresh GET that carries no warning. Dropping it
+        // showed plain success while the ssh master was still open.
+        onclick: () => action(remote.remoteId, () => gateAction(`api/remotes/${id}/disconnect`)),
       }, 'Disconnect')
       : el('button', {
         class: 'connect', disabled: isBusy,
-        onclick: () => action(remote.remoteId, () => api('POST', `api/remotes/${id}/connect`)),
+        onclick: () => action(remote.remoteId, () => gateAction(`api/remotes/${id}/connect`)),
       }, 'Connect'),
     el('button', {
       disabled: isBusy,
