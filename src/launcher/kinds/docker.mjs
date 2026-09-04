@@ -428,8 +428,8 @@ export function createDockerTransport({ cli } = {}) {
       // BE PRECISE ABOUT WHAT THE STDERR GUARD MEANS. It is NOT "docker writes
       // nothing there": on this path `stdout` would be the COMMAND's own output
       // had a command run at all. It is that forging this row requires a command
-      // which exits exactly 127 or 128, opens its stdout with 37 bytes of
-      // docker-internal wording, and writes not one byte to stderr. That is a
+      // which exits exactly 127 or 128, opens its stdout with the 38 bytes of
+      // OCI_PREFIX, and writes not one byte to stderr. That is a
       // bound on plausibility, not a proof — and the outcome of forging it is a
       // named refusal, never a wrong answer.
       if ((code === 127 || code === 128) && stderr === '' && stdout.startsWith(OCI_PREFIX)) {

@@ -236,9 +236,11 @@ test('classifyFailure: our own access failing is NEVER ENOREMOTE', () => {
 });
 
 // PINS §5's "a command that never started is an error frame, not an exit
-// frame", for the two cases that produce it — and the surprising channel:
-// both arrive on STDOUT with exit 127, so a stderr-only classifier is blind to
-// them and fileops' header parse would see the text as file content.
+// frame", for the THREE measured shapes that produce it — and the surprising
+// channel: all arrive on STDOUT, with exit 127 (missing binary, missing `-w`
+// directory) or 128 (a non-absolute `-w`). A stderr-only classifier is blind to
+// every one of them, and fileops' header parse would see the text as file
+// content.
 test('classifyFailure: a command that never started is ENOENT, and its text is on STDOUT', () => {
   const noBinary = classify({
     code: 127, stderr: '',
@@ -267,9 +269,10 @@ test('classifyFailure: a command that never started is ENOENT, and its text is o
 });
 
 // PINS the guards themselves. Without them a command's own output could forge a
-// transport verdict — and the 127/stdout row has no stderr-side counterweight
-// of its own, so it is guarded on the exit code, an EMPTY stderr, and the full
-// docker-internal sentence as the very first bytes of stdout.
+// transport verdict — and the never-started rows have no daemon-side
+// counterweight of their own, so they are guarded on an exit code from the
+// measured pair (127 or 128), an EMPTY stderr, and the 38-byte stem all three
+// share as the very first bytes of stdout.
 test('classifyFailure: a command cannot forge a transport verdict', () => {
   // The command's own failure, which is the overwhelmingly common case.
   assert.equal(classify({ code: 2, stdout: '', stderr: 'fatal: not a git repository' }), null);
@@ -330,7 +333,12 @@ async function stubCli(t, {
   await fs.chmod(bin, 0o755);
   return {
     cli: [bin],
-    async argv() { return (await fs.readFile(argvLog, 'utf8')).split('\n').filter(Boolean); },
+    // Empty when the stub was never invoked at all — every caller passes
+    // arguments, so `[]` is unambiguously "never run" rather than "run bare".
+    async argv() {
+      try { return (await fs.readFile(argvLog, 'utf8')).split('\n').filter(Boolean); }
+      catch { return []; }
+    },
   };
 }
 
@@ -491,13 +499,20 @@ test('spawnPlan: every other interpolated value is structurally an operand', () 
   assert.deepEqual(rep.args.slice(-2), ['-evilcmd', 'x']);
   assert.ok(runIndex(rep.args, ['env', '-i', '--']) !== -1);
 
-  // (d) the `-e` inherit path takes its value as a SEPARATE argv token, so a
-  //     leading dash there cannot become a docker option either. Confirmed
-  //     live: `docker exec -e '--chdir=/tmp=x' -w / -- <ctr> pwd` → `/`.
+  // (d) the `-e` inherit path passes the flag and its value as TWO argv
+  //     elements, which is what makes a leading dash in the value inert —
+  //     docker consumes it as `-e`'s operand, never as an option of its own.
+  //     Confirmed live: `docker exec -e '--chdir=/tmp=x' -w / -- <ctr> pwd` → `/`.
+  //     Asserted on the pairs themselves: a mutant emitting `-eCC_REMOTE=r1` or
+  //     `'-e CC_REMOTE=r1'` as one joined token reds all three of these.
   const e = plan({ env: null });
-  for (let k = 0; k < e.args.length; k++) {
-    if (e.args[k] === '-e') assert.equal(typeof e.args[k + 1], 'string');
-  }
+  assert.equal(e.args.filter(a => a === '-e').length, 2, 'two -e flags, each its own argv element');
+  assert.deepEqual(e.args.filter(a => a.startsWith('-e') && a !== '-e'), [],
+    'and never joined onto its value');
+  assert.deepEqual(
+    e.args.flatMap((a, k) => (a === '-e' ? [e.args[k + 1]] : [])),
+    ['CC_REMOTE=r1', 'CC_EXEC_TOKEN=tok'],
+    'each -e is followed by its whole NAME=VALUE pair');
 });
 
 // ── the reap relay reports whether it could see anything ─────────────
@@ -579,12 +594,47 @@ test('the live-docker gate tries the CODE_SYSTEM_DOCKER invocation first, then `
   assert.deepEqual(candidates({ [DOCKER_ENV]: 'not json' }), [['sudo', '-n', 'docker']]);
 });
 
-test('resolveDockerCli returns the FIRST candidate that a daemon answers', async (t) => {
-  const { resolveDockerCli } = await import('./dockerFixture.mjs');
-  const answers = await stubCli(t, { stdout: '29.7.2\n' });
-  // The override answers, so the fallback is never reached — asserted by the
-  // returned argv being the override's, not `sudo -n docker`.
-  const found = await resolveDockerCli({ [DOCKER_ENV]: JSON.stringify(answers.cli) });
-  assert.deepEqual(found.cli, answers.cli);
+// PINS THE FALL-THROUGH ITSELF, which the composition test above does not
+// reach. A mutant that leaves `candidates()` correct and breaks the traversal —
+// returning after the first probe regardless — reproduces the silent-skip
+// hazard exactly: on a host whose bare `docker` cannot reach the socket, the
+// live suite would skip while `npm test` stayed green.
+test('the gate falls THROUGH a candidate that no daemon answers to the next one', async (t) => {
+  const { firstReachable } = await import('./dockerFixture.mjs');
+  const dead = await stubCli(t, { exitCode: 1, stderr: 'permission denied while trying to connect\n' });
+  const alive = await stubCli(t, { stdout: '29.7.2\n' });
+
+  const found = await firstReachable([dead.cli, alive.cli]);
+  assert.ok(found, 'a dead first candidate must not end the search');
+  assert.deepEqual(found.cli, alive.cli);
   assert.equal(found.serverVersion, '29.7.2');
+  assert.equal((await dead.argv()).length > 0, true, 'and the dead one really was tried first');
+
+  // It stops at the first ANSWER, so the fallback is not a second probe every
+  // run pays for.
+  const second = await stubCli(t, { stdout: '1.2.3\n' });
+  assert.deepEqual((await firstReachable([alive.cli, second.cli])).serverVersion, '29.7.2');
+  assert.deepEqual(await second.argv(), [], 'the second candidate is never probed once the first answers');
+
+  // And nothing answering is null, not a lucky last value.
+  const dead2 = await stubCli(t, { exitCode: 1 });
+  assert.equal(await firstReachable([dead.cli, dead2.cli]), null);
+  assert.equal(await firstReachable([]), null);
+});
+
+// PINS that the memo is keyed on the override, not global. A mutant memoising
+// outright answers the first invocation for every later one, which on a host
+// with a working fallback silently pins the whole suite to one CLI.
+test('resolveDockerCli answers per CODE_SYSTEM_DOCKER value, not once for the process', async (t) => {
+  const { resolveDockerCli } = await import('./dockerFixture.mjs');
+  const a = await stubCli(t, { stdout: '29.7.2\n' });
+  const b = await stubCli(t, { stdout: '28.0.1\n' });
+
+  const first = await resolveDockerCli({ [DOCKER_ENV]: JSON.stringify(a.cli) });
+  assert.deepEqual(first.cli, a.cli);
+  assert.equal(first.serverVersion, '29.7.2');
+
+  const second = await resolveDockerCli({ [DOCKER_ENV]: JSON.stringify(b.cli) });
+  assert.deepEqual(second.cli, b.cli, 'a different override must be probed, not served from the memo');
+  assert.equal(second.serverVersion, '28.0.1');
 });

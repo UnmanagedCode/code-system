@@ -475,19 +475,25 @@ test('a kind\'s classifyFailure verdict replaces the exit frame with an id-addre
 // whose message arrived first, which is every one of them.
 test('classifyFailure sees a bounded HEAD of each stream, taken from the front', async () => {
   let seen = null;
+  // BOTH PAYLOADS MUST DIFFER HEAD FROM TAIL, or the leg pins nothing: 600
+  // identical bytes capped to 512 are byte-identical whichever end you take, and
+  // a `slice(-512)` mutant passes.
   const noisy = recordingTransport({
     code: 1,
-    stdout: `${'A'.repeat(600)}`,
-    stderr: `Error response from daemon: ${'B'.repeat(600)}`,
+    stdout: `OPENS-HERE${'A'.repeat(580)}ENDS-HERE`,
+    stderr: `Error response from daemon: ${'B'.repeat(560)}ENDS-HERE`,
     classifyFailure: (_config, res) => { seen = res; return null; },
   });
   await driveExec(noisy, { type: 'exec', id: 'h', remoteId: 'alpha', cwd: '/tmp', argv: ['true'] });
   assert.ok(seen, 'the hook was consulted');
   assert.equal(seen.stdout.length, 512, 'stdout is capped');
   assert.equal(seen.stderr.length, 512, 'stderr is capped');
-  assert.ok(seen.stdout.startsWith('AAA'), 'and it is the HEAD, not the tail');
+
+  assert.ok(seen.stdout.startsWith('OPENS-HERE'), 'stdout is the HEAD…');
+  assert.equal(seen.stdout.includes('ENDS-HERE'), false, '…and not the tail');
   assert.ok(seen.stderr.startsWith('Error response from daemon: '),
     'a transport message arrives first, so a tail-shaped head would lose it');
+  assert.equal(seen.stderr.includes('ENDS-HERE'), false, 'stderr is the head too');
 });
 
 // PINS that a failed reap is REPORTED rather than swallowed, and that reporting

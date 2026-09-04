@@ -82,18 +82,33 @@ export async function probeCli(cli) {
   return serverVersion ? { cli, serverVersion } : null;
 }
 
+/**
+ * The FALL-THROUGH itself, extracted so it can be fenced. `candidates()` being
+ * the right pair is one claim; actually trying the second when the first does
+ * not answer is another, and a mutant that returns after the first probe
+ * reproduces the silent-skip hazard exactly while leaving `candidates()` intact.
+ * @returns {Promise<{cli:string[], serverVersion:string}|null>}
+ */
+export async function firstReachable(clis) {
+  for (const cli of clis) {
+    const found = await probeCli(cli);
+    // Stops at the first answer: the fallback is a fallback, not a second probe
+    // every run pays for.
+    if (found) return found;
+  }
+  return null;
+}
+
 let resolved;
 /** @returns {Promise<{cli:string[], serverVersion:string}|null>} */
 export async function resolveDockerCli(env = process.env) {
-  // Memoised per environment: a `docker version` per test would dominate the
-  // suite, and the answer cannot change mid-run.
+  // Memoised PER ENVIRONMENT: a `docker version` per test would dominate the
+  // suite, and the answer cannot change mid-run for a given override. Keyed on
+  // the override rather than memoised outright, or a test driving two different
+  // invocations would get the first one's answer for both.
   const key = JSON.stringify(env[DOCKER_ENV] ?? '');
   if (resolved?.key === key) return resolved.value;
-  let value = null;
-  for (const cli of candidates(env)) {
-    value = await probeCli(cli);
-    if (value) break;
-  }
+  const value = await firstReachable(candidates(env));
   resolved = { key, value };
   return value;
 }
