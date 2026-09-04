@@ -671,3 +671,49 @@ test('live: reap throws when the relay cannot be proved, and is quiet when the c
       .reap({ container: box }, { pid: null, token: 'x', remoteId: 'alpha' }),
     /may have survived/);
 });
+
+// ── L14: the out-of-band half ────────────────────────────────────────
+//
+// tests/ssh-live.test.mjs pins this for ssh; docker had no equivalent. The card
+// UI's whole probe axis rests on it: reachability is re-asked on every render
+// and never cached, so a container stopped BEHIND THE PLUGIN'S BACK must read
+// as not running on the very next probe.
+//
+// THE FIXTURE STOPS THE CONTAINER, and that asymmetry is the point: a fixture
+// may, the provider may not. The counting shim proves the provider issued only
+// `inspect`, so "the container stopped" and "we stopped it" cannot be confused.
+
+test('live: a container stopped out of band reads as not running, and the provider never stopped it', async (t) => {
+  const d = await skipUnlessDocker(t); if (!d) return;
+  const box = await withContainer(t, d.cli);
+  const dir = await tempDir(t);
+  const shim = await countingShim(dir, d.cli);
+  // Every provider-side call goes through the shim; the FIXTURE's own calls use
+  // d.cli directly, so the log contains the provider's invocations and only
+  // those.
+  const transport = createDockerTransport({ cli: shim.argv });
+
+  const before = await transport.reachability({ container: box });
+  assert.equal(before.connected, true, 'the fixture\'s container is running');
+  assert.notEqual(before.fingerprint, null);
+
+  // `docker stop`, by somebody who is not this provider.
+  const stopped = await run([...d.cli, 'stop', box]);
+  assert.equal(stopped.code, 0, `the fixture could not stop the container: ${stopped.stderr}`);
+
+  const after = await transport.reachability({ container: box });
+  assert.equal(after.connected, false, 'the probe re-asked the daemon — nothing was cached');
+  assert.match(after.detail, /not running/);
+  assert.match(after.detail, /ATTACH-ONLY/, 'and the card says code-system will not start it');
+  assert.equal(after.fingerprint, null, 'a stopped container caches no baseline verdict');
+
+  // THE PROVIDER'S OWN LOG. Attach-only is not a claim here — it is what the
+  // recorded invocations show.
+  const calls = await shim.calls();
+  assert.equal(calls.length, 2, 'exactly the two reachability probes');
+  for (const c of calls) {
+    assert.match(c, /^inspect /, `the provider ran only inspect, not: ${c}`);
+  }
+  assert.equal(calls.some(c => /\b(start|stop|run|rm|create|restart|kill)\b/.test(c)), false,
+    'the provider never mutated the container');
+});
