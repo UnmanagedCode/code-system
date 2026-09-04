@@ -6,7 +6,9 @@ Durable knowledge about this project: gotchas, decisions, glossary. Read this fi
 
 - [gotchas/tooling-baseline.md](gotchas/tooling-baseline.md) — host-side execution doesn't free the target from GNU tooling requirements (Alpine/busybox/distroless break)
 - [gotchas/kill-relay.md](gotchas/kill-relay.md) — provider must SIGKILL child processes itself; cc's exit-on-stdin-EOF doesn't reach them; it fires at four sites (close, shutdown, timeout, `signal`); the relay must PROVE it ran or a blind reap reads as a clean one
-- [gotchas/no-remote-discovery.md](gotchas/no-remote-discovery.md) — no `listRemotes` frame; the plugin UI is the only catalog; `remoteId` is a stable hand-off contract
+- [gotchas/no-remote-discovery.md](gotchas/no-remote-discovery.md) — no `listRemotes` frame; the plugin UI is the only catalog; `remoteId` is a stable hand-off contract, and a project can only be pointed at a remote that is already switched ON
+- [gotchas/gate-versus-probe.md](gotchas/gate-versus-probe.md) — a remote has TWO states that disagree routinely: the operator GATE (`record.enabled`, the only thing that decides whether an operation runs, enforced at one site) and the PROBE (`reachability`, never cached, never gated); why the gate could not just BE the ssh socket; what a kind author owes
+- [gotchas/refusal-message-errno-tokens.md](gotchas/refusal-message-errno-tokens.md) — cc RE-PARSES a refusal's `message` text and ignores the structured code, so a bare `ENOENT`/`EACCES`/… token silently downgrades an administrative refusal into "git answered non-zero"; and an `error` frame's `stderr` reaches nobody
 - [gotchas/active-registration.md](gotchas/active-registration.md) — registering a System row is an active handshake with its own preconditions
 - [gotchas/host-environment.md](gotchas/host-environment.md) — two host-side failure modes: `BASH_RULES_NOT_ENFORCEABLE` and stale plugin state until restart
 - [gotchas/host-kind-and-conformance.md](gotchas/host-kind-and-conformance.md) — why `host` is KEPT (own-filesystem fixtures + it runs the battery through the shipped launcher); the launch surface §10 obliges (and that the `--remote` root is NOT a fence the suite asks you to enforce); the four rows a third-party run skips; what the two env seams really buy
@@ -27,7 +29,9 @@ Durable knowledge about this project: gotchas, decisions, glossary. Read this fi
 - **remote / `remoteId`** — the actual target machine or container. Config is stored per `remoteId`. This is the real "remote system"; the cc System is just how cc reaches it.
 - **provider** — this plugin's code for one KIND of transport (`docker` or `ssh`), running on cc's host.
 - **kind** — one transport implementation behind the `Transport` seam (`src/launcher/kinds/`): it builds argv and nothing else. `docker`, `ssh`, and `host` (the never-registered conformance vehicle).
-- **ControlMaster / ControlPath** (ssh) — the multiplexed connection and the unix socket it lives on. Connect state for the `ssh` kind IS that socket's existence: no process and no memory holds it, which is what lets the launcher and the backend agree with no IPC.
+- **ControlMaster / ControlPath** (ssh) — the multiplexed connection and the unix socket it lives on. The socket's existence is what `ssh`'s PROBE reports; it is **not** the gate (see [gotchas/gate-versus-probe.md](gotchas/gate-versus-probe.md)) — closing the master does not stop commands, it only un-multiplexes them.
+- **gate** (`record.enabled`) — the operator's on/off switch for a remote, stored per `remoteId`. The only thing that decides whether an operation runs. Distinct from the probe, and never called "connected".
+- **probe** (`Transport.reachability`) — the live answer to "is the target there", re-asked on every card render and never cached or gated.
 - **launcher** — the process cc spawns per System row (`src/launcher/main.mjs`). Owns the protocol for every kind.
 - **baseline** — a per-remote verdict (`ok` / `unsupported` / `unknown`) on whether the target has the GNU tooling cc's derived operations need.
 - **reap** — a kind's relay of the kill into the far side, for children that are not the launcher's OS descendants (`Transport.reap`). A `/proc` scan for the exec's `CC_EXEC_TOKEN`, shared by `docker` and `ssh` from `src/launcher/kinds/reapscript.mjs`.

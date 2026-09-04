@@ -68,7 +68,8 @@ and we never look for a `remoteId` on them.
 | unknown / absent / unreadable record | `ENOREMOTE`, id-addressed |
 | record at another schema | `ENOREMOTE`, quoting the schema found, naming the backend as the repair |
 | record whose `kind` is not this launcher's | `ENOREMOTE`, naming the kind it actually is |
-| record whose `baseline.state` is `unsupported` | `EUNKNOWN`, id-addressed, naming the missing capability, `stderr` carrying the target's own words |
+| record whose `enabled` is not `true` | **`ENOREMOTE`**, id-addressed — the operator gate. Checked BEFORE the baseline gate. See below |
+| record whose `baseline.state` is `unsupported` | `EUNKNOWN`, id-addressed, naming the missing capability. The detail rides `message`; a `stderr` field is also set but **no cc reader consumes it** (see the note below the table) |
 | record whose `baseline.state` is `unknown` | **served** — absence of evidence is not evidence |
 | `docker` record whose container is **stopped** | `ENOREMOTE`, id-addressed, naming the container and that this provider is attach-only |
 | `docker` record whose container **does not exist** | `ENOREMOTE`, id-addressed, naming the **configured** container |
@@ -81,6 +82,48 @@ and we never look for a `remoteId` on them.
 **Id-addressing is a MUST, not a nicety.** An id-less `error` frame is
 connection-level and would fail every *other* target's in-flight work
 (`systems-protocol.md §9`).
+
+**Everything a user will read must ride `message`.** Measured at the pin: cc
+drops the `error` frame's `stderr` on the exec path (`src/systems/providerSystem.ts:326-334`
+keeps the frame's `code` and does not carry its `stderr` at all) and
+nothing reads `SystemError.stderr` on the request path. So `stderr` is carried
+and unread — a refusal that put its reason there would reach nobody. (Whether
+`baselineRefusal` should move the target's own words into `message` is a
+behaviour change on a path this card does not otherwise touch, and is filed
+rather than made here.)
+
+**Why the gate's code is `ENOREMOTE`, which is not the literal one.** Nothing
+503-shaped exists in the taxonomy (`src/launcher/protocol.mjs`), and the choice is
+**forced rather than preferred**: cc's `assertRemoteKnown`
+(`src/systems/providerSystem.ts` at the pin) sends one probe `exec` and treats **`ENOREMOTE`
+as its sole failure** — every other code is a PASS, because "each of them is the
+provider answering ABOUT that remote, which is itself proof it serves it". So
+`EUNKNOWN`, `EACCES` or an invented code would make cc resolve the project as
+**healthy**, and the gate would surface only as unexplained per-operation
+failures with no system-level signal. `EUNSUPPORTED` is worse than useless: it
+maps to `501 SYSTEM_NO_REMOTES`, whose advice sends the operator to entirely the
+wrong repair. `ETRANSPORT` would be a lie — the gate is explicitly not a
+transport failure — and `EACCES` already means "a path outside a remote's root".
+
+`ENOREMOTE` maps to `502 REMOTE_NOT_FOUND` and our message is interpolated
+verbatim and untruncated, twice nested, into the sidebar system pill's tooltip
+and into a session's redirected `Bash`.
+
+**Two hard constraints on the gate's message**, both measured, both pinned by
+`tests/gate.test.mjs`:
+
+1. It carries **no `stderr`** — see above.
+2. It contains **no standalone FS errno token** (`ENOENT`, `EACCES`, `EEXIST`,
+   `ENOTDIR`, `EISDIR`, `ENOSPC`). cc's `runGit` and `ProviderShell` ignore the
+   structured code and re-derive one from the prose with `\b<CODE>\b` matching,
+   which silently downgrades an administrative refusal into "git answered
+   non-zero". This applies to **every** kind's `classifyFailure` message too —
+   see `.wiki/gotchas/refusal-message-errno-tokens.md`.
+
+The gate is checked **before** the baseline gate, deliberately: a switched-off
+remote must say *switched off*, not *fails the tooling baseline*. The operator's
+own action is the more actionable answer, and a disabled remote's stale baseline
+verdict is not what they need to hear.
 
 **`cwd: "/"` is accepted and never fenced.** Every derived operation cc sends
 (`stat`, `readDir`, `realpath`, `mkdir`, `removeTree`, `unlink`, `chmod`)
@@ -448,6 +491,14 @@ bare name would depend on the orchestrator's PATH.
 | `404` on the collection | `unsupported` | this cc has no Systems support |
 | anything else / network | `error` | status and body, verbatim |
 
+**Every refusal body is unwrapped from cc's `{"error":"<message>"}` envelope**
+before it is shown. cc's shared router-tail handler answers every
+`/api/settings/systems` failure in that shape and strips the `code` its internal
+errors carry, so showing the body raw would put a JSON envelope where the rows
+above promise cc's own words. The unwrap **falls back to the raw text** in both
+directions that matter: a body that is not JSON at all (a proxy, a crash page)
+and a JSON body with no `error` key. Pinned by `tests/registration.test.mjs`.
+
 Every one of these is a **recorded state** — never a throw, never an exit, never
 a retry loop. "Never crash-loop" is implemented by there being no loop: the one
 retry is `POST /api/registration/retry`, driven by a button. State is in memory
@@ -460,10 +511,29 @@ only and re-derived at every start.
 | `GET /api/health` | any response counts as alive |
 | `GET /api/registration` | `{state, rows:[{id,state,httpStatus,message}], checkedAt}` — `blocked`/`unreachable` messages are rendered verbatim |
 | `POST /api/registration/retry` | the only retry; user-driven |
-| `GET /api/remotes` | every stored remote, each with a live `reachability` and a `baseline`; an unreadable record appears as `{remoteId, broken:{reason,message}}` rather than being hidden |
-| `POST /api/remotes` | create — validates the `remoteId` charset, delegates `config` to the kind. 400 / 409 |
-| `PATCH /api/remotes/:id` | edit everything **except** `remoteId`; a changed `config` resets `baseline` to `unknown` |
+| `GET /api/kinds` | `{kinds:[{kind,label,configFields}]}` — the card UI's form definition, per registered kind. `GET /api/health` keeps a **plain** kind-name list: a liveness probe has no use for descriptors |
+| `GET /api/remotes` | every stored remote, each with a live `reachability` and a `baseline`; an unreadable record appears as `{remoteId, broken:{reason,message}}` rather than being hidden. Its `kinds` field is the **descriptor array**, the same shape `GET /api/kinds` serves |
+| `POST /api/remotes` | create — validates the `remoteId` charset, delegates `config` to the kind. Created **`enabled: false`**. 400 / 409 |
+| `PATCH /api/remotes/:id` | edit everything **except** `remoteId`; a changed `config` resets `baseline` to `unknown` **and `enabled` to `false`**; a label-only edit preserves both |
+| `POST /api/remotes/:id/connect` | 200 `{remote}` — the kind's `connect` **first**, then the gate. 404 absent / 409 unreadable / **502** `{error, remote}` on a transport refusal |
+| `POST /api/remotes/:id/disconnect` | 200 `{remote, warning?}` — the gate **first**, then the kind's `disconnect`. 404 / 409 as above |
 | `DELETE /api/remotes/:id` | delete, **warning** when any cc project still names this `remoteId` |
+| *(router tail)* | every response is JSON, including express's own body-parser refusals — the client reads `{error}` off every status |
+
+**The two gate routes are deliberately asymmetric**, because enabling and
+disabling carry different risks:
+
+- **connect** runs the transport first and writes `enabled: true` only if it
+  succeeded. On a throw the gate stays **off**: "enabled" must never mean
+  "enabled but we could not".
+- **disconnect** writes `enabled: false` first and then attempts the transport;
+  a failure there is a `warning` on an otherwise-**200**. Disabling is a safety
+  action and must not be blockable.
+
+Both answer with a card from a **real re-probe**, so the response *is* the probe
+rather than a claim. `refreshBaseline` is additionally gated on `enabled`: the
+tooling probe is the one backend path that execs into a target and it bypasses
+the launcher's gate entirely, so a disabled remote is never probed.
 
 ### Config values that become argv
 
