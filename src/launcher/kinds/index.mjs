@@ -8,9 +8,9 @@
 // ADDING A KIND IS ONE FILE HERE PLUS ONE LINE BELOW. Nothing in
 // src/registration.mjs or src/store.mjs changes.
 
-import { createDockerTransport } from './docker.mjs';
+import { KIND_META as DOCKER_META, createDockerTransport } from './docker.mjs';
 import { createHostTransport } from './host.mjs';
-import { createSshTransport } from './ssh.mjs';
+import { KIND_META as SSH_META, createSshTransport } from './ssh.mjs';
 
 /**
  * @typedef {object} Transport
@@ -34,16 +34,27 @@ import { createSshTransport } from './ssh.mjs';
  *   so rather than return quietly — "nothing was killed" and "the kill could not
  *   run" are indistinguishable from the core, and only one of them is a leak.
  *   session.mjs reports a throw on stderr and carries on.
- * @property {(config:object) => Promise<object>} [connect]
- * @property {(config:object) => Promise<void>} [disconnect]
- *   OPTIONAL, and only meaningful for a kind whose transport multiplexes. For
- *   `ssh` they open and close the ControlMaster: `connect` is the one operation
- *   that BINDS the control socket (and so the only one allowed the I/O that
- *   builds its directory), `disconnect` is `ssh -O exit` and is IDEMPOTENT.
- *   They govern the MULTIPLEXED MASTER ONLY, never authorization: an `exec`
- *   after a `disconnect` still succeeds, unmultiplexed. Nothing in the core
- *   calls them — the live fixture's setup/teardown does, and card 2026-0005's
- *   buttons will.
+ * @property {(config:object) => Promise<object>} connect
+ * @property {(config:object) => Promise<void>} disconnect
+ *   REQUIRED ON EVERY REGISTERED KIND. These are the OPERATOR GATE's per-kind
+ *   side effect, not a multiplexing feature: the gate itself is `record.enabled`
+ *   in the store, written by the backend and enforced in remotes.mjs, and these
+ *   are whatever else that kind has to do when it moves. A kind with nothing to
+ *   open still implements them — `docker`'s are a documented no-op pass,
+ *   because every `docker exec` is a fresh client.
+ *
+ *   For `ssh` they open and close the ControlMaster: `connect` is the one
+ *   operation that BINDS the control socket (and so the only one allowed the
+ *   I/O that builds its directory), `disconnect` is `ssh -O exit` and is
+ *   IDEMPOTENT. They govern the MULTIPLEXED MASTER ONLY, never authorization:
+ *   an `exec` after a `disconnect` still succeeds, unmultiplexed. That measured
+ *   fact is exactly WHY the gate is a separate mechanism rather than something
+ *   derivable from the socket — see .wiki/gotchas/gate-versus-probe.md.
+ *
+ *   `connect` MAY THROW, and the backend's route leaves the gate OFF when it
+ *   does: "enabled" must never mean "enabled but we could not".
+ *   `disconnect` throwing is a warning on an otherwise-successful disable —
+ *   disabling is a safety action and must not be blockable.
  * @property {(config:object, res:{code:number, stdout:string, stderr:string})
  *            => {code:string, message:string, stderr?:string}|null} [classifyFailure]
  *   OPTIONAL. Reads THE TRANSPORT's own error vocabulary — a docker daemon
@@ -101,6 +112,35 @@ const FACTORIES = {
 export const REGISTERED_KINDS = ['docker', 'ssh'];
 
 export const ALL_KINDS = Object.keys(FACTORIES);
+
+// The card UI's per-kind form and label, one entry per REGISTERED kind. `host`
+// has none deliberately: it is never registered and never gets a card.
+const METAS = {
+  docker: DOCKER_META,
+  ssh: SSH_META,
+};
+
+/**
+ * What `GET /api/kinds` serves and the card UI renders: each registered kind's
+ * human label and the fields its form needs.
+ *
+ * THROWS for a registered kind with no KIND_META rather than serving a card
+ * with an empty form — adding a kind is one file plus one line, and this is
+ * what stops that line being added without the form.
+ *
+ * `kinds` is a parameter only so the completeness guard above is testable
+ * without perturbing the registry; production always calls it with no argument.
+ */
+export function kindDescriptors(kinds = REGISTERED_KINDS) {
+  return kinds.map((kind) => {
+    const meta = METAS[kind];
+    if (!meta) {
+      throw new Error(`kind '${kind}' has no KIND_META — every registered kind needs a label and`
+        + ' configFields, or the card UI cannot render a form for it');
+    }
+    return { kind, label: meta.label, configFields: meta.configFields };
+  });
+}
 
 export function isKnownKind(kind) {
   return Object.hasOwn(FACTORIES, kind);

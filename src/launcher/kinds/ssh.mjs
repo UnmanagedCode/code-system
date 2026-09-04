@@ -43,6 +43,29 @@ import { REAP_TAG, TOKEN_VAR, buildReapScript } from './reapscript.mjs';
 // docker CLI is an env var rather than a store field or a launch flag".
 export const SSH_ENV = 'CODE_SYSTEM_SSH';
 
+// WHAT THE CARD UI RENDERS FOR THIS KIND, and the one home for its human label
+// — see the same block in kinds/docker.mjs.
+export const KIND_META = {
+  label: 'SSH hosts',
+  configFields: [
+    {
+      name: 'host',
+      label: 'Host',
+      required: true,
+      placeholder: 'my-box',
+      hint: 'A `Host` alias from the ssh config of whoever runs the plugin, not a hostname resolved here.'
+        + ' HostName, Port, User, IdentityFile and ProxyJump all live in that file.',
+    },
+    {
+      name: 'user',
+      label: 'User',
+      required: false,
+      placeholder: '(from your ssh config)',
+      hint: 'Optional. Leave it blank to use whatever `User` your ssh config already sets for this Host.',
+    },
+  ],
+};
+
 // THE SHIPPED DEFAULT IS BARE `ssh`: the operator's own ~/.ssh/config and
 // agent. That is what makes a remote's `host` a Host ALIAS — every identity,
 // jump host, port and key lives in the operator's config, and none of it in an

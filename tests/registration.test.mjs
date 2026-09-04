@@ -338,3 +338,88 @@ test('the delete-warning lookup in the API also carries an abort signal', async 
   assert.equal(seen.length, 1);
   assert.ok(seen[0], 'a DELETE runs inside a user request and must not be able to wedge it');
 });
+
+// ── cc's error ENVELOPE ──────────────────────────────────────────────
+//
+// The two tests above that assert "cc's own message, verbatim" hand the fake
+// conductor a BARE STRING body. The real cc never sends one: its shared error
+// handler answers EVERY /api/settings/systems refusal as `{"error":"<message>"}`
+// and nothing else — it strips the `code` its internal errors carry
+// (cc's src/routes.ts, the router-tail `r.use((err, …))` at the pin
+// 8b7b10bf). So the body has to be UNWRAPPED, or a blocked card shows a JSON
+// envelope where docs/protocol.md promises cc's own words.
+
+// The real `.git`-ancestor placement refusal, copied from cc's
+// assertSessionRootsPlaceable at the pin. This is the single most likely 400 a
+// user will ever see from this plugin.
+const PLACEMENT_REFUSAL = "cannot host sessions for system 'docker':"
+  + " '/workspaces/cc-projects' is a git repository, and it contains where cc keeps this"
+  + " system's local session directories (/workspaces/cc-projects/.code-conductor/systems/docker)."
+  + ' Move the code-conductor store out of the repository.';
+
+// PINS: the 400 the user is most likely to hit reaches the card as a SENTENCE,
+// not as JSON. Without the unwrap the card shows
+// `{"error":"cannot host sessions…"}` — the actionable text is still in there,
+// wrapped in punctuation that makes it read like a crash.
+test('a 400 in cc\'s `{error}` envelope is UNWRAPPED, not shown as JSON', async (t) => {
+  const cc = await fakeConductor((req) => {
+    if (req.method === 'GET') return systemsBody([]);
+    return { status: 400, body: { error: PLACEMENT_REFUSAL } };
+  });
+  t.after(() => cc.close());
+
+  const state = await register({ conductorUrl: cc.url });
+  assert.equal(state.state, 'blocked');
+  assert.equal(state.rows[0].message, PLACEMENT_REFUSAL, "cc's sentence, and only it");
+  assert.doesNotMatch(state.rows[0].message, /^\s*\{/, 'no JSON envelope reaches the card');
+  assert.doesNotMatch(state.rows[0].message, /"error"/);
+});
+
+// PINS: the 502's appended bug-signal sentence survives the unwrap. That
+// sentence is the only thing telling the operator a handshake failure is OUR
+// bug rather than their configuration.
+test('a 502 is unwrapped too, and keeps the bug-signal sentence', async (t) => {
+  const ccText = "system 'docker' could not be reached with that command: provider exited 2";
+  const cc = await fakeConductor((req) => {
+    if (req.method === 'GET') return systemsBody([]);
+    return { status: 502, body: { error: ccText } };
+  });
+  t.after(() => cc.close());
+
+  const state = await register({ conductorUrl: cc.url });
+  assert.equal(state.state, 'unreachable');
+  assert.match(state.rows[0].message, /^system 'docker' could not be reached/, 'unwrapped');
+  assert.doesNotMatch(state.rows[0].message, /"error"/);
+  assert.match(state.rows[0].message, /bug signal in this plugin/, 'and still says whose bug it is');
+});
+
+// PINS: the unwrap FALLS BACK to raw text. A proxy, a crash page or an older cc
+// can answer something that is not our JSON at all, and that text is still the
+// most useful thing we have — swallowing it because it did not parse would
+// leave the user with a bare status code.
+test('a refusal that is not cc\'s JSON at all still reaches the user verbatim', async (t) => {
+  const html = '<html><body><h1>502 Bad Gateway</h1><p>nginx/1.24.0</p></body></html>';
+  const cc = await fakeConductor((req) => {
+    if (req.method === 'GET') return systemsBody([]);
+    return { status: 400, body: html };
+  });
+  t.after(() => cc.close());
+
+  const state = await register({ conductorUrl: cc.url });
+  assert.equal(state.rows[0].message, html, 'not swallowed because it did not parse');
+});
+
+// PINS: a JSON body that is not cc's envelope is not silently emptied. A body
+// like `{"detail":"…"}` has no `error` key; unwrapping to `undefined` there
+// would show the user nothing at all.
+test('a JSON refusal with no `error` key is shown whole, not emptied', async (t) => {
+  const body = { detail: 'something else entirely' };
+  const cc = await fakeConductor((req) => {
+    if (req.method === 'GET') return systemsBody([]);
+    return { status: 400, body };
+  });
+  t.after(() => cc.close());
+
+  const state = await register({ conductorUrl: cc.url });
+  assert.match(state.rows[0].message, /something else entirely/);
+});
