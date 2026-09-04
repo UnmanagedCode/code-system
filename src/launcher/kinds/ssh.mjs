@@ -280,8 +280,48 @@ const NO_CONTROL_SOCKET = 'Control socket connect(';
 const CONNECT_FAILED = 'ssh: connect to host ';
 const NO_RESOLVE = 'ssh: Could not resolve hostname ';
 const BAD_HOSTNAME = 'hostname contains invalid characters';
-const AUTH_DENIED = 'Permission denied (publickey';
-const HOSTKEY_FAILED = 'Host key verification failed';
+// NEITHER OF THESE TWO OPENS THE STREAM (measured), which is what makes them
+// the awkward pair. ssh prefixes the auth refusal with `<dest>: ` on its own
+// line, and prefixes the host-key refusal with a whole extra LINE when the
+// operator's config requests strict checking explicitly.
+//
+// So they are matched PER LINE, and only within ssh's own opening — see
+// `sshOwnLine`. An unanchored `includes` was the only thing that accepted both
+// measured shapes, and it also accepted a NESTED ssh inside a caller's own
+// command: a submodule fetch or a jump host printing these exact bytes to its
+// own stderr, exiting non-zero with an empty stdout. Reporting that as OUR
+// transport failing swallows the command's own exit status and sends the
+// operator to fix their `~/.ssh/config` for somebody else's failure.
+const AUTH_DENIED = /^(\S+: )?Permission denied \(publickey/;
+const HOSTKEY_FAILED = /^Host key verification failed/;
+
+// The ONE multi-line preamble measured for the pair above. Deliberately not a
+// general "lines ssh might write" list: every entry here is a line a command's
+// own output is allowed to have in front of a match, so an unmeasured one is a
+// hole rather than robustness.
+const SSH_PREAMBLE = /^No \S+ host key is known for .* strict checking\.$/;
+
+/**
+ * The matched line, iff it is one of ssh's OWN opening lines — i.e. every line
+ * before it is itself a line ssh wrote. Null once a command's own output has
+ * got there first.
+ *
+ * This is the ANCHOR-THEN-REFINE shape `docker.mjs` uses (`startsWith` on the
+ * stream wrapping an `includes`), generalised over that one preamble. When OUR
+ * authentication or host-key check fails the remote command NEVER RAN, so ssh's
+ * diagnostic opens stderr; a command that ran has its own output in front of it.
+ * That position is the only available discriminator — the bytes themselves are
+ * identical whichever ssh emitted them.
+ *
+ * @returns {string|null} the matched line, normalised (no CR)
+ */
+function sshOwnLine(stderr, pattern) {
+  for (const line of allOf(stderr).split('\n')) {
+    if (pattern.test(line)) return line;
+    if (!SSH_PREAMBLE.test(line)) return null;
+  }
+  return null;
+}
 // GNU `env` refusing to start the command, on stderr with an empty stdout.
 // TWO exit codes, measured separately: 127 for a missing binary, 125 for a
 // `--chdir` that does not exist. A classifier anchored on 127 alone reports a
@@ -563,10 +603,15 @@ export function createSshTransport({ cli } = {}) {
     // cannot be caught by remotes.mjs — the store record exists, so the lookup
     // succeeds and the failure appears only as a non-zero exit of ssh.
     //
-    // EVERY ROW IS GUARDED ON ssh's OWN WORDING PLUS AN EMPTY STDOUT, because
-    // EXIT 255 ON ITS OWN CLASSIFIES NOTHING: ssh forwards a remote command's
-    // exit status verbatim, so a command may itself exit 255 (measured). The
-    // measurements and that argument live once, in
+    // EVERY ROW IS GUARDED ON AN EMPTY STDOUT PLUS ssh's OWN WORDING, ANCHORED,
+    // because EXIT 255 ON ITS OWN CLASSIFIES NOTHING: ssh forwards a remote
+    // command's exit status verbatim, so a command may itself exit 255
+    // (measured). Two anchors are in use, and the difference is measured rather
+    // than stylistic: the rows whose wording OPENS the stream are matched with
+    // `startsWith` on the stream, which is the strictest available; the two that
+    // do not open it (auth, host key) go through `sshOwnLine`, which anchors
+    // per line and refuses once a command's own output has got in front. The
+    // measurements and the exit-255 argument live once, in
     // .wiki/gotchas/ssh-controlmaster-transport.md.
     classifyFailure(config, { code, stdout = '', stderr = '' }) {
       const host = String(config?.host ?? '');
@@ -590,14 +635,13 @@ export function createSshTransport({ cli } = {}) {
         }
         // OUR ACCESS FAILING IS NOT THE REMOTE BEING ABSENT, so never
         // ENOREMOTE: that would send a user to rebuild a host that is fine.
-        // Note this one does NOT open stderr — ssh prefixes it with the
-        // destination (`root@172.17.0.5: Permission denied (publickey).`).
-        if (stderr.includes(AUTH_DENIED)) {
+        const authLine = sshOwnLine(stderr, AUTH_DENIED);
+        if (authLine) {
           return {
             code: 'EUNKNOWN',
             message: `ssh could not authenticate to '${dest}' — the host is reachable but this`
               + ' provider was refused. Fix it in the operator\'s own ~/.ssh/config or ssh agent'
-              + ` (${SSH_ENV} sets the whole ssh invocation): ${first(stderr)}`,
+              + ` (${SSH_ENV} sets the whole ssh invocation): ${authLine}`,
             stderr: allOf(stderr),
           };
         }
@@ -606,19 +650,19 @@ export function createSshTransport({ cli } = {}) {
         // `BatchMode=yes` means an unknown or changed key FAILS here: this
         // provider never prompts and never trusts on first use. Adding the key
         // is the operator's out-of-band action.
-        // `includes`, NOT `startsWith`, and that is measured. With an explicit
-        // `StrictHostKeyChecking yes` in the operator's config ssh prefixes the
-        // refusal — `No ED25519 host key is known for <ip> and you have
-        // requested strict checking.\r\nHost key verification failed.\r\n` —
-        // while with the DEFAULT (`ask`) it is that second line alone. A
-        // `startsWith` guard misses the prefixed shape and reports a host-key
-        // refusal as the command's own exit 255.
-        if (stderr.includes(HOSTKEY_FAILED)) {
+        // Both measured shapes are accepted: `Host key verification failed.`
+        // alone (the DEFAULT `ask`), and the same line preceded by
+        // `No ED25519 host key is known for <ip> and you have requested strict
+        // checking.` with both lines in CRLF (an explicit
+        // `StrictHostKeyChecking yes`). The MATCHED line is what the message
+        // quotes — stderr's first line is the less diagnostic half here.
+        const hostkeyLine = sshOwnLine(stderr, HOSTKEY_FAILED);
+        if (hostkeyLine) {
           return {
             code: 'EUNKNOWN',
             message: `ssh could not verify the host key for '${dest}'. This provider never prompts`
               + ' and never trusts a key on first use — add it to the operator\'s own known_hosts'
-              + ` out of band (e.g. ssh-keyscan), then retry: ${first(stderr)}`,
+              + ` out of band (e.g. ssh-keyscan), then retry: ${hostkeyLine}`,
             stderr: allOf(stderr),
           };
         }

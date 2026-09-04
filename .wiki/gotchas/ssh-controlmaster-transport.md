@@ -193,6 +193,21 @@ inode+ctime is used instead — the recipe already locked in
 The last row is what makes `disconnect` idempotent: "already closed" is the
 requested state.
 
+**Every cold shape shares one prefix**, which is why `disconnect`'s guard reads
+only that and never the strerror tail. `-O exit` does not dial, so none of these
+depend on the host being up:
+
+| ControlPath state | exit | stderr |
+|---|---|---|
+| control **directory** absent | 255 | `Control socket connect(<p>): No such file or directory` |
+| directory present, socket absent | 255 | the same |
+| ControlPath exists as a **regular file** | 255 | `Control socket connect(<p>): Connection refused` |
+| ControlPath exists as a **directory** | 255 | the same |
+
+A regular file or a directory sitting at the ControlPath therefore reads as
+"already disconnected" — correctly: there is no master there, which is the
+requested state, and clearing stray files is not `disconnect`'s job.
+
 ## 10. A remote command survives its killed client
 
 MEASURED, not inferred: started `ssh … -- <dest> 'sleep <marker>'`, SIGKILLed

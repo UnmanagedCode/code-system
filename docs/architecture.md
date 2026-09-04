@@ -72,9 +72,9 @@ reports it and carries on.
 `connect(config)` / `disconnect(config)` are **optional** and exist only for a
 kind whose transport multiplexes. Nothing in the core calls them: the launcher
 never needs them (see the ControlMaster section below), the live fixture's
-setup/teardown do, and card 2026-0005's buttons will. **They govern the
-multiplexed master only, never authorization** — an `exec` after a `disconnect`
-still succeeds, unmultiplexed.
+setup/teardown do, and card 2026-0005's buttons will. **What they do and do not
+govern is part of the seam contract, so the typedef owns it** —
+`src/launcher/kinds/index.mjs`, which is what card 2026-0005 programs against.
 
 `classifyFailure(config, {code, stdout, stderr})` is **optional** and reads the
 *transport's* own error vocabulary — a docker daemon response — turning a

@@ -473,6 +473,14 @@ test('classifyFailure: an auth or host-key failure is EUNKNOWN, never ENOREMOTE'
     assert.match(v.stderr, /Host key verification failed/,
       'the reported stderr must carry the whole diagnostic, not just its first line');
     assert.equal(v.stderr.includes('\r'), false, 'and normalised — ssh writes these with CRLF');
+    // THE MESSAGE QUOTES THE MATCHED LINE, not stderr's first line. In the
+    // prefixed shape the first line is `No ED25519 host key is known …`, which
+    // is the LESS diagnostic half and carries a stray CR.
+    assert.match(v.message, /Host key verification failed/,
+      'the message must quote the line that actually matched');
+    assert.equal(v.message.includes('\r'), false, 'and it must not carry a stray CR');
+    assert.equal(/No \S+ host key is known/.test(v.message), false,
+      'the preamble is not the line worth quoting');
   }
   const hostkey = classify({ code: 255, stdout: '', stderr: 'Host key verification failed.\n' });
   assert.equal(hostkey.code, 'EUNKNOWN');
@@ -532,6 +540,36 @@ test('classifyFailure: a command cannot forge a transport verdict', () => {
   // env's wording at the WRONG exit code — the command's own failure.
   assert.equal(classify({ code: 1, stdout: '', stderr: "env: 'x': No such file or directory\n" }), null);
   assert.equal(classify({ code: 126, stdout: '', stderr: "env: 'x': No such file or directory\n" }), null);
+
+  // A CALLER'S COMMAND THAT RUNS ssh ITSELF — a nested hop, a submodule fetch —
+  // prints ssh's EXACT auth and host-key wording to its own stderr, exits
+  // non-zero with an empty stdout, and (since ssh forwards a remote command's
+  // status verbatim) can exit 255 doing it. Reporting OUR transport as broken
+  // there swallows the command's own exit status and points the operator at
+  // their own ~/.ssh/config to fix somebody else's failure.
+  //
+  // These bytes are INDISTINGUISHABLE from our own refusal by content — the
+  // discriminator is position: when OUR authentication fails the command never
+  // ran, so ssh's diagnostic OPENS stderr. A command that ran has its own
+  // output in front of it.
+  for (const stderr of [
+    "Cloning into 'dep'...\nroot@inner: Permission denied (publickey).\nfatal: Could not read from remote repository.\n",
+    "Cloning into 'dep'...\nHost key verification failed.\nfatal: Could not read from remote repository.\n",
+    "Submodule 'x' (git@h:x) registered\nHost key verification failed.\n",
+    "warning: something\nroot@inner: Permission denied (publickey).\n",
+  ]) {
+    assert.equal(classify({ code: 255, stdout: '', stderr }), null,
+      `a nested ssh inside the command must stay the COMMAND's failure: ${JSON.stringify(stderr)}`);
+  }
+  // …and the same wording buried mid-LINE rather than mid-stream.
+  assert.equal(classify({
+    code: 255, stdout: '',
+    stderr: 'ssh-probe: got "Permission denied (publickey)." from the inner hop\n',
+  }), null);
+  assert.equal(classify({
+    code: 255, stdout: '',
+    stderr: 'checking: Host key verification failed. was expected here\n',
+  }), null);
 });
 
 // ── U13-U16: the async seams, driven through a stub ssh ──────────────
@@ -693,13 +731,26 @@ test('connect starts ONE master with no doubled ControlMaster, and disconnect is
   const dead = await stubSsh(t, { connectExit: 255, connectStderr: 'Permission denied (publickey).\n' });
   await assert.rejects(() => createSshTransport({ cli: dead.cli }).connect(CONFIG), /ssh/i);
 
-  // DISCONNECT is idempotent: "already closed" IS the requested state, and the
-  // measured wording for it is exit 255 + `Control socket connect(...)`.
-  const gone = await stubSsh(t, {
-    exitExit: 255, exitStderr: 'Control socket connect(/tmp/x): No such file or directory\n',
-  });
-  await createSshTransport({ cli: gone.cli }).disconnect(CONFIG);
-  assert.ok((await gone.argv()).includes('exit'));
+  // DISCONNECT IS IDEMPOTENT ON EVERY COLD SHAPE THERE IS, and the four were
+  // measured rather than reasoned about — the cold path is exactly where
+  // fixture teardown and card 2026-0005's buttons must stay quiet, so a shape
+  // that threw would make both flaky. All four differ only in the strerror
+  // TAIL, which the guard never reads:
+  //   directory absent          → `Control socket connect(<p>): No such file or directory`
+  //   directory present, no sock→ the same
+  //   ControlPath a regular file→ `Control socket connect(<p>): Connection refused`
+  //   ControlPath a directory   → the same
+  // (`-O exit` never dials, so none of this depends on the host being up.)
+  for (const exitStderr of [
+    'Control socket connect(/tmp/x/absent-dir/sock): No such file or directory\n',
+    'Control socket connect(/tmp/x/sock-absent): No such file or directory\n',
+    'Control socket connect(/tmp/x/regular): Connection refused\n',
+    'Control socket connect(/tmp/x/isdir): Connection refused\n',
+  ]) {
+    const gone = await stubSsh(t, { exitExit: 255, exitStderr });
+    await createSshTransport({ cli: gone.cli }).disconnect(CONFIG);
+    assert.ok((await gone.argv()).includes('exit'), exitStderr);
+  }
 
   // But a disconnect that failed for any OTHER reason is reported.
   const broken = await stubSsh(t, { exitExit: 255, exitStderr: 'something else entirely\n' });

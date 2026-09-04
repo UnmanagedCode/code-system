@@ -26,8 +26,8 @@ import { PROBE_SCRIPT, parseProbeOutput } from '../src/baseline.mjs';
 import { makeRunner } from '../src/launcher/run.mjs';
 import { Launcher, tempStore, writeRecord } from './helpers.mjs';
 import {
-  authCount, countingSshShim, inTarget, markerCount, resolveSshGate, run, settle, skipUnlessSsh,
-  tempDir, withSshTarget, writeSshConfig,
+  authCount, inTarget, markerCount, resolveSshGate, run, settle, skipUnlessSsh, tempDir,
+  withSshTarget, writeSshConfig,
 } from './sshFixture.mjs';
 
 function sshRecord(remoteId, host, over = {}) {

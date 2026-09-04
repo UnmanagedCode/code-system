@@ -241,28 +241,4 @@ export async function authCount(cli, name) {
   return (text.match(/Accepted publickey/g) ?? []).length;
 }
 
-/**
- * An executable that records each invocation's argv and then becomes the real
- * ssh client. Point CODE_SYSTEM_SSH at it to count what the launcher really
- * ran — which no pure test can show.
- */
-export async function countingSshShim(dir, cli) {
-  const logPath = path.join(dir, 'ssh-calls.log');
-  const bin = path.join(dir, 'ssh-shim.sh');
-  await fs.writeFile(bin, [
-    '#!/bin/sh',
-    `printf '%s\\n' "$*" >> ${JSON.stringify(logPath)}`,
-    `exec ${cli.map(c => JSON.stringify(c)).join(' ')} "$@"`,
-  ].join('\n'));
-  await fs.chmod(bin, 0o755);
-  return {
-    argv: [bin],
-    logPath,
-    async calls() {
-      try { return (await fs.readFile(logPath, 'utf8')).split('\n').filter(Boolean); }
-      catch { return []; }
-    },
-  };
-}
-
 export { run, settle, tempDir } from './dockerFixture.mjs';

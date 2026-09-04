@@ -39,12 +39,16 @@ single piece of code that `docker` and `ssh` inherit for free.
   exact tail after their tag, because shells disagree on wording — a failed
   redirect says "Directory nonexistent" on dash and "No such file or directory"
   on bash — and a human reads that line.
-- **`exclusive` is `set -C` (noclobber), not a pre-check.** Testing `-e` and then
-  truncating in a separate command is check-then-act: a writer appearing in
-  between gets truncated instead of refused, which is the lost update the flag
-  exists to prevent. The pre-check is only a fast path. Note the guarantee rests
-  on the TARGET's shell honouring noclobber — see `docs/protocol.md` →
-  "What `exclusive` does and does not guarantee".
+- **`exclusive` is BOTH guards, and they cover different failures.** The
+  `[ -e "$p" ]` pre-check is a plain `test` **no shell can ignore**, so a target
+  that already exists when the write starts is refused whatever the shell does
+  about noclobber. `set -C` covers the rest: the check-then-act window, where a
+  writer appearing between the pre-check and the redirect would be truncated
+  instead of refused — the lost update the flag exists to prevent. Dropping
+  either leaves the other looking sufficient.
+  **`docs/protocol.md` → "What `exclusive` does and does not guarantee" owns the
+  guarantee and the one gap that survives** (that window, on a target shell
+  ignoring noclobber). Don't restate it here.
 - Use the **argv** form (`/bin/sh -c`), never the `shell` form. `bash -lc` is a
   *login* shell whose profile output would arrive before the script's, and the
   read parses the first line.
