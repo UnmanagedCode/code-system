@@ -53,8 +53,18 @@ export function run(argv, { timeoutMs = 30_000, stdin = null } = {}) {
 //
 // EXPORTED SO IT IS FENCED. Deleting the `sudo -n docker` fallback keeps
 // `npm test` green on this host by silently skipping all of
-// tests/docker-live.test.mjs, and no skip count is asserted anywhere — so the
-// composition itself is what a test has to pin. See tests/dockerkind.test.mjs.
+// tests/docker-live.test.mjs — so the composition itself is what a test has to
+// pin. See tests/dockerkind.test.mjs.
+//
+// THE SKIP COUNT IS NOW ASSERTED TOO, by that file's roster count proof, in both
+// directions. So a change here that made `resolveDockerCli` answer null — this
+// fallback removed, or `probeCli` weakened — reds a test instead of quietly
+// turning the whole live suite green.
+//
+// A CONSEQUENCE WORTH STATING, because it has misled a reader before: since two
+// invocations are tried, a green live run does NOT tell you which one answered,
+// and is not evidence that bare `docker` reaches the daemon. `resolveDockerCli`
+// returns the resolved argv — name it and show it, or make no claim.
 export function candidates(env) {
   const out = [];
   try { out.push(dockerCliArgv(env)); } catch { /* a malformed override is simply not a candidate */ }
