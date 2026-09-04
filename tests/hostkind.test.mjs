@@ -48,14 +48,19 @@ test('a value other than 1 does not open the guard', async () => {
 //
 // The plan required `host` to refuse unless BOTH a general env seam AND at
 // least one `--remote <id>=<root>` fence were given. The fence half is
-// unimplementable as written: cc's CAPABILITY_CONFIGS pass no flags at all, so
-// a mandatory fence makes the whole core battery unrunnable — and running that
-// suite is the only reason this kind exists.
+// unimplementable, and the reason is on OUR side of the wire: cc's
+// CAPABILITY_CONFIGS pass no flags at all, so no `--remote` reaches us in the
+// core battery, so hostUnfencedRefusal() fires and the launcher exits 2 before
+// any frame — every core configuration dead at the launch, not at an assertion.
+// That kills ONE OF THE TWO reasons this kind exists (running cc's battery
+// through the shipped launcher); the other — being the only far side that
+// reaches the test process's own filesystem — is why `host` survives at all.
+// See the header of src/launcher/kinds/host.mjs, which owns both.
 //
 // What ships instead gates the UNFENCED-SERVING PATH ONLY, behind a second,
 // separately-named seam (CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED). A fenced host
 // needs only the general seam; serving unfenced needs a variable with UNFENCED
-// in its name, which only tests/conformance.mjs sets. See
+// in its name, which NO SHIPPED CODE PATH SETS — only tests do. See
 // docs/architecture.md → "The `host` kind" for the residual risk.
 test('with the guard open and NO flags, host advertises exactly what cc\'s core configs expect', async (t) => {
   const l = new Launcher(['--kind', 'host'], ALLOW);
