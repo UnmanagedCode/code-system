@@ -226,6 +226,12 @@ export function sshBaseArgs(controlPath, { master }) {
 }
 
 const first = (s) => String(s ?? '').split('\n')[0].trim();
+// The WHOLE diagnostic, for the `stderr` a transport row reports to cc. ssh's
+// host-key refusal spans TWO lines and writes them with CRLF (measured), and the
+// first line alone is the less useful half — so these rows report all of it,
+// normalised. The streams reaching classifyFailure are already capped at 512
+// bytes by session.mjs and run.mjs, so there is no bound to add here.
+const allOf = (s) => String(s ?? '').replace(/\r/g, '').trim();
 
 function destFor(config) {
   const host = String(config?.host ?? '');
@@ -585,14 +591,14 @@ export function createSshTransport({ cli } = {}) {
           return {
             code: 'ENOREMOTE',
             message: `ssh cannot reach host '${host}': ${first(stderr)}`,
-            stderr: first(stderr),
+            stderr: allOf(stderr),
           };
         }
         if (stderr.startsWith(BAD_HOSTNAME)) {
           return {
             code: 'ENOREMOTE',
             message: `ssh refused the configured host '${host}' as a hostname: ${first(stderr)}`,
-            stderr: first(stderr),
+            stderr: allOf(stderr),
           };
         }
         // OUR ACCESS FAILING IS NOT THE REMOTE BEING ABSENT, so never
@@ -605,7 +611,7 @@ export function createSshTransport({ cli } = {}) {
             message: `ssh could not authenticate to '${dest}' — the host is reachable but this`
               + ' provider was refused. Fix it in the operator\'s own ~/.ssh/config or ssh agent'
               + ` (${SSH_ENV} sets the whole ssh invocation): ${first(stderr)}`,
-            stderr: first(stderr),
+            stderr: allOf(stderr),
           };
         }
         // THE known_hosts POLICY, surfacing. We set no StrictHostKeyChecking
@@ -613,13 +619,20 @@ export function createSshTransport({ cli } = {}) {
         // `BatchMode=yes` means an unknown or changed key FAILS here: this
         // provider never prompts and never trusts on first use. Adding the key
         // is the operator's out-of-band action.
-        if (stderr.startsWith(HOSTKEY_FAILED)) {
+        // `includes`, NOT `startsWith`, and that is measured. With an explicit
+        // `StrictHostKeyChecking yes` in the operator's config ssh prefixes the
+        // refusal — `No ED25519 host key is known for <ip> and you have
+        // requested strict checking.\r\nHost key verification failed.\r\n` —
+        // while with the DEFAULT (`ask`) it is that second line alone. A
+        // `startsWith` guard misses the prefixed shape and reports a host-key
+        // refusal as the command's own exit 255.
+        if (stderr.includes(HOSTKEY_FAILED)) {
           return {
             code: 'EUNKNOWN',
             message: `ssh could not verify the host key for '${dest}'. This provider never prompts`
               + ' and never trusts a key on first use — add it to the operator\'s own known_hosts'
               + ` out of band (e.g. ssh-keyscan), then retry: ${first(stderr)}`,
-            stderr: first(stderr),
+            stderr: allOf(stderr),
           };
         }
       }
@@ -629,7 +642,7 @@ export function createSshTransport({ cli } = {}) {
       // one of TWO measured exit codes — 127 for a missing binary, 125 for a
       // `--chdir` that does not exist.
       if (ENV_NEVER_STARTED_CODES.includes(code) && stdout === '' && stderr.startsWith(ENV_PREFIX)) {
-        return { code: 'ENOENT', message: first(stderr), stderr: first(stderr) };
+        return { code: 'ENOENT', message: first(stderr), stderr: allOf(stderr) };
       }
 
       // The common case by far: the failure is the command's own.

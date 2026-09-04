@@ -456,6 +456,24 @@ test('classifyFailure: an auth or host-key failure is EUNKNOWN, never ENOREMOTE'
   assert.notEqual(denied.code, 'ENOREMOTE');
   assert.match(denied.message, /ssh config|agent/i, 'and the message names where the fix lives');
 
+  // TWO MEASURED SHAPES, and the second is why the guard is `includes` rather
+  // than `startsWith`. With the DEFAULT StrictHostKeyChecking (`ask`, which is
+  // what this provider relies on) the refusal is that line alone; with an
+  // explicit `StrictHostKeyChecking yes` in the operator's config ssh PREFIXES
+  // it, and writes both lines with CRLF. A `startsWith` guard misses the
+  // prefixed shape and reports a host-key refusal as the command's own exit 255
+  // — which is exactly what the live test caught before this fixture existed.
+  for (const stderr of [
+    'Host key verification failed.\n',
+    'No ED25519 host key is known for 172.17.0.6 and you have requested strict checking.\r\n'
+      + 'Host key verification failed.\r\n',
+  ]) {
+    const v = classify({ code: 255, stdout: '', stderr });
+    assert.equal(v?.code, 'EUNKNOWN', JSON.stringify(stderr));
+    assert.match(v.stderr, /Host key verification failed/,
+      'the reported stderr must carry the whole diagnostic, not just its first line');
+    assert.equal(v.stderr.includes('\r'), false, 'and normalised — ssh writes these with CRLF');
+  }
   const hostkey = classify({ code: 255, stdout: '', stderr: 'Host key verification failed.\n' });
   assert.equal(hostkey.code, 'EUNKNOWN');
   assert.notEqual(hostkey.code, 'ENOREMOTE');
@@ -823,4 +841,77 @@ test('connect refuses a control directory that is group- or world-accessible', a
   assert.equal((await fs.stat(target)).mode & 0o7777, 0o777,
     'a suspicious directory must not be silently chmod-ed into acceptability');
   assert.deepEqual(await stub.argv(), [], 'and no ssh was invoked at all');
+});
+
+// ── the live suite's skip gate, tested WITHOUT docker and WITHOUT ssh ──
+
+// The DOCKER half of this gate is `dockerFixture.mjs`'s, and its four
+// properties — a daemon probe rather than a `which`, the candidate
+// composition, the fall-through, and the per-override memo — are already owned
+// by tests/dockerkind.test.mjs. Re-asserting them here would be a second home
+// for one claim, so what these tests pin is the part that is NEW: the ssh
+// client probe, and the COMPOSITION of the two halves.
+
+/** A stub `ssh -V`-alike: a real executable, so the real spawn path is tested. */
+async function stubClient(t, { exitCode = 0, stdout = '', stderr = '' } = {}) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'code-system-sshclient-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const bin = path.join(dir, 'ssh');
+  await fs.writeFile(bin, [
+    '#!/bin/sh',
+    stdout ? `printf '%b' ${JSON.stringify(stdout)}` : ':',
+    stderr ? `printf '%b' ${JSON.stringify(stderr)} >&2` : ':',
+    `exit ${exitCode}`,
+  ].join('\n'));
+  await fs.chmod(bin, 0o755);
+  return [bin];
+}
+
+// PINS a gate bug that would reject every working host. `ssh -V` writes its
+// banner to STDERR and exits 0 — measured on OpenSSH_10.0p2 — so a probe
+// reading stdout only, or one requiring stdout to be non-empty, skips the whole
+// live suite on a machine that has a perfectly good client.
+test('the live-ssh gate accepts a client that prints its version on STDERR', async (t) => {
+  const { probeSshClient } = await import('./sshFixture.mjs');
+
+  assert.equal(await probeSshClient(['/definitely-not-ssh-xyz']), null, 'a client that does not exist');
+
+  const broken = await stubClient(t, { exitCode: 1, stderr: 'ssh: illegal option\n' });
+  assert.equal(await probeSshClient(broken), null, 'installed but unrunnable');
+
+  // The real shape: banner on stderr, nothing on stdout, exit 0.
+  const real = await stubClient(t, { stderr: 'OpenSSH_10.0p2 Debian-7+deb13u4, OpenSSL 3.5.6 7 Apr 2026\n' });
+  const found = await probeSshClient(real);
+  assert.ok(found, 'a client whose banner is on stderr must be ACCEPTED, not skipped');
+  assert.match(found.version, /^OpenSSH_10\.0p2/);
+
+  // And a gate that is simply "always skip" would make every live test vacuous.
+  assert.notEqual(await probeSshClient(real), null);
+});
+
+// PINS THE COMPOSITION. Either half missing must SKIP; only both answering may
+// run. A mutant that ignores the ssh half runs the whole live suite on a host
+// with no ssh client and fails every test with a spawn error instead of
+// skipping; one that ignores the docker half does the same with no daemon.
+test('the live-ssh gate needs BOTH a daemon and a client, and says so when it skips', async () => {
+  const { sshGate, SKIP_REASON } = await import('./sshFixture.mjs');
+  const daemon = async () => ({ cli: ['docker'], serverVersion: '29.7.2' });
+  const client = async () => ({ cli: ['ssh'], version: 'OpenSSH_10.0p2' });
+  const none = async () => null;
+
+  assert.equal(await sshGate({ docker: none, ssh: client }), null, 'no daemon → skip');
+  assert.equal(await sshGate({ docker: daemon, ssh: none }), null, 'no ssh client → skip');
+  const both = await sshGate({ docker: daemon, ssh: client });
+  assert.ok(both, 'both present → run');
+  assert.deepEqual(both, {
+    cli: ['docker'], serverVersion: '29.7.2', ssh: ['ssh'], sshVersion: 'OpenSSH_10.0p2',
+  });
+
+  // LOUD: the skip names what was tried and the override that fixes it.
+  assert.match(SKIP_REASON, /CODE_SYSTEM_DOCKER/);
+  assert.match(SKIP_REASON, /sudo -n docker/);
+  assert.match(SKIP_REASON, /ssh -V/);
+  // …and is explicit that CODE_SYSTEM_SSH is NOT the gate, so nobody sets it
+  // expecting the live tests to start running.
+  assert.match(SKIP_REASON, /CODE_SYSTEM_SSH/);
 });
