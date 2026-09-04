@@ -97,12 +97,20 @@ test('a wrong-kind and a wrong-schema record are ENOREMOTE by name, not a guess'
   assert.match(s.message, /backend/, 'and names the repair');
 });
 
-// PINS: a `signal` frame naming NO remote reaches the child its `exec` id bound.
-// `signal` is the surviving follow-on frame with a visible effect — cc deleted
-// `stdin`/`stdinClose`, which is what this test used to ride on. Looking for a
-// `remoteId` on a follow-on frame (adding `signal` to REQUEST_FRAMES) answers
-// ENOREMOTE and leaves the command running, so the exit never arrives.
-test('an id is bound to one remote: follow-on frames carry no remoteId and still reach the child', async (t) => {
+// PINS: a `signal` frame naming NO remote reaches THE child its `exec` id bound
+// — and no other. `signal` is the surviving follow-on frame with a visible
+// effect; cc deleted `stdin`/`stdinClose`, which is what this test used to ride
+// on.
+//
+// TWO children are live on purpose. With one, an implementation whose `#signal`
+// ignored `f.id` and killed the only running child would pass while pinning
+// nothing about binding. Here it would kill `c2` as well, and the second assert
+// reds.
+//
+// Adding `signal` to REQUEST_FRAMES (i.e. looking for a `remoteId` on a
+// follow-on frame) answers ENOREMOTE and leaves both commands running, so the
+// exit never arrives at all.
+test('an id is bound to one remote: a follow-on frame carries no remoteId and reaches only its own child', async (t) => {
   const store = await tempStore();
   t.after(() => store.cleanup());
   await writeRecord(store.dir, record('alpha'));
@@ -111,23 +119,40 @@ test('an id is bound to one remote: follow-on frames carry no remoteId and still
   await l.hello();
 
   l.send({ type: 'exec', id: 'c1', remoteId: 'alpha', cwd: '/tmp', argv: ['sleep', '30'] });
+  l.send({ type: 'exec', id: 'c2', remoteId: 'alpha', cwd: '/tmp', argv: ['sleep', '30'] });
   // The signal frame names NO remote. The `id` is the whole address.
   l.send({ type: 'signal', id: 'c1', signal: 'SIGTERM', processGroup: true });
   const exit = await l.waitFor(f => f.type === 'exit' && f.id === 'c1');
   assert.equal(exit.signal, 'SIGTERM', 'the signal reached the child the id was bound to');
-  assert.equal(l.frames.some(f => f.type === 'error' && f.id === 'c1'), false,
+
+  // A BARRIER for the negative: a later exec's exit proves the signal frame was
+  // long since processed, so "c2 has not exited" is a fact rather than a race.
+  l.send({ type: 'exec', id: 'barrier', remoteId: 'alpha', cwd: '/tmp', argv: ['printf', 'ok'] });
+  await l.waitFor(f => f.type === 'exit' && f.id === 'barrier');
+  assert.equal(l.frames.some(f => f.type === 'exit' && f.id === 'c2'), false,
+    'the OTHER live child was untouched — the id, not "whatever is running", is the address');
+  assert.equal(l.frames.some(f => f.type === 'error'), false,
     'a follow-on frame is never refused for naming no remote');
 });
 
-// PINS: a frame type cc DELETED is ignored — not answered, and not fatal to a
-// running command. §2 of the contract: "Unknown frame types are likewise
-// ignored by both ends."
+// PINS: a frame type cc DELETED is ignored — not answered, not fatal to a
+// running command, and NOT FATAL TO THE CONNECTION EVEN WITH A MALFORMED
+// PAYLOAD. §2 of the contract: "Unknown frame types are likewise ignored by
+// both ends."
 //
-// This is not merely dead-code hygiene. The handler this replaces set
-// `state.closed`, SIGKILLed the child and answered EUNSUPPORTED — so a stray
-// frame would have killed a live command AND answered an id cc was still
-// waiting on. Deleting the arms makes the ignore path correct by construction.
-test('a deleted frame type is IGNORED — stdin and stdinClose neither refuse nor kill the command', async (t) => {
+// This is not dead-code hygiene, and it pins two separate deletions:
+//
+//  1. The dispatch arms. The handler they replace set `state.closed`, SIGKILLed
+//     the child and answered EUNSUPPORTED — so a stray frame would have killed a
+//     live command AND answered an id cc was still waiting on.
+//  2. `'stdin'` leaving PAYLOAD_FRAMES (src/launcher/protocol.mjs). While it was
+//     listed there, `decodeFrame` validated the `dataB64` of a frame type that
+//     no longer exists, so a corrupt payload on it threw a FATAL id-less EPROTO
+//     and tore the whole connection down. The valid-base64 half of this test
+//     cannot see that; the corrupt frame below is what pins it. The existing
+//     unknown-type test uses `"weird"`, which was never in that set, so it is
+//     blind to this too — as is cc's suite, which sends no `stdin` frames.
+test('a deleted frame type is IGNORED — stdin and stdinClose neither refuse, kill the command, nor break the connection', async (t) => {
   const store = await tempStore();
   t.after(() => store.cleanup());
   await writeRecord(store.dir, record('alpha'));
@@ -138,20 +163,29 @@ test('a deleted frame type is IGNORED — stdin and stdinClose neither refuse no
   l.send({ type: 'exec', id: 'c1', remoteId: 'alpha', cwd: '/tmp', argv: ['cat'] });
   l.send({ type: 'stdin', id: 'c1', dataB64: Buffer.from('written\n').toString('base64') });
   l.send({ type: 'stdinClose', id: 'c1' });
+  // A payload that is NOT canonical base64, on a deleted type. A frame type
+  // still listed in PAYLOAD_FRAMES rejects this EPROTO and kills the
+  // connection; an ignored type carries it as just another unknown field.
+  // Byte-identical to the payload the `data`-frame test proves IS fatal.
+  l.send({ type: 'stdin', id: 'c1', dataB64: 'V09STEQ=!!corrupted' });
 
   // A BARRIER, not a sleep: frames are handled in arrival order, so this exec's
-  // exit proves both frames above were already processed.
+  // exit proves every frame above was already processed — and that the
+  // connection is still framing, which a teardown would have ended.
   l.send({ type: 'exec', id: 'barrier', remoteId: 'alpha', cwd: '/tmp', argv: ['printf', 'ok'] });
   await l.waitFor(f => f.type === 'exit' && f.id === 'barrier');
 
-  assert.equal(l.frames.some(f => f.type === 'error' && f.id === 'c1'), false,
-    'no EUNSUPPORTED — a deleted type is ignored, not answered');
+  // ANY error frame, not just an id-addressed one: a connection-level refusal
+  // is id-LESS, so narrowing this to `f.id === 'c1'` would let a teardown pass.
+  assert.equal(l.frames.some(f => f.type === 'error'), false,
+    'no error of any kind — a deleted type is ignored, not answered and not fatal');
   assert.equal(l.frames.some(f => f.type === 'stdout' && f.id === 'c1'), false,
     'the payload was not written into the child either');
   assert.equal(l.frames.some(f => f.type === 'exit' && f.id === 'c1'), false,
     'and nothing settled the id — the command is still running');
 
-  // Positive proof it is still live: only a running child can answer a signal.
+  // Positive proof the command is still LIVE (this asserts liveness, not id
+  // routing — the binding test above is what pins the address).
   l.send({ type: 'signal', id: 'c1', signal: 'SIGTERM', processGroup: true });
   const exit = await l.waitFor(f => f.type === 'exit' && f.id === 'c1');
   assert.equal(exit.signal, 'SIGTERM');

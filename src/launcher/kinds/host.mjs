@@ -21,11 +21,14 @@
 //
 // See docs/architecture.md → "The `host` kind".
 //
-// WHAT THE TWO ENV SEAMS ACTUALLY BUY. A cc System row's `launch` is an
-// unvalidated string[] (src/systems/registry.ts): `addSystem` validates it only
-// by spawning it and handshaking, `getSystems()` reads it back with no content
-// check, and there is no allow-list or path check anywhere. So anyone able to
-// register a row can ALREADY have cc spawn an arbitrary argv on cc's host, and
+// WHAT THE TWO ENV SEAMS ACTUALLY BUY. A cc System row's `launch` is a string[]
+// cc validates only for SHAPE and REACHABILITY: `validateLaunch`
+// (src/appSettings.ts) checks a non-empty array of non-empty strings, and
+// `verifySystemLaunch` proves it works by spawning it and handshaking.
+// `getSystems()` then reads it back with no content check. There is no
+// allow-list and no path check anywhere — nothing constrains WHICH executable
+// an argv names. So anyone able to register a row can ALREADY have cc spawn an
+// arbitrary argv on cc's host, and
 // these seams are not what stands between an attacker and host execution. What
 // `--kind host` adds over an arbitrary argv is narrower: it turns a one-shot
 // argv into a STANDING, protocol-speaking exec service any cc project can be
@@ -45,13 +48,16 @@ export const ALLOW_ENV = 'CODE_SYSTEM_ALLOW_HOST_KIND';
 // THE SECOND SEAM, and it gates only the UNFENCED-serving path.
 //
 // The original plan made at least one `--remote <id>=<root>` fence MANDATORY.
-// That is unimplementable: cc's CAPABILITY_CONFIGS pass no flags at all and
-// deep-equal `remotes:false`, so a mandatory fence makes the whole core battery
-// unrunnable — and running it is the only reason this kind exists.
+// That is unimplementable, and the reason is entirely on OUR side of the wire:
+// cc's CAPABILITY_CONFIGS pass no flags at all, so no `--remote` ever reaches
+// us in the core battery, so hostUnfencedRefusal() would fire and main.mjs
+// would exit 2 before any frame — every core configuration dead at the launch,
+// not at an assertion. That kills reason (b) above.
 //
 // A fenced `host` needs only ALLOW_ENV. Serving UNFENCED — the shape a
 // hand-registered row would take — additionally needs a variable with UNFENCED
-// in its name, which our own tests/conformance.mjs sets and nothing else does.
+// in its name. NO SHIPPED CODE PATH SETS IT: it is set only under tests/, which
+// is the property that matters and the one to preserve when adding a test.
 // So the residual risk is no longer "someone exported the general test var",
 // it is "someone deliberately exported a variable that says UNFENCED into the
 // orchestrator's environment".
@@ -86,13 +92,17 @@ export function createHostTransport({
 
     processGroupSignal,
 
-    // DERIVED FROM FLAGS, not declared — which is what makes cc's core
-    // capability configurations runnable at all: they pass no flags and
-    // deep-equal `remotes:false`. This is the same shape cc's own reference
-    // provider uses (`remotes: this.#opts.remotes.size > 0`,
-    // the hello capabilities block in referenceProvider.ts), and the suite's
-    // assertion message says the intent out loud: "the flags the provider was
-    // launched with are what it advertises".
+    // DERIVED FROM FLAGS, not declared. systems-protocol.md §10's launch
+    // surface makes each capability advertised IFF at least one of its flags is
+    // given, and "every configuration runs whatever the provider does with
+    // those flags" — so a hardcoded value breaks one group or the other: the
+    // core fixtures pass no `--remote`/`--mirror` and build UNBOUND handles,
+    // while the remotes and mirror fixtures pass them and need the opposite.
+    // Same shape cc's own reference provider uses
+    // (`remotes: this.#opts.remotes.size > 0`, the hello capabilities block in
+    // referenceProvider.ts), and the suite's assertion message says the intent
+    // out loud: "the flags the provider was launched with are what it
+    // advertises".
     remotes,
     remoteDescriptors,
 

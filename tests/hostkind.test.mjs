@@ -2,10 +2,10 @@
 //
 // The guard, because a hand-registered `--kind host` row is a standing,
 // protocol-speaking exec service on cc's own machine. The capabilities, because
-// deriving them from flags is the ONLY thing that makes cc's conformance suite
-// runnable against this launcher at all: its core configurations pass no flags
-// and deep-equal `remotes:false` / `remoteDescriptors:false`, while its remotes
-// and mirror tests pass `--remote` / `--mirror` and require the opposite.
+// systems-protocol.md §10 makes each one advertised IFF at least one of its
+// flags is given: the core fixtures pass no `--remote` / `--mirror` and build
+// UNBOUND handles, while the remotes and mirror fixtures pass them and need the
+// opposite, so a hardcoded value breaks one group or the other.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -139,17 +139,22 @@ test('--remote turns on `remotes`, fences each target, and injects CC_REMOTE', a
 });
 
 // PINS: `CC_REMOTE` is overlaid AFTER the frame's `env` replacement, on BOTH
-// exec forms.
+// exec forms — so THE PROVIDER'S BINDING WINS OVER A CALLER-SUPPLIED VALUE.
 //
 // §5 says an `exec`'s `env` REPLACES the environment, posix_spawn-style. cc's
 // reference provider therefore spreads the remote id on top of it
 // (`remoteId === null ? baseEnv : { ...baseEnv, CC_REMOTE: remoteId }`), and so
-// must we — a frame carrying its own `env` must still name its target.
+// must we.
 //
-// The `--remote` test above only asserts `CC_REMOTE` on a frame carrying NO
-// `env`, so reordering the spread to `{ CC_REMOTE, ...baseEnv }`, or injecting
-// on the shell form only, is invisible to it and red here.
-test('CC_REMOTE names the target on both exec forms, and survives an env frame that REPLACES the environment', async (t) => {
+// THE FIXTURE MUST COLLIDE, or this pins nothing. `{...baseEnv, CC_REMOTE}` and
+// `{CC_REMOTE, ...baseEnv}` produce byte-identical objects unless the frame's
+// own `env` carries a `CC_REMOTE` key — so the replacement env below names one
+// deliberately. Without that collision the reordered spread survives, and so
+// does the wrong behaviour it stands for: a caller-supplied `CC_REMOTE`
+// overriding the provider's own binding, which is exactly the routing lie
+// `CC_REMOTE` exists to make impossible. No row in cc's suite sends an env
+// containing `CC_REMOTE` either, so conformance is blind to it as well.
+test('CC_REMOTE names the target on both exec forms, and the provider\'s binding beats a frame-supplied value', async (t) => {
   const store = await tempStore();
   t.after(() => store.cleanup());
   const rootA = path.join(store.dir, 'a');
@@ -159,15 +164,18 @@ test('CC_REMOTE names the target on both exec forms, and survives an env frame t
   t.after(() => l.kill());
   await l.hello();
 
-  // An env the frame supplies WHOLESALE. It names no CC_REMOTE, and it wipes
-  // everything the launcher's own process had.
-  const replacement = { PATH: process.env.PATH };
+  // An env the frame supplies WHOLESALE: it wipes everything the launcher's own
+  // process had, AND it claims a CC_REMOTE of its own.
+  const replacement = { PATH: process.env.PATH, CC_REMOTE: 'frame-supplied' };
 
   // (i) the argv form.
   l.send({ type: 'exec', id: 'argv', remoteId: 'a', cwd: rootA, argv: ['env'], env: replacement });
   assert.equal((await l.waitFor(f => f.type === 'exit' && f.id === 'argv')).code, 0);
-  assert.match(textOf(l.frames, 'argv'), /^CC_REMOTE=a$/m,
-    'the argv form gets CC_REMOTE even though the frame replaced the environment');
+  const argvEnv = textOf(l.frames, 'argv');
+  assert.match(argvEnv, /^CC_REMOTE=a$/m,
+    'the argv form gets the ROUTED target, not the frame-supplied one');
+  assert.doesNotMatch(argvEnv, /^CC_REMOTE=frame-supplied$/m,
+    'the frame-supplied value must not survive — that would be a routing lie');
 
   // (ii) the shell form.
   l.send({ type: 'exec', id: 'sh', remoteId: 'a', cwd: rootA, shell: 'echo "$CC_REMOTE"', env: replacement });

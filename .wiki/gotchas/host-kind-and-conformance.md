@@ -46,17 +46,24 @@ for a bound `docker`, all gated on `IS_REFERENCE_PROVIDER`:**
 
 A **fifth** skip, or a different reason string, means the harness changed.
 
-**Two things the suite demands that its own docs do not say:**
+**Two things about the launch surface:**
 
-1. **Flags beyond the two `--no-*` ones.** The harness claims it appends
-   "exactly the two `--no-*` flags and nothing else" and that "nothing in the
-   suite is otherwise specific to the reference provider". Both are false: the
-   suite also passes `--remote <id>=<abs root>`, `--mirror` and `--exclude`,
-   requires the provider to **fence** each remote to its root (with `cwd:"/"`
-   exempt), and asserts the provider **injects `CC_REMOTE`** into the remote
-   command's environment. Those facts are documented — in code-conductor's
-   `docs/architecture.md`, Component layout → `referenceProvider.ts` — just not in `systems-protocol.md`, the doc that
-   claims to be complete on its own. Filed as code-conductor card **2026-0313**.
+1. **`systems-protocol.md` §10 → "The launch surface" is the authority, and it
+   is complete.** cc card 2026-0313 landed; the gap this page used to record as
+   pending is closed. Read §10's table rather than re-deriving the flags from
+   cc's `referenceProvider.ts`. It obliges a provider to accept
+   `--no-process-group-signal`, `--remote <id>=<abs root>` (serve that target;
+   an unknown or absent id is an id-addressed `ENOREMOTE`), `--mirror` and
+   `--exclude`, and to put `CC_REMOTE=<id>` in the environment of **every child
+   an `exec` starts**.
+
+   **THE `--remote` ROOT IS NOT A FENCE THE SUITE ASKS YOU TO ENFORCE** — §10's
+   own row says so, and cc's architecture doc calls the reference provider's
+   root fence "this provider's property, not a protocol obligation", exercised
+   by no row in the battery. **Cards 2026-0003 / 2026-0004 must not implement
+   root fencing as a conformance requirement.** `host` fences because a test
+   vehicle on cc's own machine needs a misroute to be *refusable*; production
+   `docker`/`ssh` remotes carry no root at all.
 
 2. **Capabilities must be DERIVED FROM FLAGS, not declared.** The suite's core
    configurations pass **no** flags, and on the reference-provider path
@@ -104,9 +111,11 @@ belongs to cards **2026-0003 / 2026-0006**.
   must not reach for it as a containment primitive.**
 - The guard that ships is **one** general seam
   (`CODE_SYSTEM_ALLOW_HOST_KIND=1`) plus a **second** one gating only the
-  unfenced-serving path (`CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED=1`, set solely by
-  `tests/conformance.mjs`). The plan's mandatory `--remote` fence was dropped
-  because the suite's core configurations pass no flags; see
+  unfenced-serving path (`CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED=1`, which **no
+  shipped code path sets** — only tests do; preserve that property, not a count
+  of setters). The plan's mandatory `--remote` fence was dropped because the
+  core configurations pass no flags, so our own launcher would exit 2 before any
+  frame in every one of them; see
   `docs/architecture.md` → "The `host` kind" for the deviation and its residual
   risk.
 - **Every config field that becomes an argv operand must reject a leading `-`.**

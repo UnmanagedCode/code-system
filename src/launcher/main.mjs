@@ -113,8 +113,10 @@ async function resolveTransport(opts) {
   return createTransport(opts.kind, {
     processGroupSignal: opts.processGroupSignal,
     // DERIVED FROM THE FLAGS for a flag-backed kind — the shape cc's reference
-    // provider uses, and what keeps the suite's core capability configurations
-    // (which pass no flags and deep-equal `remotes:false`) runnable.
+    // provider uses. systems-protocol.md §10: each capability is advertised IFF
+    // at least one of its flags is given, and the core fixtures pass none while
+    // the remotes/mirror fixtures pass them, so a hardcoded value breaks one
+    // group or the other.
     remotes: opts.remotes.size > 0,
     remoteDescriptors: opts.mirrors.size > 0,
   });

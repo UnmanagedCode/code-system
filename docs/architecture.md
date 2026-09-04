@@ -108,10 +108,12 @@ unlocks **zero** rows a bound `docker` would not — see the four skips below.
 
 **The guard, and a DEVIATION FROM THE PLAN.** The plan required **two**
 conditions: an env seam **and** at least one mandatory
-`--remote <id>=<absolute root>` fence. The mandatory fence is unimplementable:
-cc's `CAPABILITY_CONFIGS` pass no flags at all, so a `host` that refused without
-a fence makes the whole core battery unrunnable — and running it is one of the
-two reasons the kind exists.
+`--remote <id>=<absolute root>` fence. The mandatory fence is unimplementable,
+and the reason is on **our** side of the wire, not cc's: `CAPABILITY_CONFIGS`
+pass no flags at all, so no `--remote` reaches us in the core battery, so
+`hostUnfencedRefusal()` fires and the launcher exits 2 **before any frame**.
+Every core configuration would die at the launch, not at an assertion — killing
+reason 2 above.
 
 What ships is two seams that split along the *risk* instead:
 
@@ -120,18 +122,21 @@ What ships is two seams that split along the *risk* instead:
 | `--kind host --remote a=/some/root` | `CODE_SYSTEM_ALLOW_HOST_KIND=1` |
 | `--kind host` (serves unfenced) | that **plus** `CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED=1` |
 
-Only `tests/conformance.mjs` sets the second one, so a hand-registered row needs
+**No shipped code path sets the second one** — only tests do (`conformance.mjs`,
+`hostkind.test.mjs`, `capabilities.test.mjs`). That property, not the number of
+setters, is what to preserve when adding a test. So a hand-registered row needs
 someone to have deliberately exported a variable **with `UNFENCED` in its name**
 into the orchestrator's environment.
 
 **What the seams actually buy — the weaker, true claim.** A cc System row's
-`launch` is an unvalidated `string[]` (`src/systems/registry.ts`): `addSystem`
-validates it only by `probeSystemLaunch(argv)`, which *spawns it and
-handshakes*; `getSystems()` reads it back with no content check; `resolveSystem`
-spawns it. There is **no allow-list, no path check and no argv validation
-anywhere**. So anyone able to register a System row can already have cc spawn an
-arbitrary argv on cc's host, and these seams are **not** what stands between an
-attacker and host execution.
+`launch` is a `string[]` cc validates only for **shape** and **reachability**:
+`validateLaunch` (`appSettings.ts`) checks it is a non-empty array of non-empty
+strings, and `verifySystemLaunch` proves it works by *spawning it and
+handshaking*. `getSystems()` then reads it back with no content check and
+`resolveSystem` spawns it. There is **no allow-list and no path check anywhere**
+— nothing constrains *which* executable an argv names. So anyone able to
+register a System row can already have cc spawn an arbitrary argv on cc's host,
+and these seams are **not** what stands between an attacker and host execution.
 
 What `--kind host` genuinely adds over "some arbitrary argv" is narrower: it
 turns a one-shot argv into a **standing, documented, protocol-speaking exec
@@ -175,18 +180,37 @@ equals `CAPABILITY_CONFIGS[1].caps` verbatim — because they are derived, not
 hardcoded. A kind that hardcoded any of the three would fail the deep-equal the
 reference-provider path makes.
 
-### What cc's conformance suite demands beyond `systems-protocol.md`
+### The launch surface the suite appends
 
-The `PROVIDER_ARGV_ENV` note in `tests/referenceProviderHarness.mjs` says the suite appends "exactly the two
-`--no-*` flags and nothing else" and that "nothing in the suite is otherwise
-specific to the reference provider". Neither is true as written. A provider
-being verified must also accept `--remote <id>=<abs root>` (its `withRemotes` fixture),
-`--mirror` and `--exclude` (its two `describeRemote` tests), **fence** each
-remote to its root with `cwd:"/"` exempt, and **inject `CC_REMOTE`** into the
-remote command's environment ("a bound handle names its remote on exec,
-readFile and writeFile"). Those facts are documented — in cc's
-`docs/architecture.md`, Component layout → `referenceProvider.ts` — just not in the doc a provider author is told is
-complete on its own. Filed as code-conductor card **2026-0313**.
+`systems-protocol.md` §10 → **"The launch surface — what the suite sends beyond
+the wire contract"** is now the authority, and it is complete: cc card 2026-0313
+landed and closed the gap this section used to record as pending. Do not
+re-derive the list from cc's `referenceProvider.ts`; read §10's table.
+
+What it obliges a provider being verified to do:
+
+| Flag / variable | The provider must |
+|---|---|
+| `--no-process-group-signal` | signal the direct child only |
+| `--remote <id>=<absolute root>` | **serve that target** — the id is its whole address; an unknown or absent id is an id-addressed `ENOREMOTE` |
+| `--mirror <[id=]absolute root>` | answer `describeRemote` with that `mirrorRoot` |
+| `--exclude <[id=]absolute path>` | add that path to the same descriptor's `exclude` |
+| `CC_REMOTE=<id>` | be in the environment of **every child an `exec` starts** |
+
+Each capability is advertised **iff** at least one of its flags is given, which
+is why ours are derived rather than declared. A provider that accepts a flag and
+ignores it fails the rows the flag toggles; one that exits on an unknown flag
+fails that whole configuration at the handshake. Neither is skipped.
+
+**THE `--remote` ROOT IS NOT A FENCE THE SUITE ASKS YOU TO ENFORCE.** §10's table
+says so in the row itself — *"the root is where the suite places that target's
+fixtures, **not a fence it asks you to enforce**"* — and cc's own architecture
+doc says the reference provider's root fence is *"this provider's property, not
+a protocol obligation"*, exercised by no row in the suite. **Cards 2026-0003 and
+2026-0004 must not implement root fencing as a conformance requirement.** Our
+`host` kind fences because a test vehicle on cc's own machine needs a misroute to
+be *refusable*, not because the battery demands it — and production
+`docker`/`ssh` remotes carry no root at all.
 
 ### What a third-party run does NOT verify
 
