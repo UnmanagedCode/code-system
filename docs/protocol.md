@@ -93,13 +93,14 @@ frame-supplied value.
 
 **An `exec` frame with no `env` means "inherit the FAR SIDE's environment"**, and
 the launcher passes exactly that — `null` — to the kind. It never substitutes its
-own `process.env`. At cc `8b7b10bf`, **no `exec` cc issues carries an `env` frame
-field** — cc's own plumbing and a caller's command alike (§7) — so every command
-runs in the provider's own environment: the far side's PATH and toolchain, not
-cc's. A variable a command needs travels in **argv**, through `env(1)`, which
-ADDS to that environment rather than replacing it; that is how the derivations
-ship `LC_ALL=C`. For `docker` the inherit path is the difference between `git`
+own `process.env`: for `docker` the inherit path is the difference between `git`
 resolving in the container and `env: 'git': No such file or directory`, exit 127.
+At cc `8b7b10bf`, **no `exec` cc issues carries an `env` frame field** — cc's own
+plumbing and a caller's command alike (§7) — so every command runs in the
+provider's own environment: the far side's PATH and toolchain, not cc's. A
+variable a command needs travels in **argv**, through `env(1)`, which ADDS to
+that environment rather than replacing it; that is how the derivations ship
+`LC_ALL=C`.
 
 **A frame `env` is still REPLACE, and every kind still implements it.** §5's
 `env` row is unchanged at the new pin — an object replaces the environment

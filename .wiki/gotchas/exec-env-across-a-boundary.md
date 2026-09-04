@@ -41,7 +41,7 @@ docker exec <ctr> env -i -- PATH=/usr/local/nvm/versions/node/v24.0.0/bin git --
   `CC_EXEC_TOKEN` ride as `-e` flags. See
   [docker-exec-transport.md](docker-exec-transport.md) §4.
 
-## What cc sends at `8b7b10bf`, and why the REPLACE path stays
+## What cc sends at `8b7b10bf`, and how the REPLACE branch is fenced
 
 cc card 2026-0317 landed. `providerSystem.ts`'s `exec()` is now
 `this.#exec(spec, opts, opts.env ?? null)`; `ProviderShell` no longer holds an
@@ -50,14 +50,12 @@ named one — ships its `CC_*` vars **in argv** through `env(1)`
 (`src/worktrees.ts`). No cc call site names `opts.env`, so nothing cc issues puts
 an `env` on the wire.
 
-**That is not permission to delete `execEnv`'s replace branch.** §5's `env` row
-is unchanged — an object REPLACES the environment exactly as `posix_spawn` does —
-and `ExecOptions.env` still exists in cc's `System` interface. Dropping the
-branch would make us non-conformant the moment any caller uses it, and would
-*overlay* where the contract says *replace*. Fenced by
+**The REPLACE branch stays anyway** — the contract and the reason are in
+`docs/protocol.md` → *"A frame `env` is still REPLACE, and every kind still
+implements it"*. What lives here is how it is fenced:
 `tests/dockerkind.test.mjs` → *"a frame env REPLACES via `env -i`, with
-CC_REMOTE overlaid last"*, and against a real container by
-`tests/docker-live.test.mjs` L7, where **`HOME` is the discriminator**: an `-e`
+CC_REMOTE overlaid last"*, and against a real container
+`tests/docker-live.test.mjs` L7, where **`HOME` is the discriminator** — an `-e`
 overlay leaves `HOME=/root` and passes every other assertion; only a real
 replacement makes it UNSET.
 
@@ -74,11 +72,23 @@ it absolutely removes the dependence on either side's PATH.
 - `/bin/sh -c` for every fileops script and the baseline probe —
   `src/launcher/run.mjs:39`
 
-`host` uses a bare `bash` (`src/launcher/kinds/host.mjs:119`). **Measured on
-Node 24: it resolves through the NEW env, the same direction as cc's reference
-provider** — `spawnSync('bash', …, { env: { PATH: '/var/empty' } })` fails
-`ENOENT` rather than running, so a frame `env` whose PATH lacks `bash` would make
-the `shell` form unspawnable rather than falling back to the launcher's PATH.
-It is a test vehicle on cc's own machine and never sees a frame `env` from cc, so
-this is a note, not a defect — recorded so card 2026-0004's `ssh` names its
-interpreter absolutely from the start.
+`host` uses a bare `bash` (`src/launcher/kinds/host.mjs:119`), so **which
+side's PATH resolves it depends on which branch of `execEnv` ran** — both
+measured on Node 24:
+
+- **A materialised env** (a frame `env`, or a `CC_REMOTE` overlay): resolved
+  through THAT object, the direction §5 names for cc's reference provider.
+  `spawnSync('bash', …, { env: { PATH: '/var/empty' } })` → `ENOENT`, so a frame
+  `env` whose PATH lacks `bash` makes the `shell` form unspawnable rather than
+  falling back to the launcher's PATH.
+- **`env: null`**: `execEnv` returns `null` when there is no frame `env` and no
+  `remoteId` (`src/launcher/kinds/config.mjs:62`), so the child inherits the
+  launcher's environment and `bash` resolves through the PARENT's PATH — the
+  opposite direction. With the parent's PATH scrubbed,
+  `spawnSync('bash', …, { env: null })` → `ENOENT`; with it intact the command
+  runs. **This is the branch usually taken**, since cc sends this kind no frame
+  `env` at the pin.
+
+Either way `host` is a test vehicle on cc's own machine, so this is a note, not a
+defect — recorded so card 2026-0004's `ssh` names its interpreter absolutely from
+the start and depends on neither side's PATH.

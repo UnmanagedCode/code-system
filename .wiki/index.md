@@ -14,7 +14,7 @@ Durable knowledge about this project: gotchas, decisions, glossary. Read this fi
 - [gotchas/no-persistent-shell.md](gotchas/no-persistent-shell.md) — the protocol has no long-lived shell at all; NOTHING carries over between commands, not even cwd; `stdin`/`stdinClose` are deleted frames and must be ignored, never refused
 - [gotchas/baseline-probe-two-tier.md](gotchas/baseline-probe-two-tier.md) — the tooling probe is cached on a reachability fingerprint; check the flag not the binary; busybox `stat` succeeds and is wrong; the live busybox verdict is FOUR capabilities, not three
 - [gotchas/docker-exec-transport.md](gotchas/docker-exec-transport.md) — measured `docker exec` behaviour: children survive their host client; a never-started command reports on STDOUT with exit 127/128 while daemon refusals use stderr; `processGroupSignal` could be `true` and why it is not; `env -i --` (dropping the `--` lets a frame env key hijack the cwd) and the HOME discriminator; `-i` iff `stdin:'pipe'`; no `ps` in `node:24-slim`
-- [gotchas/exec-env-across-a-boundary.md](gotchas/exec-env-across-a-boundary.md) — `ExecRequest.env` is the FRAME's env and `null` means the FAR SIDE's, never the launcher's `process.env`; `CC_REMOTE` overlaid last, by the kind; at cc `8b7b10bf` cc sends NO `env` on any `exec`, and why the REPLACE branch stays anyway; name the interpreter absolutely
+- [gotchas/exec-env-across-a-boundary.md](gotchas/exec-env-across-a-boundary.md) — `ExecRequest.env` is the FRAME's env and `null` means the FAR SIDE's, never the launcher's `process.env`; `CC_REMOTE` overlaid last, by the kind; cc sends NO `env` on any `exec`, and keep the REPLACE branch anyway; name the interpreter absolutely
 
 ## Decisions
 

@@ -115,11 +115,13 @@ export function createHostTransport({
     spawnPlan(_config, req) {
       const [file, args] = req.shell !== null
         // `bash -lc` is the contract's own definition of the `shell` exec form
-        // (systems-protocol.md §5). UNQUALIFIED, and measured to resolve through
-        // the env below, not the launcher's — the same direction §5 names for
-        // cc's reference provider. Harmless here (cc never sends this kind a
-        // frame `env`); `docker` names its interpreter absolutely, and `ssh`
-        // must too.
+        // (systems-protocol.md §5). UNQUALIFIED, so which side's PATH resolves
+        // it depends on what `execEnv` below returns: a MATERIALISED env resolves
+        // through that object, while `null` (no frame `env` and no remoteId —
+        // kinds/config.mjs:62) lets the child inherit and resolves through the
+        // LAUNCHER's PATH. Both measured; the null branch is the usual one here,
+        // since cc sends this kind no frame `env`. Harmless on a test vehicle;
+        // `docker` names its interpreter absolutely, and `ssh` must too.
         ? ['bash', ['-lc', req.shell]]
         : [String(req.argv?.[0]), (req.argv ?? []).slice(1)];
       return {
