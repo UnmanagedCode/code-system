@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
 import { createApi } from '../src/api.mjs';
+import { SCHEMA } from '../src/store.mjs';
 import { fakeConductor, tempStore } from './helpers.mjs';
 
 async function withApi(t, deps = {}) {
@@ -58,7 +59,7 @@ test('a remote is created, listed, edited and deleted', async (t) => {
     remoteId: 'app-ctr', kind: 'docker', label: 'App container', config: { container: 'app' },
   });
   assert.equal(made.status, 201);
-  assert.equal(made.body.remote.schema, 1);
+  assert.equal(made.body.remote.schema, SCHEMA);
   assert.equal(made.body.remote.baseline.state, 'unknown', 'nothing is claimed before a probe');
 
   const listed = await call('GET', '/remotes');
@@ -134,7 +135,7 @@ test('a record the readers cannot understand is SURFACED, not hidden from the li
   const { promises: fs } = await import('node:fs');
   const path = await import('node:path');
   await fs.mkdir(path.join(store.dir, 'remotes'), { recursive: true });
-  await fs.writeFile(path.join(store.dir, 'remotes', 'future.json'), JSON.stringify({ schema: 2, remoteId: 'future' }));
+  await fs.writeFile(path.join(store.dir, 'remotes', 'future.json'), JSON.stringify({ schema: SCHEMA + 1, remoteId: 'future' }));
 
   const listed = await call('GET', '/remotes');
   assert.equal(listed.body.remotes.length, 1);

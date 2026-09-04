@@ -14,12 +14,25 @@
 //
 // THE BACKEND IS THE ONLY WRITER. The launcher calls readRemote/listRemotes and
 // nothing else.
+//
+// `enabled` IS THE OPERATOR GATE, and it lives here rather than in backend
+// memory because the backend and the launcher are DIFFERENT PROCESSES — cc
+// spawns the launcher per System row, so an in-memory flag would never reach
+// it. Being a store field, it inherits the no-cache property above: a toggle
+// flipped in the UI is visible to the very next request frame the launcher
+// handles, with no restart, no IPC and nothing to invalidate.
+//
+// IT IS NOT `reachability.connected`. That is the PROBED state — whether the
+// container is running, whether an ssh master is up — re-asked on every card
+// render and never stored. `enabled` is what the operator SET, and it is the
+// only thing that decides whether an operation is allowed to run. The two
+// disagree routinely (.wiki/gotchas/gate-versus-probe.md).
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { remotesDir } from './paths.mjs';
 
-export const SCHEMA = 1;
+export const SCHEMA = 2;
 
 // A remoteId is TWO things at once, and both constrain it: it is a filename
 // stem, and it is the entire hand-off contract to cc — a user reads it off the
@@ -139,7 +152,11 @@ export async function deleteRemote(id) {
 
 // The record a create/edit produces. `config` is opaque here — the kind's
 // validateConfig owns it — and `baseline` is written only by the probe.
-export function makeRecord({ remoteId, kind, label, config, baseline = null, createdAt }) {
+//
+// `enabled` DEFAULTS FALSE, which is also what a newly created remote gets: an
+// ssh remote genuinely has no master until `connect` runs, and a default-on
+// gate would claim a state nobody established.
+export function makeRecord({ remoteId, kind, label, config, enabled = false, baseline = null, createdAt }) {
   const now = new Date().toISOString();
   return {
     schema: SCHEMA,
@@ -147,6 +164,7 @@ export function makeRecord({ remoteId, kind, label, config, baseline = null, cre
     kind,
     label: label || remoteId,
     config: config ?? {},
+    enabled: enabled === true,
     baseline: baseline ?? { state: 'unknown', fingerprint: null, missing: [], checkedAt: null },
     createdAt: createdAt ?? now,
     updatedAt: now,

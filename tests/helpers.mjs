@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { NdjsonDecoder, encodeFrame } from '../src/launcher/protocol.mjs';
+import { SCHEMA } from '../src/store.mjs';
 
 export const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 export const LAUNCHER = path.join(REPO, 'src', 'launcher', 'main.mjs');
@@ -91,13 +92,19 @@ export async function writeRecord(storeDir, record) {
   return record;
 }
 
+// `enabled: true` BY DEFAULT, deliberately. This fixture describes a USABLE
+// remote, and every launcher-frames / launcher-shutdown / fileops / baseline
+// test execs through it — a default of `false` would red the whole suite at
+// once and say nothing. A gate test passes `enabled: false` explicitly, which
+// is also what makes those tests read as being ABOUT the gate.
 export function record(remoteId, over = {}) {
   return {
-    schema: 1,
+    schema: SCHEMA,
     remoteId,
     kind: 'fake',
     label: remoteId,
     config: {},
+    enabled: true,
     baseline: { state: 'unknown', fingerprint: null, missing: [], checkedAt: null },
     createdAt: '2026-09-03T00:00:00.000Z',
     updatedAt: '2026-09-03T00:00:00.000Z',

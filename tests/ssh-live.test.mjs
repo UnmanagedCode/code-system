@@ -24,6 +24,7 @@ import { controlPathFor, createSshTransport } from '../src/launcher/kinds/ssh.mj
 import { buildReapScript } from '../src/launcher/kinds/reapscript.mjs';
 import { PROBE_SCRIPT, parseProbeOutput } from '../src/baseline.mjs';
 import { makeRunner } from '../src/launcher/run.mjs';
+import { SCHEMA } from '../src/store.mjs';
 import { Launcher, tempStore, writeRecord } from './helpers.mjs';
 import {
   authCount, inTarget, markerCount, resolveSshGate, run, settle, skipUnlessSsh, tempDir,
@@ -32,11 +33,12 @@ import {
 
 function sshRecord(remoteId, host, over = {}) {
   return {
-    schema: 1,
+    schema: SCHEMA,
     remoteId,
     kind: 'ssh',
     label: remoteId,
     config: { host, user: 'root' },
+    enabled: true,
     baseline: { state: 'unknown', fingerprint: null, missing: [], checkedAt: null },
     createdAt: '2026-09-04T00:00:00.000Z',
     updatedAt: '2026-09-04T00:00:00.000Z',

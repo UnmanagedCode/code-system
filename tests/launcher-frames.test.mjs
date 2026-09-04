@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { MAX_LINE_BYTES } from '../src/launcher/protocol.mjs';
+import { SCHEMA } from '../src/store.mjs';
 import { FAKE_TRANSPORT, Launcher, record, tempStore, writeRecord } from './helpers.mjs';
 
 function fakeEnv(storeDir, extra = {}) {
@@ -81,7 +82,7 @@ test('a wrong-kind and a wrong-schema record are ENOREMOTE by name, not a guess'
   const store = await tempStore();
   t.after(() => store.cleanup());
   await writeRecord(store.dir, record('wrongkind', { kind: 'docker' }));
-  await writeRecord(store.dir, record('future', { schema: 2 }));
+  await writeRecord(store.dir, record('future', { schema: SCHEMA + 1 }));
   const l = new Launcher(['--kind', 'fake'], fakeEnv(store.dir));
   t.after(() => l.kill());
   await l.hello();

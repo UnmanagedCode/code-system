@@ -18,6 +18,7 @@ import { PROBE_SCRIPT, parseProbeOutput } from '../src/baseline.mjs';
 import { createDockerTransport } from '../src/launcher/kinds/docker.mjs';
 import { buildReapScript } from '../src/launcher/kinds/reapscript.mjs';
 import { makeRunner } from '../src/launcher/run.mjs';
+import { SCHEMA } from '../src/store.mjs';
 import { Launcher, tempStore, writeRecord } from './helpers.mjs';
 import {
   countingShim, inContainer, markerCount, run, settle, skipUnlessDocker, tempDir, withContainer,
@@ -27,11 +28,12 @@ const BUSYBOX = 'busybox:1.38.0';
 
 function dockerRecord(remoteId, container, over = {}) {
   return {
-    schema: 1,
+    schema: SCHEMA,
     remoteId,
     kind: 'docker',
     label: remoteId,
     config: { container },
+    enabled: true,
     baseline: { state: 'unknown', fingerprint: null, missing: [], checkedAt: null },
     createdAt: '2026-09-04T00:00:00.000Z',
     updatedAt: '2026-09-04T00:00:00.000Z',
