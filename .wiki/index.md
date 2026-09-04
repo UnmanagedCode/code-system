@@ -9,9 +9,9 @@ Durable knowledge about this project: gotchas, decisions, glossary. Read this fi
 - [gotchas/no-remote-discovery.md](gotchas/no-remote-discovery.md) — no `listRemotes` frame; the plugin UI is the only catalog; `remoteId` is a stable hand-off contract
 - [gotchas/active-registration.md](gotchas/active-registration.md) — registering a System row is an active handshake with its own preconditions
 - [gotchas/host-environment.md](gotchas/host-environment.md) — two host-side failure modes: `BASH_RULES_NOT_ENFORCEABLE` and stale plugin state until restart
-- [gotchas/host-kind-and-conformance.md](gotchas/host-kind-and-conformance.md) — the `host` kind is the only way to run cc's conformance suite; what that suite demands beyond its own docs; why `docker`/`ssh` can never pass its core configs
+- [gotchas/host-kind-and-conformance.md](gotchas/host-kind-and-conformance.md) — why `host` is KEPT (own-filesystem fixtures + it runs the battery through the shipped launcher); what the suite demands beyond its own docs; the four rows a third-party run skips; what the two env seams really buy
 - [gotchas/file-ops-over-exec.md](gotchas/file-ops-over-exec.md) — `readFile`/`writeFile` are derived over `exec`, not `docker cp`/`scp`; our own refusals carry a per-call nonce tag (matching the `strerror` tail is spoofable by a path); `exclusive` is `set -C`
-- [gotchas/no-persistent-shell.md](gotchas/no-persistent-shell.md) — `docker`/`ssh` advertise `persistentShell:false`; cwd persists across commands, exports and background jobs do not
+- [gotchas/no-persistent-shell.md](gotchas/no-persistent-shell.md) — the protocol has no long-lived shell at all; NOTHING carries over between commands, not even cwd; `stdin`/`stdinClose` are deleted frames and must be ignored, never refused
 - [gotchas/baseline-probe-two-tier.md](gotchas/baseline-probe-two-tier.md) — the tooling probe is cached on a reachability fingerprint; check the flag not the binary; busybox `stat` succeeds and is wrong
 
 ## Decisions

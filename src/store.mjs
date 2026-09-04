@@ -146,10 +146,6 @@ export function makeRecord({ remoteId, kind, label, config, baseline = null, cre
     remoteId,
     kind,
     label: label || remoteId,
-    // NO per-remote shell. cc reads `system.shell` in exactly one place — the
-    // persistent-shell path (src/systems/providerShell.ts) — which it never
-    // opens for a provider advertising `persistentShell:false`. The handshake
-    // constant in each kind is the whole of it; see docs/protocol.md.
     config: config ?? {},
     baseline: baseline ?? { state: 'unknown', fingerprint: null, missing: [], checkedAt: null },
     createdAt: createdAt ?? now,

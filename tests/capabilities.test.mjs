@@ -1,16 +1,20 @@
-// PINS the per-kind advertised capabilities — the four booleans cc negotiates
-// on and then MEMOISES for the life of a connection generation, so a wrong one
-// is not re-derived later.
+// PINS the per-kind advertised capabilities — the three booleans of cc's
+// `Capabilities` interface, which it negotiates on and then MEMOISES for the
+// life of a connection generation, so a wrong one is not re-derived later.
 //
-// In particular: `docker` and `ssh` advertise `persistentShell:false`
-// PERMANENTLY, and `remotes:true` ALWAYS. Neither is derived from store
-// contents, because a capability that flapped as remotes were added would be
-// memoised wrong.
+// In particular: `docker` and `ssh` advertise `remotes:true` ALWAYS, never
+// derived from store contents, because a capability that flapped as remotes
+// were added would be memoised wrong.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ALL_KINDS, REGISTERED_KINDS, createTransport } from '../src/launcher/kinds/index.mjs';
-import { Launcher, tempStore } from './helpers.mjs';
+import { FAKE_TRANSPORT, Launcher, tempStore } from './helpers.mjs';
+
+// cc's `Capabilities` interface, verbatim: processGroupSignal, remotes,
+// remoteDescriptors. A missing key is false; an unknown key is ignored — so a
+// fourth key would be a field with no reader.
+const CAPABILITY_KEYS = ['processGroupSignal', 'remoteDescriptors', 'remotes'];
 
 test('only docker and ssh are auto-registered — host is deliberately not', () => {
   assert.deepEqual(REGISTERED_KINDS, ['docker', 'ssh']);
@@ -19,7 +23,7 @@ test('only docker and ssh are auto-registered — host is deliberately not', () 
 });
 
 for (const kind of ['docker', 'ssh']) {
-  test(`${kind} advertises persistentShell:false and remotes:true, on the wire`, async (t) => {
+  test(`${kind} advertises processGroupSignal:false and remotes:true, on the wire`, async (t) => {
     const store = await tempStore();
     t.after(() => store.cleanup());
     const l = new Launcher(['--kind', kind], { CODE_SYSTEM_STORE: store.dir });
@@ -27,20 +31,10 @@ for (const kind of ['docker', 'ssh']) {
     const hs = await l.hello();
 
     assert.deepEqual(hs.capabilities, {
-      // No long-lived shell for this kind: cc takes its documented
-      // absent-behaviour and runs every redirected shell command as a one-shot
-      // exec. Because cc GATES `stdin`/`stdinClose` on this capability
-      // (src/systems/providerSystem.ts, the persistentShell gate), advertising false is what stops
-      // those frames being sent at all; the shared refusal path they would meet
-      // is pinned in tests/hostkind.test.mjs, which uses the one kind that can
-      // currently spawn a child.
-      persistentShell: false,
       processGroupSignal: false,
       remotes: true,
       remoteDescriptors: false,
     });
-    assert.equal(hs.system.shell.startsWith('/'), true, 'system.shell is absolute');
-    assert.equal(hs.system.shell, '/bin/bash');
     assert.match(hs.provider, new RegExp(`^code-system-${kind}/\\S+$`));
   });
 
@@ -112,15 +106,38 @@ test('the docker and ssh transports fail LOUDLY where their card has not landed'
 test('host advertises what it was flagged with — createTransport does not hardcode', () => {
   const bare = createTransport('host', {});
   assert.deepEqual(
-    { p: bare.persistentShell, g: bare.processGroupSignal, r: bare.remotes, d: bare.remoteDescriptors },
-    { p: true, g: true, r: false, d: false },
+    { g: bare.processGroupSignal, r: bare.remotes, d: bare.remoteDescriptors },
+    { g: true, r: false, d: false },
     'no flags at all is cc\'s first core configuration');
-  const on = createTransport('host', { persistentShell: true, processGroupSignal: true, remotes: true, remoteDescriptors: true });
+  const on = createTransport('host', { processGroupSignal: true, remotes: true, remoteDescriptors: true });
   assert.deepEqual(
-    { p: on.persistentShell, g: on.processGroupSignal, r: on.remotes, d: on.remoteDescriptors },
-    { p: true, g: true, r: true, d: true });
-  const off = createTransport('host', { persistentShell: false, processGroupSignal: false, remotes: false, remoteDescriptors: false });
+    { g: on.processGroupSignal, r: on.remotes, d: on.remoteDescriptors },
+    { g: true, r: true, d: true });
+  const off = createTransport('host', { processGroupSignal: false, remotes: false, remoteDescriptors: false });
   assert.deepEqual(
-    { p: off.persistentShell, g: off.processGroupSignal, r: off.remotes, d: off.remoteDescriptors },
-    { p: false, g: false, r: false, d: false });
+    { g: off.processGroupSignal, r: off.remotes, d: off.remoteDescriptors },
+    { g: false, r: false, d: false });
+});
+
+// PINS THE SHAPE, across every kind at once: the capability key SET is cc's
+// `Capabilities` interface and nothing more, and no kind's hello carries a
+// `system` descriptor. The per-kind deep-equals above pin VALUES; this pins
+// that no fourth key and no deleted block can creep back into any one kind.
+test('no kind\'s hello carries a system key, and the capability object has exactly cc\'s three keys', async (t) => {
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  const launches = [
+    ['docker', {}],
+    ['ssh', {}],
+    ['host', { CODE_SYSTEM_ALLOW_HOST_KIND: '1', CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED: '1' }],
+    ['fake', { CODE_SYSTEM_FAKE_TRANSPORT: FAKE_TRANSPORT }],
+  ];
+  for (const [kind, extra] of launches) {
+    const l = new Launcher(['--kind', kind], { CODE_SYSTEM_STORE: store.dir, ...extra });
+    t.after(() => l.kill());
+    const hs = await l.hello();
+    assert.deepEqual(Object.keys(hs.capabilities).sort(), CAPABILITY_KEYS,
+      `${kind} advertises exactly cc's Capabilities keys`);
+    assert.ok(!('system' in hs), `${kind} sends no system descriptor`);
+  }
 });

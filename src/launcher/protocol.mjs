@@ -24,6 +24,14 @@ export const BINARY_SNIFF_BYTES = 8 * 1024;
 // direction too: a framing fence catches a peer that never emits a newline.
 export const MAX_LINE_BYTES = 4 * 1024 * 1024;
 
+// The ceilings cc enforces on a MIRROR ADVERTISEMENT (systems-protocol.md
+// §2.1): more than MIRROR_EXCLUDE_MAX exclude entries, or a path longer than
+// MIRROR_PATH_MAX, and cc refuses the advertisement on its own side
+// (MIRROR_ADVERTISEMENT_INVALID, 502). Mirrored here so a kind that advertises
+// `remoteDescriptors` knows the bound rather than discovering it as a refusal.
+export const MIRROR_EXCLUDE_MAX = 64;
+export const MIRROR_PATH_MAX = 4096;
+
 // SIGTERM → SIGKILL delay when the frame names none.
 export const DEFAULT_KILL_GRACE_MS = 100;
 
@@ -34,10 +42,10 @@ export const REQUEST_FRAMES = new Set(['exec', 'readFile', 'writeFile', 'describ
 
 // The frame types whose meaning IS their payload, so a bad payload is a bad
 // frame.
-const PAYLOAD_FRAMES = new Set(['stdout', 'stderr', 'data', 'stdin']);
+const PAYLOAD_FRAMES = new Set(['stdout', 'stderr', 'data']);
 
 export const PROTOCOL_ERROR_CODES = [
-  'EPROTO', 'ETRANSPORT', 'ETIMEDOUT', 'EUNSUPPORTED', 'EBUSY', 'ESHELLGONE',
+  'EPROTO', 'ETRANSPORT', 'ETIMEDOUT', 'EUNSUPPORTED', 'ESHELLGONE',
   'EFBIG', 'ECANCELLED', 'ENOREMOTE',
 ];
 

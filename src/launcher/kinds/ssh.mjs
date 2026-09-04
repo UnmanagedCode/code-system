@@ -10,12 +10,6 @@ export function createSshTransport() {
   return {
     kind: 'ssh',
 
-    defaultShell: '/bin/bash',
-
-    // FALSE, PERMANENTLY — see the note in docker.mjs. No long-lived shell for
-    // this kind; cc takes its documented one-shot-exec fallback.
-    persistentShell: false,
-
     // FALSE until the transport does real process-group reach on the far side.
     processGroupSignal: false,
 
@@ -42,7 +36,5 @@ export function createSshTransport() {
     },
 
     async reap() {},
-
-    descriptor() { return { os: 'linux', pathSep: '/', home: '/root' }; },
   };
 }

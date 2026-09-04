@@ -1,12 +1,11 @@
 // PINS the `host` kind's guard and its flag-derived capabilities.
 //
-// The guard, because a hand-registered `--kind host` row is an unfenced
-// arbitrary-exec provider on cc's own machine. The capabilities, because
+// The guard, because a hand-registered `--kind host` row is a standing,
+// protocol-speaking exec service on cc's own machine. The capabilities, because
 // deriving them from flags is the ONLY thing that makes cc's conformance suite
-// runnable against this launcher at all: its three core configurations pass no
-// flags and deep-equal `remotes:false` / `remoteDescriptors:false`, while its
-// remotes and mirror tests pass `--remote` / `--mirror` and require the
-// opposite.
+// runnable against this launcher at all: its core configurations pass no flags
+// and deep-equal `remotes:false` / `remoteDescriptors:false`, while its remotes
+// and mirror tests pass `--remote` / `--mirror` and require the opposite.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -49,9 +48,9 @@ test('a value other than 1 does not open the guard', async () => {
 //
 // The plan required `host` to refuse unless BOTH a general env seam AND at
 // least one `--remote <id>=<root>` fence were given. The fence half is
-// unimplementable as written: cc's three core CAPABILITY_CONFIGS pass no flags
-// at all, so a mandatory fence makes 62 of the suite's 65 tests unrunnable —
-// and running that suite is the only reason this kind exists.
+// unimplementable as written: cc's CAPABILITY_CONFIGS pass no flags at all, so
+// a mandatory fence makes the whole core battery unrunnable — and running that
+// suite is the only reason this kind exists.
 //
 // What ships instead gates the UNFENCED-SERVING PATH ONLY, behind a second,
 // separately-named seam (CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED). A fenced host
@@ -64,9 +63,8 @@ test('with the guard open and NO flags, host advertises exactly what cc\'s core 
   const hs = await l.hello();
   // This deep-equal is CAPABILITY_CONFIGS[0].caps, verbatim.
   assert.deepEqual(hs.capabilities, {
-    persistentShell: true, processGroupSignal: true, remotes: false, remoteDescriptors: false,
+    processGroupSignal: true, remotes: false, remoteDescriptors: false,
   });
-  assert.equal(hs.system.shell.startsWith('/'), true);
   assert.match(hs.provider, /^code-system-host\/\S+$/);
 
   // With no --remote it serves ONE unfenced default target, so a request naming
@@ -76,33 +74,13 @@ test('with the guard open and NO flags, host advertises exactly what cc\'s core 
   assert.equal(textOf(l.frames, 'e1'), 'served');
 });
 
-test('--no-persistent-shell lowers the capability AND makes it real', async (t) => {
-  const l = new Launcher(['--kind', 'host', '--no-persistent-shell'], ALLOW);
-  t.after(() => l.kill());
-  const hs = await l.hello();
-  // CAPABILITY_CONFIGS[1].caps, verbatim.
-  assert.deepEqual(hs.capabilities, {
-    persistentShell: false, processGroupSignal: true, remotes: false, remoteDescriptors: false,
-  });
-
-  // THE MECHANISM docker and ssh permanently sit behind: with the capability
-  // absent, a `stdin` frame is refused rather than served. Exercised here
-  // because `host` is the kind that can actually spawn a child; the per-kind
-  // constants are pinned in tests/capabilities.test.mjs.
-  l.send({ type: 'exec', id: 'c1', cwd: '/tmp', argv: ['cat'] });
-  l.send({ type: 'stdin', id: 'c1', dataB64: Buffer.from('hi').toString('base64') });
-  const err = await l.waitFor(f => f.type === 'error' && f.id === 'c1');
-  assert.equal(err.code, 'EUNSUPPORTED');
-  assert.equal(typeof err.id, 'string', 'id-addressed');
-});
-
 test('--no-process-group-signal lowers the capability and sets descendantsMaySurvive', async (t) => {
   const l = new Launcher(['--kind', 'host', '--no-process-group-signal'], ALLOW);
   t.after(() => l.kill());
   const hs = await l.hello();
-  // CAPABILITY_CONFIGS[2].caps, verbatim.
+  // CAPABILITY_CONFIGS[1].caps, verbatim.
   assert.deepEqual(hs.capabilities, {
-    persistentShell: true, processGroupSignal: false, remotes: false, remoteDescriptors: false,
+    processGroupSignal: false, remotes: false, remoteDescriptors: false,
   });
 
   // The grandchild's own stdout goes to /dev/null so it does not hold the
@@ -158,6 +136,43 @@ test('--remote turns on `remotes`, fences each target, and injects CC_REMOTE', a
   const exit = await l.waitFor(f => f.type === 'exit' && f.id === 'deriv');
   assert.equal(exit.code, 0, "cwd '/' must never be fenced");
   assert.equal(textOf(l.frames, 'deriv'), 'derived');
+});
+
+// PINS: `CC_REMOTE` is overlaid AFTER the frame's `env` replacement, on BOTH
+// exec forms.
+//
+// §5 says an `exec`'s `env` REPLACES the environment, posix_spawn-style. cc's
+// reference provider therefore spreads the remote id on top of it
+// (`remoteId === null ? baseEnv : { ...baseEnv, CC_REMOTE: remoteId }`), and so
+// must we — a frame carrying its own `env` must still name its target.
+//
+// The `--remote` test above only asserts `CC_REMOTE` on a frame carrying NO
+// `env`, so reordering the spread to `{ CC_REMOTE, ...baseEnv }`, or injecting
+// on the shell form only, is invisible to it and red here.
+test('CC_REMOTE names the target on both exec forms, and survives an env frame that REPLACES the environment', async (t) => {
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  const rootA = path.join(store.dir, 'a');
+  await fs.mkdir(rootA);
+
+  const l = new Launcher(['--kind', 'host', '--remote', `a=${rootA}`], ALLOW_FENCED);
+  t.after(() => l.kill());
+  await l.hello();
+
+  // An env the frame supplies WHOLESALE. It names no CC_REMOTE, and it wipes
+  // everything the launcher's own process had.
+  const replacement = { PATH: process.env.PATH };
+
+  // (i) the argv form.
+  l.send({ type: 'exec', id: 'argv', remoteId: 'a', cwd: rootA, argv: ['env'], env: replacement });
+  assert.equal((await l.waitFor(f => f.type === 'exit' && f.id === 'argv')).code, 0);
+  assert.match(textOf(l.frames, 'argv'), /^CC_REMOTE=a$/m,
+    'the argv form gets CC_REMOTE even though the frame replaced the environment');
+
+  // (ii) the shell form.
+  l.send({ type: 'exec', id: 'sh', remoteId: 'a', cwd: rootA, shell: 'echo "$CC_REMOTE"', env: replacement });
+  assert.equal((await l.waitFor(f => f.type === 'exit' && f.id === 'sh')).code, 0);
+  assert.equal(textOf(l.frames, 'sh').trim(), 'a');
 });
 
 test('--mirror/--exclude turn on remoteDescriptors and round-trip the advertisement', async (t) => {

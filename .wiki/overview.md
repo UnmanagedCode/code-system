@@ -6,7 +6,7 @@
 
 ## Structure
 
-- **Kinds** — one per transport KIND (`docker`, `ssh`), behind the `Transport` seam (`src/launcher/kinds/`). A kind answers only "how do I reach this target from the host" and builds argv; the launcher core owns the protocol for all of them. A third kind, `host`, is the conformance vehicle and is never registered — see [gotchas/host-kind-and-conformance.md](gotchas/host-kind-and-conformance.md).
+- **Kinds** — one per transport KIND (`docker`, `ssh`), behind the `Transport` seam (`src/launcher/kinds/`). A kind answers only "how do I reach this target from the host" and builds argv; the launcher core owns the protocol for all of them. A third kind, `host`, is the conformance vehicle and is never registered: it is the only far side reaching the test process's own filesystem, and `npm run conformance` runs cc's battery through the shipped launcher with it — see [gotchas/host-kind-and-conformance.md](gotchas/host-kind-and-conformance.md).
 - **Launcher** — owns execution: spawning provider child processes, relaying their I/O, and killing them (and anything they spawned) on shutdown. See [gotchas/kill-relay.md](gotchas/kill-relay.md).
 - **Config store** — the durable, on-disk record of per-`remoteId` connection config (container name, or host/user/key). The backend is the only writer; the launcher only reads it.
 - **Backend + card UI** — owns the remote catalog: a card-based UI where each card is one configured remote, and the backend that writes the user's edits to the config store. Since cc has no way to enumerate remotes on its own, this catalog is the only place remotes are known. See [gotchas/no-remote-discovery.md](gotchas/no-remote-discovery.md).

@@ -3,7 +3,6 @@
 // updating src/paths.mjs — which is the only place it is spelled.
 //
 //   node src/launcher/main.mjs --kind <docker|ssh|host>
-//                              [--no-persistent-shell]
 //                              [--no-process-group-signal]
 //                              [--remote <id>=<absolute root>]…   (host only)
 //                              [--mirror <[id=]absolute root>]…   (host only)
@@ -46,7 +45,6 @@ function parseTargeted(flag, spec) {
 export function parseArgs(argv) {
   const o = {
     kind: null,
-    persistentShell: true,
     processGroupSignal: true,
     remotes: new Map(),
     mirrors: new Map(),
@@ -59,7 +57,6 @@ export function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--kind') o.kind = argv[++i] ?? '';
-    else if (a === '--no-persistent-shell') o.persistentShell = false;
     else if (a === '--no-process-group-signal') o.processGroupSignal = false;
     else if (a === '--remote') {
       const spec = argv[++i] ?? '';
@@ -114,10 +111,9 @@ async function resolveTransport(opts) {
     if (unfenced) throw new UsageError(unfenced);
   }
   return createTransport(opts.kind, {
-    persistentShell: opts.persistentShell,
     processGroupSignal: opts.processGroupSignal,
     // DERIVED FROM THE FLAGS for a flag-backed kind — the shape cc's reference
-    // provider uses, and what keeps the suite's three core configurations
+    // provider uses, and what keeps the suite's core capability configurations
     // (which pass no flags and deep-equal `remotes:false`) runnable.
     remotes: opts.remotes.size > 0,
     remoteDescriptors: opts.mirrors.size > 0,
@@ -142,8 +138,9 @@ export async function runLauncher(argv, { stdin = process.stdin, stdout = proces
     ? new StoreRemoteSource(opts.kind)
     : new FlagRemoteSource(opts.remotes, opts.mirrors);
 
+  // EXACTLY cc's `Capabilities` interface, no more: it reads these three and
+  // ignores anything else, so a fourth key would be a field with no reader.
   const capabilities = {
-    persistentShell: transport.persistentShell === true,
     processGroupSignal: transport.processGroupSignal === true,
     remotes: transport.remotes === true,
     remoteDescriptors: transport.remoteDescriptors === true,

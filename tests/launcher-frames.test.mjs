@@ -19,7 +19,7 @@ const textOf = (frames, id, type = 'stdout') =>
   frames.filter(f => f.type === type && f.id === id)
     .map(f => Buffer.from(f.dataB64, 'base64').toString('utf8')).join('');
 
-test('the handshake is answered once, before any other frame, with an absolute shell and an EMPTY store', async (t) => {
+test('the handshake is answered once, before any other frame, carries NO system descriptor, and works on an EMPTY store', async (t) => {
   const store = await tempStore();
   t.after(() => store.cleanup());
   const l = new Launcher(['--kind', 'fake'], fakeEnv(store.dir));
@@ -27,12 +27,14 @@ test('the handshake is answered once, before any other frame, with an absolute s
 
   const hs = await l.hello();
   // THE REGISTRATION CONSTRAINT, asserted directly: cc registers by spawning
-  // this argv and handshaking with zero remotes configured, and a hello with a
-  // missing, relative or empty shell is refused EPROTO at the handshake.
+  // this argv and handshaking with zero remotes configured.
   assert.equal(hs.protocol, 1);
   assert.match(hs.provider, /^\S+\/\S+$/);
-  assert.equal(hs.system.shell.startsWith('/'), true, 'system.shell must be absolute');
-  assert.ok(hs.system.home.length > 0);
+  // cc's HelloProviderFrame is {type, protocol, provider, capabilities?}. The
+  // descriptor it used to carry is DELETED, and `shell` — its only ever
+  // reader — went with the long-lived shell. We send no key with zero readers,
+  // and re-adding one must red this.
+  assert.ok(!('system' in hs), 'the hello carries no `system` descriptor at all');
   assert.equal(hs.capabilities.remotes, true, 'a store-backed kind always advertises remotes');
   assert.equal(l.frames.length, 1, 'the hello is the FIRST frame');
 
@@ -95,6 +97,11 @@ test('a wrong-kind and a wrong-schema record are ENOREMOTE by name, not a guess'
   assert.match(s.message, /backend/, 'and names the repair');
 });
 
+// PINS: a `signal` frame naming NO remote reaches the child its `exec` id bound.
+// `signal` is the surviving follow-on frame with a visible effect — cc deleted
+// `stdin`/`stdinClose`, which is what this test used to ride on. Looking for a
+// `remoteId` on a follow-on frame (adding `signal` to REQUEST_FRAMES) answers
+// ENOREMOTE and leaves the command running, so the exit never arrives.
 test('an id is bound to one remote: follow-on frames carry no remoteId and still reach the child', async (t) => {
   const store = await tempStore();
   t.after(() => store.cleanup());
@@ -103,14 +110,51 @@ test('an id is bound to one remote: follow-on frames carry no remoteId and still
   t.after(() => l.kill());
   await l.hello();
 
-  l.send({ type: 'exec', id: 'c1', remoteId: 'alpha', cwd: '/tmp', argv: ['cat'] });
-  // The stdin frame names NO remote. The `id` is the whole address.
-  l.send({ type: 'stdin', id: 'c1', dataB64: Buffer.from('routed\n').toString('base64') });
-  await l.waitFor(f => f.type === 'stdout' && f.id === 'c1');
-  assert.equal(textOf(l.frames, 'c1'), 'routed\n');
-  l.send({ type: 'stdinClose', id: 'c1' });
+  l.send({ type: 'exec', id: 'c1', remoteId: 'alpha', cwd: '/tmp', argv: ['sleep', '30'] });
+  // The signal frame names NO remote. The `id` is the whole address.
+  l.send({ type: 'signal', id: 'c1', signal: 'SIGTERM', processGroup: true });
   const exit = await l.waitFor(f => f.type === 'exit' && f.id === 'c1');
-  assert.equal(exit.code, 0);
+  assert.equal(exit.signal, 'SIGTERM', 'the signal reached the child the id was bound to');
+  assert.equal(l.frames.some(f => f.type === 'error' && f.id === 'c1'), false,
+    'a follow-on frame is never refused for naming no remote');
+});
+
+// PINS: a frame type cc DELETED is ignored — not answered, and not fatal to a
+// running command. §2 of the contract: "Unknown frame types are likewise
+// ignored by both ends."
+//
+// This is not merely dead-code hygiene. The handler this replaces set
+// `state.closed`, SIGKILLed the child and answered EUNSUPPORTED — so a stray
+// frame would have killed a live command AND answered an id cc was still
+// waiting on. Deleting the arms makes the ignore path correct by construction.
+test('a deleted frame type is IGNORED — stdin and stdinClose neither refuse nor kill the command', async (t) => {
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  await writeRecord(store.dir, record('alpha'));
+  const l = new Launcher(['--kind', 'fake'], fakeEnv(store.dir));
+  t.after(() => l.kill());
+  await l.hello();
+
+  l.send({ type: 'exec', id: 'c1', remoteId: 'alpha', cwd: '/tmp', argv: ['cat'] });
+  l.send({ type: 'stdin', id: 'c1', dataB64: Buffer.from('written\n').toString('base64') });
+  l.send({ type: 'stdinClose', id: 'c1' });
+
+  // A BARRIER, not a sleep: frames are handled in arrival order, so this exec's
+  // exit proves both frames above were already processed.
+  l.send({ type: 'exec', id: 'barrier', remoteId: 'alpha', cwd: '/tmp', argv: ['printf', 'ok'] });
+  await l.waitFor(f => f.type === 'exit' && f.id === 'barrier');
+
+  assert.equal(l.frames.some(f => f.type === 'error' && f.id === 'c1'), false,
+    'no EUNSUPPORTED — a deleted type is ignored, not answered');
+  assert.equal(l.frames.some(f => f.type === 'stdout' && f.id === 'c1'), false,
+    'the payload was not written into the child either');
+  assert.equal(l.frames.some(f => f.type === 'exit' && f.id === 'c1'), false,
+    'and nothing settled the id — the command is still running');
+
+  // Positive proof it is still live: only a running child can answer a signal.
+  l.send({ type: 'signal', id: 'c1', signal: 'SIGTERM', processGroup: true });
+  const exit = await l.waitFor(f => f.type === 'exit' && f.id === 'c1');
+  assert.equal(exit.signal, 'SIGTERM');
 });
 
 test('an unknown frame type and a blank line are ignored, not errors', async (t) => {
