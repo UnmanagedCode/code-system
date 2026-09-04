@@ -171,6 +171,8 @@ export async function runLauncher(argv, { stdin = process.stdin, stdout = proces
     capabilities,
     write,
     version: VERSION,
+    // Diagnostics the session must report but must not die of — a failed reap.
+    warn: (msg) => { stderr.write(`${msg}\n`); },
     onFatal: (msg) => {
       stderr.write(`code-system launcher (${opts.kind}): ${msg}\n`);
       void finish(1);

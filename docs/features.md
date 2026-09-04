@@ -50,18 +50,21 @@ A **Docker** target specifically needs GNU coreutils and findutils, a POSIX
 `/bin/sh`, an executable **`/bin/bash`** (the `shell` exec form is a login
 `bash -lc`), plus `base64`, `tr` and `env`.
 
-Alpine (busybox) is the common surprise, and it fails in three ways of which
-only two announce themselves: `find` has no `-printf` (so `readDir` breaks
-outright), `realpath` accepts neither `-e` nor `--`, and — the dangerous one —
-`stat` **succeeds** while silently dropping sub-second mtime precision. The
-probe checks the exact commands cc sends, in their exact forms, and asserts on
-the *output shape* for that last one. Distroless and scratch images have no
-shell at all and will not work.
+Alpine (busybox) is the common surprise. Measured against a live
+`busybox:1.38.0` container, the card shows **four** missing capabilities, and
+only three of the four announce themselves:
 
-Run against a live `busybox:1.38.0` container the verdict is **four** missing
-capabilities — `readDir`, `realpath`, `stat` and `shell` — the last because
-busybox ships no `/bin/bash`. The card lists all four, each with the probe that
-caught it and busybox's own words (`find: unrecognized: -printf`).
+| Missing | How it shows |
+|---|---|
+| `readDir` | `find` has no `-printf` — `find: unrecognized: -printf`, exit 1 |
+| `realpath` | accepts neither `-e` nor `--` |
+| `shell` | no `/bin/bash`, which the `shell` exec form needs |
+| `stat` | **the dangerous one**: it *succeeds* and is wrong, silently dropping sub-second mtime precision |
+
+The probe checks the exact commands cc sends, in their exact forms, and asserts
+on the *output shape* — not the exit code — precisely because of that last row.
+The card lists all four, each with the probe that caught it and the target's own
+words. Distroless and scratch images have no shell at all and will not work.
 
 A **stopped container reads as unreachable, and the plugin will not start it**
 (see "Connecting is attach-only" above). A request routed at one answers

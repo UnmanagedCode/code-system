@@ -65,6 +65,10 @@ per-exec `token` — the core generates the token and passes it in the
 frame-supplied `env` (which **replaces** the environment) is never polluted; a
 kind that needs it puts it on the far side inside its own `spawnPlan`.
 
+`reap` may **throw**, and that is part of the contract: a kind that cannot prove
+its relay reached the far side must say so rather than return quietly. The core
+reports it and carries on.
+
 `classifyFailure(config, {code, stdout, stderr})` is **optional** and reads the
 *transport's* own error vocabulary — a docker daemon response — turning a
 non-zero exit into a named protocol failure instead of an `exit` frame. Only the
@@ -380,7 +384,7 @@ launcher can legitimately be spawned before the backend has ever run.
 
 **1500 ms is chosen against cc's own number.** cc closes our stdin and SIGKILLs
 us after `DEFAULT_SHUTDOWN_GRACE_MS = 2000`
-(`src/systems/providerConnection.ts:75`). Reaping must finish inside that window
+(`src/systems/providerConnection.ts`, :75 at the pin). Reaping must finish inside that window
 or cc kills us mid-reap and the orphans survive anyway.
 
 `close` on one id takes the same kill-then-reap path for that id alone and emits
@@ -432,6 +436,19 @@ descendant that called `setsid` — which a group kill does not. It uses only `t
 and shell built-ins (no `ps`: `node:24-slim` has none), and the reap exec itself
 carries no token, so it cannot kill itself. Measured cost **~121 ms** per handle,
 run in parallel across handles, comfortably inside the 1500 ms deadline.
+
+**A REAP MUST PROVE IT RAN, and a failed one is REPORTED.** Without `tr`, or on a
+target whose `/proc/<pid>/environ` is unreadable, every match simply fails and an
+unconditional `exit 0` would report a clean shutdown while the container-side
+subtree survived — the MUST-3 hazard made invisible, and `baselineRefusal` gates
+exec and fileops but never `reap`. So the script counts the environs it could
+read and answers `CCREAP blind` / exit 3 when that count is zero (the scanning
+process can always read its own, so zero is unambiguous); `Transport.reap` throws
+unless it sees a `CCREAP ok` line; and `Session.#reap` writes that to **stderr**
+through the session's `warn` seam instead of swallowing it. It still does not
+take the connection down — one target's leftovers are not a dead session. The one
+benign failure is the container being gone or stopped, recognised through the
+same `classifyFailure` the exec path uses so the two cannot drift.
 
 ## Test patterns
 

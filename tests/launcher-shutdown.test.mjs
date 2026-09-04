@@ -1,6 +1,6 @@
 // PINS PROTOCOL MUST 3: the launcher exits when its stdin closes and takes
 // everything it started with it — including the far-side work a kind must reap
-// itself, because a `docker exec` child reparents inside the container and cc
+// itself, because a `docker exec` child is not the provider's OS descendant and cc
 // has no way to clean up after a provider that does not do this.
 //
 // Asserted on the fake Transport's RECORDED reap calls, so it holds for a kind

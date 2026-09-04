@@ -5,7 +5,7 @@ Durable knowledge about this project: gotchas, decisions, glossary. Read this fi
 ## Gotchas (protocol/environment constraints, verified from cc's contract docs)
 
 - [gotchas/tooling-baseline.md](gotchas/tooling-baseline.md) — host-side execution doesn't free the target from GNU tooling requirements (Alpine/busybox/distroless break)
-- [gotchas/kill-relay.md](gotchas/kill-relay.md) — provider must SIGKILL child processes itself; cc's exit-on-stdin-EOF doesn't reach them
+- [gotchas/kill-relay.md](gotchas/kill-relay.md) — provider must SIGKILL child processes itself; cc's exit-on-stdin-EOF doesn't reach them; it fires at four sites (close, shutdown, timeout, `signal`); the relay must PROVE it ran or a blind reap reads as a clean one
 - [gotchas/no-remote-discovery.md](gotchas/no-remote-discovery.md) — no `listRemotes` frame; the plugin UI is the only catalog; `remoteId` is a stable hand-off contract
 - [gotchas/active-registration.md](gotchas/active-registration.md) — registering a System row is an active handshake with its own preconditions
 - [gotchas/host-environment.md](gotchas/host-environment.md) — two host-side failure modes: `BASH_RULES_NOT_ENFORCEABLE` and stale plugin state until restart
@@ -13,7 +13,7 @@ Durable knowledge about this project: gotchas, decisions, glossary. Read this fi
 - [gotchas/file-ops-over-exec.md](gotchas/file-ops-over-exec.md) — `readFile`/`writeFile` are derived over `exec`, not `docker cp`/`scp`; our own refusals carry a per-call nonce tag (matching the `strerror` tail is spoofable by a path); `exclusive` is `set -C`
 - [gotchas/no-persistent-shell.md](gotchas/no-persistent-shell.md) — the protocol has no long-lived shell at all; NOTHING carries over between commands, not even cwd; `stdin`/`stdinClose` are deleted frames and must be ignored, never refused
 - [gotchas/baseline-probe-two-tier.md](gotchas/baseline-probe-two-tier.md) — the tooling probe is cached on a reachability fingerprint; check the flag not the binary; busybox `stat` succeeds and is wrong; the live busybox verdict is FOUR capabilities, not three
-- [gotchas/docker-exec-transport.md](gotchas/docker-exec-transport.md) — measured `docker exec` behaviour: children survive their host client; a never-started command reports on STDOUT with exit 127 while daemon refusals use stderr; `processGroupSignal` could be `true` and why it is not; `env -i` and the HOME discriminator; `-i` iff `stdin:'pipe'`; no `ps` in `node:24-slim`
+- [gotchas/docker-exec-transport.md](gotchas/docker-exec-transport.md) — measured `docker exec` behaviour: children survive their host client; a never-started command reports on STDOUT with exit 127/128 while daemon refusals use stderr; `processGroupSignal` could be `true` and why it is not; `env -i --` (dropping the `--` lets a frame env key hijack the cwd) and the HOME discriminator; `-i` iff `stdin:'pipe'`; no `ps` in `node:24-slim`
 - [gotchas/exec-env-across-a-boundary.md](gotchas/exec-env-across-a-boundary.md) — `ExecRequest.env` is the FRAME's env and `null` means the FAR SIDE's, never the launcher's `process.env`; `CC_REMOTE` overlaid last, by the kind; the interim limitation cc card 2026-0317 removes (code-system card 2026-0008)
 
 ## Decisions

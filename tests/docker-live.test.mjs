@@ -15,7 +15,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PROBE_SCRIPT, parseProbeOutput } from '../src/baseline.mjs';
-import { createDockerTransport } from '../src/launcher/kinds/docker.mjs';
+import { buildReapScript, createDockerTransport } from '../src/launcher/kinds/docker.mjs';
 import { makeRunner } from '../src/launcher/run.mjs';
 import { Launcher, tempStore, writeRecord } from './helpers.mjs';
 import {
@@ -184,6 +184,14 @@ test('live: `close` reaps that id alone and leaves the other execs running', asy
   await writeRecord(store.dir, dockerRecord('alpha', box));
   const { l, markers } = await threeLive(t, d.cli, box, store);
 
+  // MEASURE the steady state rather than asserting a literal: nothing in
+  // `threeLive` fixes how many container processes one `sleep <marker>` exec
+  // owns, and a hardcoded 2 would be an unestablished claim that could drift
+  // with the image's shell.
+  const baseline = {};
+  for (const m of markers) baseline[m] = await markerCount(d.cli, box, m);
+  for (const m of markers) assert.ok(baseline[m] > 0, `marker ${m} must be live before the close`);
+
   const before = l.frames.length;
   l.send({ type: 'close', id: 'b' });
   // Another exec as the barrier: its exit proves `close` was already handled.
@@ -192,8 +200,10 @@ test('live: `close` reaps that id alone and leaves the other execs running', asy
 
   assert.equal(await settle(async () => (await markerCount(d.cli, box, markers[1])) === 0), true,
     'the closed id\'s container process must be gone');
-  assert.equal(await markerCount(d.cli, box, markers[0]), 2, 'the first exec must be untouched');
-  assert.equal(await markerCount(d.cli, box, markers[2]), 2, 'the third exec must be untouched');
+  assert.equal(await markerCount(d.cli, box, markers[0]), baseline[markers[0]],
+    'the first exec must be untouched — the reap is token-scoped, not container-scoped');
+  assert.equal(await markerCount(d.cli, box, markers[2]), baseline[markers[2]],
+    'the third exec must be untouched');
   assert.equal(l.frames.slice(before).filter(f => f.id === 'b').length, 0,
     'no further frames are emitted for a closed id');
 
@@ -250,7 +260,13 @@ test('live: a `signal` frame reaps the container-side process too', async (t) =>
   assert.equal(await settle(async () => (await markerCount(d.cli, box, marker)) > 0), true);
 
   l.send({ type: 'signal', id: 'sg', signal: 'SIGTERM' });
-  await l.waitFor(f => f.type === 'exit' && f.id === 'sg');
+  const exit = await l.waitFor(f => f.type === 'exit' && f.id === 'sg');
+  // The SAME honesty the timeout path is held to: we have no process-group
+  // reach into the container, so a result we terminated must say descendants
+  // may have survived — the reap runs AFTER the exit frame. A mutant that kills
+  // correctly but never sets `orphaned` would otherwise pass this test.
+  assert.equal(exit.descendantsMaySurvive, true);
+  assert.equal(exit.timedOut, false, 'a signal is not a timeout');
   assert.equal(await settle(async () => (await markerCount(d.cli, box, marker)) === 0), true,
     'a signalled exec leaves nothing running in the container');
 });
@@ -549,4 +565,106 @@ test('live: every operation routes on its remoteId, and the routed container rea
     assert.deepEqual(textOf(l.frames, `x-${id}`).trim().split('\n'), [hostnames[id], id],
       'the argv carried the ROUTED container, and the far side agrees which remote it is');
   }
+});
+
+// ── the `env -i` operand boundary, run for real ──────────────────────
+
+// PINS THE FIX FOR AN OPTION INJECTION, against a real container rather than on
+// the argv. Frame-supplied env KEYS are arbitrary; GNU `env` reads leading-`-`
+// operands as its own options until a non-option operand. Measured in this
+// image (coreutils 9.1), with `-w /`:
+//
+//   env -i    '--chdir=/tmp' PATH=/usr/bin pwd  → /tmp   cwd HIJACKED
+//   env -i -- '--chdir=/tmp' PATH=/usr/bin pwd  → /      the -w holds
+//
+// So without the `--` a frame silently relocates the command while cc believes
+// it ran at the `cwd` it sent — and on coreutils 9.7 `--argv0=` spoofs $0 while
+// 9.1 refuses the exec outright. Dropping the `--` reds this.
+test('live: a frame env key shaped like an option cannot hijack the command', async (t) => {
+  const d = await skipUnlessDocker(t); if (!d) return;
+  const box = await withContainer(t, d.cli);
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  await writeRecord(store.dir, dockerRecord('alpha', box));
+
+  const l = launcherFor(t, store, d.cli);
+  await l.hello();
+  l.send({
+    type: 'exec', id: 'inj', remoteId: 'alpha', cwd: '/tmp',
+    argv: ['/bin/sh', '-c', 'pwd; echo "$0"'],
+    // `/` exists in every image, so a successful hijack is VISIBLE as a
+    // different cwd rather than as a failure that could have many causes.
+    env: { '--chdir=/': '', '--argv0=EVIL': '', PATH: '/usr/local/bin:/usr/bin:/bin' },
+  });
+  const exit = await l.waitFor(f => f.type === 'exit' && f.id === 'inj');
+  assert.equal(exit.code, 0,
+    `the exec must still run: ${textOf(l.frames, 'inj', 'stderr')}`);
+  const [cwd, argv0] = textOf(l.frames, 'inj').trim().split('\n');
+  assert.equal(cwd, '/tmp', 'the frame\'s cwd held — `--chdir` was an assignment, not an option');
+  assert.notEqual(argv0, 'EVIL', '`--argv0` was an assignment, not an option');
+
+  // The inherit path takes each `-e` value as a separate argv token, so the
+  // same key cannot reach docker as an option there either.
+  l.send({ type: 'exec', id: 'inj2', remoteId: 'alpha', cwd: '/tmp', argv: ['pwd'] });
+  assert.equal((await l.waitFor(f => f.type === 'exit' && f.id === 'inj2')).code, 0);
+  assert.equal(textOf(l.frames, 'inj2'), '/tmp\n');
+});
+
+// ── the reap relay detects its own blindness, for real ───────────────
+
+// PINS that the relay reports whether it could see anything. Without `tr`, or on
+// a target whose /proc/<pid>/environ cannot be read, every `case` matches
+// nothing — and an unconditional `exit 0` would report a successful reap while
+// the container-side subtree survived. That is the MUST-3 hazard itself, made
+// invisible; `baselineRefusal` gates exec and fileops, never `reap`.
+//
+// Run in BOTH shells this project meets: node:24-slim's dash and busybox's ash.
+test('live: the reap script reports `blind` instead of success when it cannot read /proc', async (t) => {
+  const d = await skipUnlessDocker(t); if (!d) return;
+  const box = await withContainer(t, d.cli);
+  const bb = await withContainer(t, d.cli, { image: BUSYBOX, stem: 'busybox' });
+  const script = buildReapScript('a-token-nothing-carries');
+
+  for (const [name, ctr] of [['node:24-slim/dash', box], ['busybox/ash', bb]]) {
+    const ok = await inContainer(d.cli, ctr, script);
+    assert.equal(ok.code, 0, `${name}: ${ok.stderr}`);
+    assert.match(ok.stdout, /^CCREAP ok 0 \d+$/m,
+      `${name} must report how many environs it could read; got ${JSON.stringify(ok.stdout)}`);
+    assert.notEqual(ok.stdout.trim().split(' ')[3], '0',
+      `${name}: the scanning process can always read its own environ, so this is never 0 when sighted`);
+
+    // The same script with `tr` unreachable: it must NOT claim success.
+    const blind = await inContainer(d.cli, ctr, `PATH=/nonexistent-xyz\n${script}`);
+    assert.equal(blind.code, 3, `${name} must exit non-zero when blind`);
+    assert.match(blind.stdout, /CCREAP blind/, `${name} must say so`);
+  }
+});
+
+// PINS the transport half: a reap it cannot prove ran THROWS, so session.mjs can
+// report it — while the container simply being gone stays quiet, because its
+// processes went with it and crying wolf on every shutdown would train the
+// warning away.
+test('live: reap throws when the relay cannot be proved, and is quiet when the container is gone', async (t) => {
+  const d = await skipUnlessDocker(t); if (!d) return;
+  const box = await withContainer(t, d.cli);
+  const tr = createDockerTransport({ cli: d.cli });
+
+  // A live container: the relay runs and proves it.
+  await tr.reap({ container: box }, { pid: null, token: 'nothing-carries-this', remoteId: 'alpha' });
+
+  // A container that does not exist: benign, nothing left to reap.
+  await tr.reap({ container: 'code-system-test-no-such-container' },
+    { pid: null, token: 'x', remoteId: 'alpha' });
+
+  // A container that exists but is stopped: also benign.
+  const stopped = await withContainer(t, d.cli, { stem: 'stopped' });
+  assert.equal((await run([...d.cli, 'stop', '-t', '0', stopped])).code, 0);
+  await tr.reap({ container: stopped }, { pid: null, token: 'x', remoteId: 'alpha' });
+
+  // A docker CLI that cannot be spawned at all is NOT benign — nothing was
+  // reaped and the container may well still be running it.
+  await assert.rejects(
+    () => createDockerTransport({ cli: ['/definitely-not-docker-xyz'] })
+      .reap({ container: box }, { pid: null, token: 'x', remoteId: 'alpha' }),
+    /may have survived/);
 });

@@ -4,10 +4,12 @@ All of this was measured against **Docker Engine 29.7.2** on 2026-09-04, against
 a `node:24-slim` container and `busybox:1.38.0`. None of it can be re-derived
 from our code, and three of the facts contradict a reasonable assumption.
 
-## 1. A `docker exec` child is NOT reparented to its host client
+## 1. A `docker exec` child does not die with its host client
 
-SIGKILL the host-side `docker exec` process and the container process **keeps
-running**. This is the whole reason `Transport.reap` exists for this kind
+It is not the client's child at all: the daemon starts it inside the container on
+the client's behalf, so the client is a *proxy* for its I/O and exit status, not
+its parent. SIGKILL the host-side `docker exec` process and the container process
+**keeps running**. This is the whole reason `Transport.reap` exists for this kind
 (see [kill-relay.md](kill-relay.md)).
 
 It is also why every reap test needs a **negative control**: without one, a test
@@ -23,15 +25,22 @@ a kind whose children died with their proxy would need no relay at all.
 | container exists, not running | 1 | **stderr** | `Error response from daemon: container <64-hex id> is not running` |
 | binary not in the container | **127** | **stdout** | `OCI runtime exec failed: exec failed: unable to start container process: exec: "<argv0>": executable file not found in $PATH` |
 | `-w` names a missing directory | **127** | **stdout** | `OCI runtime exec failed: exec failed: unable to start container process: chdir to cwd ("<cwd>") set in config.json failed: no such file or directory` |
+| `-w` is not absolute (incl. a leading `-`) | **128** | **stdout** | `OCI runtime exec failed: exec failed: Cwd must be an absolute path` |
 | socket not permitted | 1 | stderr | `permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: …` |
 | daemon absent (`DOCKER_HOST` bad) | 1 | stderr | `Cannot connect to the Docker daemon at <addr>. Is the docker daemon running?` |
 | the command's own exit code | verbatim | — | `sh -c 'exit 42'` → 42 |
 
-**Rows 3 and 4 are the surprise.** A never-started command's diagnostic arrives
+**Rows 3–5 are the surprise.** A never-started command's diagnostic arrives
 on the channel the *command's own output* uses — so a classifier reading only
 stderr is blind to it, and `fileops`' header parse sees the text where it expects
 `CCSTAT`. Note also that the daemon rows name the **64-hex container id**, not
 the name the remote was configured with; our message says both.
+
+Note also that the three never-started rows share only the stem
+`OCI runtime exec failed: exec failed: ` — the `unable to start container
+process: ` segment is **absent** from the `Cwd must be an absolute path` row, and
+that row exits **128**, not 127. A classifier anchored on the longer prefix, or
+on 127 alone, reports a command that never started as one that ran and exited.
 
 The classifier that reads this table is `classifyFailure` in
 `src/launcher/kinds/docker.mjs`; the guards that stop a command forging a verdict
@@ -68,15 +77,38 @@ in §11's words, "the one lie this protocol cannot detect".
 ## 4. `env -i` is the replacement mechanism, and HOME is the discriminator
 
 ```
-docker exec -- <ctr> env -i PATH=/usr/bin /bin/sh -c 'echo ${HOME-UNSET}'  → UNSET
-docker exec -- <ctr>                      /bin/sh -c 'echo ${HOME-UNSET}'  → /root
+docker exec -- <ctr> env -i -- PATH=/usr/bin /bin/sh -c 'echo ${HOME-UNSET}'  → UNSET
+docker exec -- <ctr>                         /bin/sh -c 'echo ${HOME-UNSET}'  → /root
 ```
 
 An overlay of `-e` flags **cannot produce `UNSET`** — which is exactly why
 `HOME` is what the live test asserts on. An `-e`-based "replacement" passes every
 other assertion in that test.
 
-Two consequences for `spawnPlan`:
+### `env -i --` — the operand boundary is not optional
+
+Frame-supplied env **keys** are arbitrary strings, and GNU `env` reads
+leading-`-` operands as **its own options** until it meets a non-option operand.
+Measured in `cc-box` (coreutils 9.1) with `-w /`:
+
+| invocation | result |
+|---|---|
+| `env -i    '--chdir=/tmp' PATH=/usr/bin pwd` | `/tmp` — **the cwd is hijacked** |
+| `env -i -- '--chdir=/tmp' PATH=/usr/bin pwd` | `/` — the `-w` holds |
+| `env -i '--argv0=EVIL' sh -c 'echo $0'` (coreutils **9.7**) | `EVIL` — `$0` spoofed |
+| `env -i '--argv0=EVIL' …` (coreutils **9.1**) | `env: unrecognized option`, exit 125 — the exec dies |
+
+So the same frame either silently relocates the command while cc believes it ran
+at the `cwd` it sent, or kills the exec outright — depending on the image's
+coreutils. **Emit `env -i --` unconditionally.** Validating keys would not close
+the class: the option set belongs to GNU `env`, not to us. `--ignore-signal=` is
+in the same family.
+
+The **`-e` inherit path is unaffected** — measured, not assumed: `docker exec -e`
+takes its value as a separate argv token, so `-e '--chdir=/tmp=x' -w /` still
+runs at `/`.
+
+Two further consequences for `spawnPlan`:
 
 - In the replacement case, emit **no** `-e` flags: `env -i` would wipe them, so
   `CC_REMOTE`/`CC_EXEC_TOKEN` must be operands of `env -i` instead.
@@ -116,7 +148,7 @@ test asserting only mode and success passes; only a content round-trip catches i
   `/proc`. It does have `grep tr git base64 setsid find stat realpath bash`.
 - **Timings** through `sudo -n docker`: `docker exec true` **106 ms**, the full
   `/proc` token-scan reap script **121 ms**, `docker inspect` **43 ms** — all
-  comfortably inside `REAP_DEADLINE_MS` = 1500.
+  comfortably inside `REAP_DEADLINE_MS` (`src/launcher/session.mjs`) = 1500.
 - **On this host the socket is root-owned**, so unprivileged `docker` fails with
   the permission row. `sudo -n docker` works, and a uid-1000 process **can**
   SIGKILL its own `sudo -n docker exec` child.

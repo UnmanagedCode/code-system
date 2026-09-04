@@ -19,7 +19,7 @@ Under the collapse, a kind honouring `env` as a replacement would run every one
 of those **inside the container with cc's host PATH**. Measured:
 
 ```
-docker exec <ctr> env -i PATH=/usr/local/nvm/versions/node/v24.0.0/bin git --version
+docker exec <ctr> env -i -- PATH=/usr/local/nvm/versions/node/v24.0.0/bin git --version
 → env: 'git': No such file or directory      (exit 127)
 ```
 

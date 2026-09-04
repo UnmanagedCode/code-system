@@ -25,8 +25,8 @@ import { withinRoot } from './remotes.mjs';
 const PLACEHOLDER_CWD = '/';
 
 // Reaping must finish inside cc's own window: cc closes our stdin and SIGKILLs
-// us after DEFAULT_SHUTDOWN_GRACE_MS = 2000
-// (code-conductor src/systems/providerConnection.ts:75). Past that we are killed
+// us after `DEFAULT_SHUTDOWN_GRACE_MS` = 2000 (code-conductor
+// src/systems/providerConnection.ts, :75 at the pin). Past that we are killed
 // mid-reap and the orphans survive anyway.
 export const REAP_DEADLINE_MS = 1500;
 
@@ -44,6 +44,7 @@ export class Session {
   #caps;
   #write;
   #onFatal;
+  #warn;
   #version;
   #reapDeadlineMs;
 
@@ -59,12 +60,19 @@ export class Session {
   #greeted = false;
   #chain = Promise.resolve();
 
-  constructor({ transport, source, capabilities, write, onFatal, version = '0.1.0', reapDeadlineMs = REAP_DEADLINE_MS }) {
+  constructor({
+    transport, source, capabilities, write, onFatal,
+    // DIAGNOSTIC, never fatal and never a frame. Everything but frames goes to
+    // stderr, of which cc keeps a bounded tail (MUST 1).
+    warn = (msg) => { try { process.stderr.write(`${msg}\n`); } catch { /* nobody listening */ } },
+    version = '0.1.0', reapDeadlineMs = REAP_DEADLINE_MS,
+  }) {
     this.#transport = transport;
     this.#source = source;
     this.#caps = capabilities;
     this.#write = write;
     this.#onFatal = onFatal;
+    this.#warn = warn;
     this.#version = version;
     this.#reapDeadlineMs = reapDeadlineMs;
   }
@@ -209,6 +217,9 @@ export class Session {
       child,
       seq: 0,
       timer: null,
+      // The SIGTERM→SIGKILL backstop #terminate schedules. Held so the close
+      // handler can cancel it: without that it outlives the exec it belonged to.
+      killTimer: null,
       timedOut: false,
       orphaned: false,
       closed: false,
@@ -238,6 +249,7 @@ export class Session {
       if (state.closed) return;
       state.closed = true;
       if (state.timer) clearTimeout(state.timer);
+      if (state.killTimer) clearTimeout(state.killTimer);
       this.#execs.delete(id);
       this.#fail(id, classifySpawnError(e), errMsg(e));
     });
@@ -245,6 +257,7 @@ export class Session {
       if (state.closed) return;
       state.closed = true;
       if (state.timer) clearTimeout(state.timer);
+      if (state.killTimer) clearTimeout(state.killTimer);
       this.#execs.delete(id);
       // THE TRANSPORT'S OWN FAILURE, not the command's: a stopped or missing
       // container is a non-zero exit of the docker CLI and nothing else, so
@@ -309,7 +322,12 @@ export class Session {
       } catch { /* already gone */ }
     };
     send(signal);
-    if (signal === 'SIGTERM') setTimeout(() => send('SIGKILL'), state.killGraceMs).unref();
+    if (signal === 'SIGTERM') {
+      // One backstop at a time: a second SIGTERM must not strand the first.
+      if (state.killTimer) clearTimeout(state.killTimer);
+      state.killTimer = setTimeout(() => send('SIGKILL'), state.killGraceMs);
+      state.killTimer.unref?.();
+    }
   }
 
   #signal(f) {
@@ -328,6 +346,7 @@ export class Session {
     if (state) {
       state.closed = true;
       if (state.timer) clearTimeout(state.timer);
+      if (state.killTimer) clearTimeout(state.killTimer);
       this.#execs.delete(id);
       this.#terminate({ ...state, closed: false }, 'SIGKILL', true);
       void this.#reap(state);
@@ -339,9 +358,17 @@ export class Session {
     this.#cancelFileOp(id);
   }
 
+  // A FAILED REAP IS REPORTED, NOT SWALLOWED. It still must not take the
+  // connection with it — one target's leftovers are not a dead session — but a
+  // relay that could not be proved to have run is the MUST-3 hazard itself, and
+  // a silent catch here makes it indistinguishable from a clean shutdown. The
+  // kind decides what counts as failure (kinds/docker.mjs → `reap`).
   async #reap(state) {
     try { await this.#transport.reap(state.config, state.handle); }
-    catch { /* a failed reap must not take the connection with it */ }
+    catch (e) {
+      this.#warn(`code-system launcher: reap failed for remote`
+        + ` '${state.handle?.remoteId ?? '(unrouted)'}': ${errMsg(e)}`);
+    }
   }
 
   // ── the internal exec runner fileops rides on ──────────────────────
@@ -495,14 +522,16 @@ export class Session {
   // ── shutdown: protocol MUST 3 ──────────────────────────────────────
 
   // Kill everything still running and take the far side's leftovers with it.
-  // A `docker exec` child reparents INSIDE the container and an `ssh` slave
-  // outlives its parent — neither dies when we do, and cc has no way to clean
-  // up after a provider that does not do this itself.
+  // A `docker exec` child is not our OS descendant at all — the daemon starts it
+  // inside the container on our behalf — and an `ssh` slave outlives its parent.
+  // Neither dies when we do (measured: .wiki/gotchas/docker-exec-transport.md),
+  // and cc has no way to clean up after a provider that does not do this itself.
   async shutdown() {
     const pending = [];
     for (const [, state] of this.#execs) {
       state.closed = true;
       if (state.timer) clearTimeout(state.timer);
+      if (state.killTimer) clearTimeout(state.killTimer);
       // The host-side child (its group where the kind detached it) goes first,
       // then the kind reaps whatever it left on the far side.
       try {

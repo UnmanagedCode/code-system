@@ -467,3 +467,55 @@ test('a kind\'s classifyFailure verdict replaces the exit frame with an id-addre
   const out3 = await driveExec(noHook, { type: 'exec', id: 'e', remoteId: 'alpha', cwd: '/tmp', argv: ['true'] });
   assert.equal(out3.find(f => f.type === 'exit' && f.id === 'e').code, 3);
 });
+
+// PINS the bound on what `classifyFailure` is shown, and — the part that
+// matters — that it is the LEADING bytes. Both guards in every kind's
+// classifier anchor at byte 0 (`startsWith`, `=== ''`), so a mutant taking the
+// TAIL of a chatty stream would silently stop recognising a transport failure
+// whose message arrived first, which is every one of them.
+test('classifyFailure sees a bounded HEAD of each stream, taken from the front', async () => {
+  let seen = null;
+  const noisy = recordingTransport({
+    code: 1,
+    stdout: `${'A'.repeat(600)}`,
+    stderr: `Error response from daemon: ${'B'.repeat(600)}`,
+    classifyFailure: (_config, res) => { seen = res; return null; },
+  });
+  await driveExec(noisy, { type: 'exec', id: 'h', remoteId: 'alpha', cwd: '/tmp', argv: ['true'] });
+  assert.ok(seen, 'the hook was consulted');
+  assert.equal(seen.stdout.length, 512, 'stdout is capped');
+  assert.equal(seen.stderr.length, 512, 'stderr is capped');
+  assert.ok(seen.stdout.startsWith('AAA'), 'and it is the HEAD, not the tail');
+  assert.ok(seen.stderr.startsWith('Error response from daemon: '),
+    'a transport message arrives first, so a tail-shaped head would lose it');
+});
+
+// PINS that a failed reap is REPORTED rather than swallowed, and that reporting
+// it does not take the connection down. Both halves matter: a silent catch makes
+// a relay that could not run indistinguishable from a clean shutdown (the MUST-3
+// hazard itself), and a throw that escaped would fail every other target's
+// in-flight work over one container's leftovers.
+test('a reap that could not be proved to have run is reported, and does not kill the session', async () => {
+  const { Session } = await import('../src/launcher/session.mjs');
+  const warnings = [];
+  const out = [];
+  const transport = recordingTransport({ code: 0 });
+  transport.reap = async () => { throw new Error('reap could not be proved to have run'); };
+  const session = new Session({
+    transport,
+    source: { hasRemotes: () => true, ids: () => ['alpha'], mirrorFor: () => ({ mirrorRoot: null, exclude: [] }),
+      async lookup(id) { return { ok: true, remote: { remoteId: id, config: {}, root: null } }; } },
+    capabilities: { processGroupSignal: false, remotes: true, remoteDescriptors: false },
+    write: f => out.push(f),
+    warn: m => warnings.push(m),
+    onFatal: (m) => { throw new Error(`the session died on a failed reap: ${m}`); },
+  });
+  await session.deliver({ type: 'hello', protocol: 1 });
+  await session.deliver({ type: 'exec', id: 'r', remoteId: 'alpha', cwd: '/tmp', argv: ['sleep', '30'] });
+  await session.deliver({ type: 'close', id: 'r' });
+  await session.shutdown();
+
+  assert.equal(warnings.length >= 1, true, `the failure must be surfaced; warnings=${JSON.stringify(warnings)}`);
+  assert.match(warnings[0], /reap/);
+  assert.match(warnings[0], /alpha/, 'and it names the remote whose far side may have leaked');
+});

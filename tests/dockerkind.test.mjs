@@ -14,7 +14,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  ALLOWED_SUBCOMMANDS, DOCKER_ENV, assertAttachOnly, createDockerTransport, dockerCliArgv,
+  ALLOWED_SUBCOMMANDS, DOCKER_ENV, assertAttachOnly, buildReapScript, createDockerTransport,
+  dockerCliArgv,
 } from '../src/launcher/kinds/docker.mjs';
 
 const CONFIG = { container: 'app' };
@@ -97,7 +98,7 @@ test("spawnPlan: -i is present iff stdinMode is 'pipe'", () => {
 test('spawnPlan: a frame env REPLACES via `env -i`, with CC_REMOTE overlaid last', () => {
   const p = plan({ env: { PATH: '/p', CC_REMOTE: 'frame-supplied' } });
   assert.ok(
-    runIndex(p.args, ['env', '-i', 'PATH=/p', 'CC_REMOTE=r1', 'CC_EXEC_TOKEN=tok', 'git', 'status']) !== -1,
+    runIndex(p.args, ['env', '-i', '--', 'PATH=/p', 'CC_REMOTE=r1', 'CC_EXEC_TOKEN=tok', 'git', 'status']) !== -1,
     `the replacement runs contiguously before the command; got ${JSON.stringify(p.args)}`);
   assert.equal(p.args.includes('CC_REMOTE=frame-supplied'), false,
     'a frame-supplied CC_REMOTE must not survive — that is the routing lie CC_REMOTE exists to prevent');
@@ -250,6 +251,19 @@ test('classifyFailure: a command that never started is ENOENT, and its text is o
     stdout: 'OCI runtime exec failed: exec failed: unable to start container process: chdir to cwd ("/nope") set in config.json failed: no such file or directory\n',
   });
   assert.equal(noCwd.code, 'ENOENT');
+
+  // MEASURED SEPARATELY, and it is neither exit 127 nor does it carry the
+  // `unable to start container process: ` segment the other two share:
+  // `docker exec -w relative` and `docker exec -w -evil` both answer exit 128
+  // with `Cwd must be an absolute path` on stdout. Anchoring on the longer
+  // prefix, or on 127 alone, reports a command that never started as one that
+  // ran and exited 128.
+  const badCwd = classify({
+    code: 128, stderr: '',
+    stdout: 'OCI runtime exec failed: exec failed: Cwd must be an absolute path\n',
+  });
+  assert.equal(badCwd.code, 'ENOENT');
+  assert.match(badCwd.message, /Cwd must be an absolute path/);
 });
 
 // PINS the guards themselves. Without them a command's own output could forge a
@@ -293,7 +307,10 @@ test('classifyFailure: a command cannot forge a transport verdict', () => {
 // A shell script is the cheapest way to make the real spawn path — argv, exit
 // code, stream separation — part of what is under test.
 
-async function stubCli(t, { exitCode = 0, stdout = '', stderr = '' }) {
+async function stubCli(t, {
+  exitCode = 0, stdout = '', stderr = '',
+  execStdout = 'CCREAP ok 0 7\n', execStderr = '', execExitCode = 0,
+} = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'code-system-dockerstub-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const argvLog = path.join(dir, 'argv.txt');
@@ -301,6 +318,11 @@ async function stubCli(t, { exitCode = 0, stdout = '', stderr = '' }) {
   await fs.writeFile(bin, [
     '#!/bin/sh',
     `printf '%s\\n' "$@" >> ${JSON.stringify(argvLog)}`,
+    // `exec` and `inspect` answer differently: a reap that gets an inspect-shaped
+    // answer must (and does) report failure, which would otherwise make every
+    // stub-driven test that calls reap throw.
+    `if [ "$1" = exec ]; then printf '%b' ${JSON.stringify(execStdout)};`
+      + ` printf '%b' ${JSON.stringify(execStderr)} >&2; exit ${execExitCode}; fi`,
     stdout ? `printf '%b' ${JSON.stringify(stdout)}` : ':',
     stderr ? `printf '%b' ${JSON.stringify(stderr)} >&2` : ':',
     `exit ${exitCode}`,
@@ -417,4 +439,152 @@ test('the live-docker skip gate rejects an installed CLI that cannot reach a dae
   // LOUD: the skip names both attempts and the override that fixes it.
   assert.match(SKIP_REASON, /CODE_SYSTEM_DOCKER/);
   assert.match(SKIP_REASON, /sudo -n docker/);
+});
+
+// ── the `env -i` operand boundary ────────────────────────────────────
+
+// PINS THE FIX FOR AN OPTION INJECTION. Frame-supplied env KEYS are arbitrary,
+// and GNU `env` parses leading-`-` operands as its own options until it meets a
+// non-option operand. Measured inside node:24-slim (coreutils 9.1) with `-w /`:
+//
+//   env -i    '--chdir=/tmp' PATH=/usr/bin pwd  → /tmp   cwd HIJACKED
+//   env -i -- '--chdir=/tmp' PATH=/usr/bin pwd  → /      the -w holds
+//
+// and on coreutils 9.7 `--argv0=EVIL` spoofs $0 while 9.1 refuses the exec
+// outright (`env: unrecognized option`, exit 125) — so the same frame either
+// silently relocates the command or kills it, depending on the image.
+//
+// Dropping the `--` reds this AND the live test that runs the hijack for real.
+test('spawnPlan: `env -i --` closes the option-injection window on frame env keys', () => {
+  const p = plan({ env: { '--chdir=/evil': '', PATH: '/p' } });
+  const i = runIndex(p.args, ['env', '-i', '--']);
+  assert.notEqual(i, -1, `expected a literal -- after env -i; got ${JSON.stringify(p.args)}`);
+  // Every assignment is AFTER the boundary, so none can be read as an option.
+  const boundary = i + 2;
+  for (const a of p.args.filter(x => x.startsWith('--chdir='))) {
+    assert.ok(p.args.indexOf(a) > boundary, `${a} must sit after the -- boundary`);
+  }
+  // And the guard is unconditional, not a function of what the frame sent.
+  assert.notEqual(runIndex(plan({ env: {} }).args, ['env', '-i', '--']), -1,
+    'an empty frame env still gets the boundary');
+});
+
+// PINS the rest of the argv/option surface, checked rather than assumed:
+// nothing else this kind interpolates can become an option.
+test('spawnPlan: every other interpolated value is structurally an operand', () => {
+  // (a) the container is guarded by operand() AND placed after `--`.
+  assert.equal(createDockerTransport({ cli: ['docker'] }).validateConfig({ container: '-v /:/host' }).ok, false);
+  const p = plan({}, { container: 'app' });
+  assert.ok(p.args.indexOf('app') > p.args.indexOf('--'));
+
+  // (b) a leading-dash cwd is CONSUMED BY `-w` as its value, never parsed.
+  const c = plan({ cwd: '-evil' });
+  assert.equal(c.args[c.args.indexOf('-w') + 1], '-evil');
+
+  // (c) a leading-dash command reaches the container as the command. In the
+  //     inherit branch it sits after `-- <container>`; in the replace branch
+  //     after `env -i --` and the assignments. Measured: docker does not eat
+  //     flags after the container operand, and env does not after `--`.
+  const inh = plan({ argv: ['-evilcmd', 'x'] });
+  assert.deepEqual(inh.args.slice(inh.args.indexOf('--') + 1), ['app', '-evilcmd', 'x']);
+  const rep = plan({ argv: ['-evilcmd', 'x'], env: { PATH: '/p' } });
+  assert.deepEqual(rep.args.slice(-2), ['-evilcmd', 'x']);
+  assert.ok(runIndex(rep.args, ['env', '-i', '--']) !== -1);
+
+  // (d) the `-e` inherit path takes its value as a SEPARATE argv token, so a
+  //     leading dash there cannot become a docker option either. Confirmed
+  //     live: `docker exec -e '--chdir=/tmp=x' -w / -- <ctr> pwd` → `/`.
+  const e = plan({ env: null });
+  for (let k = 0; k < e.args.length; k++) {
+    if (e.args[k] === '-e') assert.equal(typeof e.args[k + 1], 'string');
+  }
+});
+
+// ── the reap relay reports whether it could see anything ─────────────
+
+// PINS that a reap which could not run does not read as a reap that found
+// nothing. Both are "no kills, exit 0" from the caller's side, and the
+// difference is a leaked container-side subtree versus a clean shutdown — the
+// exact MUST-3 hazard the relay exists for. A mutant restoring the
+// unconditional `exit 0`, or one discarding runDocker's result, reds here.
+test('the reap script detects its own blindness rather than reporting success', () => {
+  const script = buildReapScript('deadbeef');
+  assert.match(script, /readable=0/, 'it counts what it could actually read');
+  assert.match(script, /CCREAP blind/, 'and refuses to claim success when that count is zero');
+  assert.match(script, /exit 3/);
+  // The token match must be LITERAL: unquoted, `$t` in a case pattern is a glob.
+  assert.match(script, /\*"\$t"\*/);
+  assert.match(script, /t='CC_EXEC_TOKEN=deadbeef'/);
+  // No `ps` and no `grep` — node:24-slim has neither guaranteed.
+  assert.doesNotMatch(script, /\bps\b|\bgrep\b/);
+});
+
+test('reap throws when it cannot prove it ran, and stays quiet when the container is simply gone', async (t) => {
+  const good = await stubCli(t, { execStdout: 'CCREAP ok 2 9\n' });
+  await createDockerTransport({ cli: good.cli }).reap({ container: 'app' }, { token: 'tok', remoteId: 'r1' });
+
+  // BLIND: the script ran and said so.
+  const blind = await stubCli(t, { execStdout: 'CCREAP blind\n', execExitCode: 3 });
+  await assert.rejects(
+    () => createDockerTransport({ cli: blind.cli }).reap({ container: 'app' }, { token: 'tok', remoteId: 'r1' }),
+    /may have survived/);
+
+  // SILENT: exit 0 with no CCREAP line at all — a shell that did nothing.
+  const silent = await stubCli(t, { execStdout: '' });
+  await assert.rejects(
+    () => createDockerTransport({ cli: silent.cli }).reap({ container: 'app' }, { token: 'tok', remoteId: 'r1' }),
+    /'app'/);
+
+  // BENIGN: the container is gone, so its processes went with it and there is
+  // nothing left to reap. Recognised through the SAME classifier the exec path
+  // uses, so the two cannot drift — and it must NOT be reported as a leak, or
+  // every shutdown against a stopped container would cry wolf.
+  const gone = await stubCli(t, {
+    execStdout: '', execExitCode: 1,
+    execStderr: 'Error response from daemon: No such container: app\n',
+  });
+  await createDockerTransport({ cli: gone.cli }).reap({ container: 'app' }, { token: 'tok', remoteId: 'r1' });
+
+  // …but OUR ACCESS failing is not benign: nothing was reaped and the container
+  // may well still be running it.
+  const denied = await stubCli(t, {
+    execStdout: '', execExitCode: 1,
+    execStderr: 'permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock\n',
+  });
+  await assert.rejects(
+    () => createDockerTransport({ cli: denied.cli }).reap({ container: 'app' }, { token: 'tok', remoteId: 'r1' }),
+    /may have survived/);
+});
+
+// ── the live suite's skip gate: candidate composition ────────────────
+
+// PINS the composition itself, because nothing else can. Delete the
+// `sudo -n docker` fallback and `npm test` stays GREEN on a host whose docker
+// socket is root-owned — all of tests/docker-live.test.mjs silently skips, and
+// no skip count is asserted anywhere. This is the test that reds instead.
+test('the live-docker gate tries the CODE_SYSTEM_DOCKER invocation first, then `sudo -n docker`', async () => {
+  const { candidates } = await import('./dockerFixture.mjs');
+
+  assert.deepEqual(candidates({}), [['docker'], ['sudo', '-n', 'docker']],
+    'the default is bare docker, with the privileged fallback behind it');
+
+  assert.deepEqual(candidates({ [DOCKER_ENV]: '["podman"]' }), [['podman'], ['sudo', '-n', 'docker']],
+    'an override is tried FIRST, and does not remove the fallback');
+
+  assert.deepEqual(candidates({ [DOCKER_ENV]: '["sudo","-n","docker"]' }), [['sudo', '-n', 'docker']],
+    'an override that IS the fallback is not tried twice');
+
+  // A malformed override is not a candidate — but it must not take the fallback
+  // with it, or a typo would silently skip the whole live suite.
+  assert.deepEqual(candidates({ [DOCKER_ENV]: 'not json' }), [['sudo', '-n', 'docker']]);
+});
+
+test('resolveDockerCli returns the FIRST candidate that a daemon answers', async (t) => {
+  const { resolveDockerCli } = await import('./dockerFixture.mjs');
+  const answers = await stubCli(t, { stdout: '29.7.2\n' });
+  // The override answers, so the fallback is never reached — asserted by the
+  // returned argv being the override's, not `sudo -n docker`.
+  const found = await resolveDockerCli({ [DOCKER_ENV]: JSON.stringify(answers.cli) });
+  assert.deepEqual(found.cli, answers.cli);
+  assert.equal(found.serverVersion, '29.7.2');
 });

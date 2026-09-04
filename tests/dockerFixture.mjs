@@ -50,7 +50,12 @@ export function run(argv, { timeoutMs = 30_000, stdin = null } = {}) {
 // The two invocations worth trying, in order: whatever the environment names,
 // then `sudo -n docker` (this host's socket is root-owned). `-n` so a host
 // wanting a password fails instead of hanging on a prompt.
-function candidates(env) {
+//
+// EXPORTED SO IT IS FENCED. Deleting the `sudo -n docker` fallback keeps
+// `npm test` green on this host by silently skipping all of
+// tests/docker-live.test.mjs, and no skip count is asserted anywhere — so the
+// composition itself is what a test has to pin. See tests/dockerkind.test.mjs.
+export function candidates(env) {
   const out = [];
   try { out.push(dockerCliArgv(env)); } catch { /* a malformed override is simply not a candidate */ }
   const sudo = ['sudo', '-n', 'docker'];

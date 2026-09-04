@@ -102,8 +102,17 @@ file or directory`, exit 127.
 
 ```
 <docker-cli> exec [-i] -w <cwd> [-e CC_REMOTE=<id> -e CC_EXEC_TOKEN=<tok>]
-            -- <container> <command…>
+            -- <container> [env -i -- NAME=VALUE…] <command…>
 ```
+
+**The `--` after `env -i` is load-bearing, not tidiness.** Frame-supplied env
+KEYS are arbitrary and GNU `env` reads leading-`-` operands as its own options.
+Measured with `-w /`: `env -i '--chdir=/tmp' PATH=/usr/bin pwd` answers `/tmp` —
+the command runs somewhere cc did not ask for — while `env -i -- …` answers `/`.
+On coreutils 9.7 `--argv0=` spoofs `$0`; on 9.1 it refuses the exec outright.
+Validating keys would not close the class, because the option set is GNU's. The
+`-e` inherit path is unaffected: `docker exec -e` takes its value as a separate
+argv token (measured).
 
 | Element | Rule |
 |---|---|
@@ -114,7 +123,7 @@ file or directory`, exit 127.
 | `--` | always, so the container name is unambiguously an operand |
 | `<command…>` | `argv` form: the argv verbatim. `shell` form: `/bin/bash -lc <shell>` — **absolute**, so it resolves under `env -i` regardless of the frame's PATH, and it is the same interpreter the baseline probe requires |
 | `env` absent (`null`) | no `env -i`: the container keeps its own PATH/HOME/toolchain. The two plumbing variables ride as `-e` flags |
-| `env` supplied | `env -i NAME=VALUE…` prefixed to the command — a **replacement**, which `-e` flags cannot express — and **no** `-e` flags, which `env -i` would wipe. `CC_REMOTE` and `CC_EXEC_TOKEN` are the last entries |
+| `env` supplied | `env -i -- NAME=VALUE…` prefixed to the command — a **replacement**, which `-e` flags cannot express — and **no** `-e` flags, which `env -i` would wipe. `CC_REMOTE` and `CC_EXEC_TOKEN` are the last entries |
 | `detached` | never. The container process is not an OS descendant of the host client, so a group kill does not reach it — claiming otherwise would make every terminated exec falsely omit `descendantsMaySurvive` |
 
 `CC_EXEC_TOKEN` is the per-exec nonce `reap` finds this exec's container-side
@@ -124,7 +133,7 @@ processes by (`docs/architecture.md` → Shutdown and reaping).
 
 Measured against Docker Engine 29.7.2. **Note the channel**: a daemon-level
 refusal is on **stderr** with exit 1, but a command that never started is on
-**stdout** with exit 127 — so a stderr-only classifier is blind to it, and
+**stdout** with exit 127 or 128 — so a stderr-only classifier is blind to it, and
 `fileops`' header parse sees the text as file content.
 
 | Exit | Stream | Text | Verdict |
@@ -133,12 +142,16 @@ refusal is on **stderr** with exit 1, but a command that never started is on
 | 1 | stderr | `Error response from daemon: container <64-hex> is not running` | `ENOREMOTE`, saying the provider is attach-only |
 | 1 | stderr | `permission denied while trying to connect…` / `Cannot connect to the Docker daemon…` | `EUNKNOWN` naming `CODE_SYSTEM_DOCKER` — **never `ENOREMOTE`**: our access failing is not the remote being absent |
 | 127 | **stdout** | `OCI runtime exec failed: exec failed: unable to start container process: …` (missing binary, or a `-w` that does not exist) | `ENOENT` — §5's "a command that never started is an `error` frame, not an `exit` frame" |
+| **128** | **stdout** | `OCI runtime exec failed: exec failed: Cwd must be an absolute path` (a non-absolute `-w`) | `ENOENT`, same reason. Note the different exit code, and that this message lacks the `unable to start container process: ` segment the other two share |
 | anything else | — | — | **not a transport failure**: the command's own `exit` frame |
 
 Every row is guarded so a command cannot forge a verdict: the daemon rows
 additionally require an **empty stdout** (docker writes none there), and the
-`127` row requires an **empty stderr** plus the full docker-internal sentence as
-the very first bytes of stdout. This runs on two paths —
+never-started rows require an **empty stderr** plus
+`OCI runtime exec failed: exec failed: ` as the very first bytes of stdout — the
+longest stem all three share. On that path stdout would be the *command's* own
+output had a command run, so the stderr guard is a bound on plausibility rather
+than a proof; forging it yields a named refusal, never a wrong answer. This runs on two paths —
 `session.mjs`'s exec close handler and `run.mjs`'s single funnel for `fileops`
 and the baseline probe — through one optional `Transport.classifyFailure` member.
 

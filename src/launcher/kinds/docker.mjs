@@ -143,22 +143,44 @@ const TOKEN_VAR = 'CC_EXEC_TOKEN';
 //
 // The token is the core's own per-exec nonce (24 hex chars, session.mjs), so
 // single-quoting it here is sound — nothing user- or frame-supplied reaches it.
-function reapScript(token) {
+//
+// IT REPORTS WHETHER IT COULD SEE ANYTHING AT ALL, and that is the point.
+// Without `tr`, or on a target whose `/proc/<pid>/environ` we cannot read, every
+// `case` simply matches nothing and an unconditional `exit 0` would report a
+// successful reap while the container-side subtree survived — the exact MUST-3
+// hazard the relay exists for, made invisible. The scanning process is itself in
+// `/proc` and can always read its own environ, so `readable === 0` is an
+// unambiguous "the mechanism is blind" rather than "there was nothing to see".
+// Measured: with `tr` off PATH the script answers `CCREAP blind`, exit 3, on
+// both node:24-slim's dash and busybox's ash.
+export const REAP_TAG = 'CCREAP';
+
+export function buildReapScript(token) {
   return [
     'LC_ALL=C; export LC_ALL',
     `t='${TOKEN_VAR}=${token}'`,
+    'readable=0; killed=0',
     'for d in /proc/[0-9]*; do',
-    '  case "$(tr \'\\0\' \'\\n\' < "$d/environ" 2>/dev/null)" in',
-    '    *"$t"*) kill -9 "${d#/proc/}" 2>/dev/null ;;',
+    '  e=$(tr \'\\0\' \'\\n\' < "$d/environ" 2>/dev/null)',
+    '  [ -n "$e" ] && readable=$((readable+1))',
+    '  case "$e" in',
+    '    *"$t"*) kill -9 "${d#/proc/}" 2>/dev/null; killed=$((killed+1)) ;;',
     '  esac',
     'done',
+    `if [ "$readable" -eq 0 ]; then printf '${REAP_TAG} blind\\n'; exit 3; fi`,
+    `printf '${REAP_TAG} ok %s %s\\n' "$killed" "$readable"`,
     'exit 0',
   ].join('\n');
 }
 
-// A never-started `docker exec` puts its diagnostic on STDOUT with exit 127
-// (measured), where a daemon-level refusal puts it on stderr with exit 1.
-const OCI_PREFIX = 'OCI runtime exec failed: exec failed: unable to start container process: ';
+// A never-started `docker exec` puts its diagnostic on STDOUT with exit 127 or
+// 128 (measured), where a daemon-level refusal puts it on stderr with exit 1.
+// The longest stem SHARED by every measured never-started message. The
+// `unable to start container process: ` segment that follows it on two of the
+// three is absent from `Cwd must be an absolute path`, so anchoring on the
+// longer string would report a non-absolute `-w` as the command having run and
+// exited 128.
+const OCI_PREFIX = 'OCI runtime exec failed: exec failed: ';
 const DAEMON_PREFIX = 'Error response from daemon: ';
 
 const first = (s) => String(s ?? '').split('\n')[0].trim();
@@ -238,8 +260,18 @@ export function createDockerTransport({ cli } = {}) {
         // mechanism: it clears the container's own environment, which an
         // overlay of `-e` flags cannot do. NO `-e` flags here — `env -i` would
         // wipe them.
+        //
+        // THE `--` AFTER `-i` IS LOAD-BEARING, and its absence is an option
+        // injection. Frame-supplied env KEYS are arbitrary, and GNU `env` parses
+        // leading-`-` operands as ITS OWN options before the first non-option
+        // operand. Measured inside node:24-slim (coreutils 9.1) with `-w /`:
+        //   env -i    '--chdir=/tmp' PATH=/usr/bin pwd  → /tmp   (cwd hijacked)
+        //   env -i -- '--chdir=/tmp' PATH=/usr/bin pwd  → /      (the -w holds)
+        // and on coreutils 9.7 `--argv0=EVIL` spoofs $0, while 9.1 refuses the
+        // whole exec with `env: unrecognized option`. One literal closes the
+        // class; validating keys would not, because the option set is GNU's.
         const composed = { ...execEnv(req.env, req.remoteId, {}), [TOKEN_VAR]: req.token };
-        args.push('--', container, 'env', '-i',
+        args.push('--', container, 'env', '-i', '--',
           ...Object.entries(composed).map(([k, v]) => `${k}=${v}`),
           ...command);
       }
@@ -298,18 +330,38 @@ export function createDockerTransport({ cli } = {}) {
       };
     },
 
-    // PROTOCOL MUST 3. A `docker exec` child is NOT reparented to its host
-    // client: SIGKILLing the client leaves the container process running
+    // PROTOCOL MUST 3. A `docker exec` child is not the host client's OS
+    // descendant: SIGKILLing the client leaves the container process running
     // (measured; the negative control in tests/docker-live.test.mjs pins it).
     // So the kill has to be relayed INTO the container.
     async reap(config, handle) {
       const container = String(config?.container ?? '');
       if (!container || !handle?.token) return;
-      // Returns normally on every outcome — a container that has since stopped,
-      // a token with no matches. session.#reap swallows a throw, but the
-      // ordinary cases must not rely on that.
-      await runDocker(argv0, ['exec', '--', container, '/bin/sh', '-c', reapScript(handle.token)],
+      const res = await runDocker(
+        argv0, ['exec', '--', container, '/bin/sh', '-c', buildReapScript(handle.token)],
         { timeoutMs: REAP_TIMEOUT_MS });
+
+      // A REAP THAT COULD NOT RUN MUST NOT READ AS A REAP THAT FOUND NOTHING.
+      // From here the two are identical — no kills, exit 0 — and the difference
+      // is a leaked container-side subtree versus a clean shutdown. So this
+      // throws, and session.#reap REPORTS it. It still does not take the
+      // connection down: a failed reap is not a failed session.
+      if (res.code === 0 && res.stdout.startsWith(`${REAP_TAG} ok `)) return;
+
+      // THE ONE BENIGN FAILURE: the container is gone or stopped, so its
+      // processes went with it and there is nothing left to reap. Recognised
+      // through the same classifier the exec path uses, so the two cannot drift.
+      const verdict = this.classifyFailure(config, {
+        code: res.code ?? 1, stdout: res.stdout, stderr: res.stderr,
+      });
+      if (verdict?.code === 'ENOREMOTE') return;
+
+      const why = res.stdout.startsWith(`${REAP_TAG} blind`)
+        ? 'the target could not read any /proc/<pid>/environ (no `tr`, or no readable /proc)'
+        : first(res.error?.message || res.stdout || res.stderr) || `exit ${res.code}`;
+      throw new Error(
+        `reap could not be proved to have run in container '${container}': ${why}`
+        + ' — a container-side process may have survived');
     },
 
     // THE TRANSPORT'S OWN ERROR VOCABULARY, read once. A stopped or missing
@@ -362,17 +414,25 @@ export function createDockerTransport({ cli } = {}) {
       }
 
       // §5's "a command that never started is an `error` frame, not an `exit`
-      // frame" — a missing binary, or a `-w` naming a directory the container
-      // does not have. Both arrive on STDOUT with exit 127.
+      // frame". Three measured shapes, all on STDOUT, all opening with
+      // OCI_PREFIX:
+      //   exit 127  exec: "<argv0>": executable file not found in $PATH
+      //   exit 127  chdir to cwd ("<cwd>") set in config.json failed: …
+      //   exit 128  Cwd must be an absolute path        (a non-absolute `-w`)
       //
-      // THIS ROW HAS NO STDERR-SIDE COUNTERWEIGHT of its own, so it is guarded
-      // on all three of: the exact exit code, an EMPTY stderr (measured: docker
-      // writes nothing there for these), and the full 60-character
-      // docker-internal sentence as the very first bytes of stdout. A command
-      // forging it would have to exit exactly 127, write not one byte to
-      // stderr, and open its stdout with that sentence — and the outcome would
-      // still be a named refusal rather than a wrong answer.
-      if (code === 127 && stderr === '' && stdout.startsWith(OCI_PREFIX)) {
+      // THIS ROW HAS NO DAEMON-SIDE COUNTERWEIGHT — `Error response from daemon`
+      // is not in play — so it is guarded on three things: an exit code from the
+      // measured pair, an EMPTY stderr, and OCI_PREFIX as the very first bytes
+      // of stdout.
+      //
+      // BE PRECISE ABOUT WHAT THE STDERR GUARD MEANS. It is NOT "docker writes
+      // nothing there": on this path `stdout` would be the COMMAND's own output
+      // had a command run at all. It is that forging this row requires a command
+      // which exits exactly 127 or 128, opens its stdout with 37 bytes of
+      // docker-internal wording, and writes not one byte to stderr. That is a
+      // bound on plausibility, not a proof — and the outcome of forging it is a
+      // named refusal, never a wrong answer.
+      if ((code === 127 || code === 128) && stderr === '' && stdout.startsWith(OCI_PREFIX)) {
         return { code: 'ENOENT', message: first(stdout), stderr: '' };
       }
 
