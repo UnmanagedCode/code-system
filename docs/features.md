@@ -76,9 +76,11 @@ Three consequences worth knowing before they surprise you:
   re-established. Nothing is unsafe about this: every command against a
   switched-off remote is still refused, by this plugin, before the target is
   contacted. Only cc's advisory "is this remote real" answer lags.
-- **Editing a remote's connection details switches it off.** A changed container
-  or host may be a different target entirely, so the gate and the tooling verdict
-  both reset. Editing only the **label** does not.
+- **Changing a connection value switches it off.** A different container or host
+  may be a different target entirely, so the gate and the tooling verdict both
+  reset. Saving with every value unchanged — including editing only the
+  **label** — does not: what counts is whether a value actually changed, not
+  whether you opened the form.
 
 ## Connecting is attach-only
 

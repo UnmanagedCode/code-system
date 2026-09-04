@@ -114,6 +114,8 @@ test('a record at another schema is refused BY NAME, never upgraded at read time
     // the refusal's own "…reads schema N only" tail.
     assert.match(r.message, new RegExp(`stored at schema ${SCHEMA + 1}`),
       'the refusal quotes the schema it FOUND, not the one it reads');
+    assert.doesNotMatch(r.message, new RegExp(`stored at schema ${SCHEMA}\\b`),
+      'and never reports the found schema as our own');
     assert.match(r.message, /backend/, 'and names the repair');
   });
 });

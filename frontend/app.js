@@ -219,12 +219,16 @@ function formFor(mode) {
     ));
   }
 
-  // A CONFIG EDIT SWITCHES THE REMOTE OFF, and the form says so rather than
-  // letting the operator discover it afterwards. A label-only edit does not.
+  // A CHANGED CONFIG VALUE SWITCHES THE REMOTE OFF, and the form says so rather
+  // than letting the operator discover it afterwards. The predicate is the
+  // VALUE, not the presence of the field — this form has no dirty-tracking and
+  // always PATCHes its config, and `sameConfig` in src/api.mjs is what decides.
+  // So this sentence must not promise more than that comparison delivers.
   if (mode === 'edit') {
     fields.push(el('div', { class: 'note' },
-      'Changing anything below the label switches this remote off: a different config may point'
-      + ' at a different target entirely. Editing the label alone does not.'));
+      'Changing a value below the label switches this remote off: a different config may point'
+      + ' at a different target entirely. Saving with every value unchanged — including editing'
+      + ' only the label — does not.'));
   }
 
   return el('div', { class: 'form' },

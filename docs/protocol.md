@@ -65,10 +65,19 @@ and we never look for a `remoteId` on them.
 **The gate is therefore checked when an id is BOUND, not per chunk.** A
 `writeFile` whose opening frame was already routed completes and lands the file
 **whole**, even if the operator disables the remote before its `end` arrives;
-the next *request* frame is refused. That is the correct granularity, not a gap:
-refusing mid-stream would leave a partial file where the protocol promises none.
-Pinned by `tests/gate.test.mjs`, with a barrier proving the write really was
-routed first.
+the next *request* frame is refused. Pinned by `tests/gate.test.mjs`, with a
+barrier proving the write really was routed first.
+
+That is structural rather than a gap: `data` and `end` carry **no `remoteId`**,
+so there is no second routing point at which a gate could be consulted. And
+nothing is left half-written either way — `session.mjs` buffers every chunk
+**host-side** and hands the far side the whole payload in **one** script
+invocation at `end` (`src/launcher/fileops.mjs`), so the target is either
+untouched or written whole, and refusing mid-stream would simply leave it
+untouched. That property is this launcher's buffering, **not** a protocol
+atomicity promise: a non-`atomic` write truncates the target directly
+(`base64 -d > "$p"`), and `systems-protocol.md` §6 reserves "a reader never sees
+a torn write" for `atomic: true`.
 
 | Situation | Answer |
 |---|---|
