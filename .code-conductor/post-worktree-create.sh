@@ -48,6 +48,17 @@ if [ ! -d "$parent/node_modules" ]; then
   )
 fi
 
+# The install above can fail (registry unreachable, disk full, lock broken
+# past both `ci` and `install`) without `set -e` stopping this script. Never
+# link to a parent node_modules that doesn't exist: a dangling symlink would
+# pass the -L check above on every future run, poisoning the worktree
+# permanently. Leaving no symlink here means the next run retries the install
+# instead of silently "succeeding" against a missing target.
+if [ ! -d "$parent/node_modules" ]; then
+  echo "install into $parent failed (no node_modules produced), not creating a symlink"
+  exit 0
+fi
+
 parent_abs="$(cd "$parent" && pwd)"
 ln -s "$parent_abs/node_modules" "$worktree/node_modules"
 echo "symlinked $worktree/node_modules -> $parent_abs/node_modules"
