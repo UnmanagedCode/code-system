@@ -281,16 +281,22 @@ as **our** transport failing. The observable consequence: the command's own exit
 status is swallowed into an `EUNKNOWN` that points the operator at *their*
 `~/.ssh/config` or `known_hosts` to fix somebody else's failure.
 
-It is **ineliminable from the host side**, not merely unfixed. The bytes are
-identical whichever ssh wrote them; stdout is empty and the exit is 255 in both
-cases; and `-O check` reports the master up in both (ours *is* up — the command
-is riding it), so no other channel separates them. Anchoring on our own
-destination was considered and rejected on a measurement: ssh names the
-**resolved** host (`root@172.17.0.5: …`) while the provider knows only the
-operator's Host **alias**, so that anchor would reject our own genuine refusal on
-every alias-based remote — which is the shipped default shape. What the per-line
-anchor does buy is the reachable half: a chatty command, a mid-line occurrence
-and a mid-stream occurrence are all refused.
+**It is ineliminable from the signals this classifier receives** — which is
+`(code, stdout, stderr)` and nothing else. It is *not* a universal
+impossibility, and the difference matters, so the candidates are recorded rather
+than asserted away:
+
+| Candidate signal | Why it does not separate the two arms |
+|---|---|
+| **stdout** | empty in both. Our ssh writes nothing there on these failures, and a command whose first action is a failing ssh has produced no stdout yet |
+| **exit code** | 255 in both. `ssh` itself exits 255 on an auth failure, and ssh forwards the remote command's status verbatim, so a nested client's 255 arrives as ours |
+| **the bytes** | byte-identical. ssh puts no marker on its own diagnostics to distinguish them from a child's |
+| **position in stderr** | **adopted** — it separates a *chatty* command (`sshOwnLine`), which was the reachable half. It cannot separate a nested client that fails first with no prior output |
+| **the `<dest>: ` prefix** on the auth row | rejected on a measurement: ssh names the **resolved** host (`root@172.17.0.5: …`) while the provider knows only the operator's Host **alias**, so this anchor would reject our own genuine refusal on every alias-based remote — the shipped default shape. It is also auth-only |
+| **connection state** (`reachability()`) | consistent with both arms, so it separates nothing: under `ControlMaster=no` an exec against a never-connected remote runs unmultiplexed, so *our own* auth failure also reports `connected: false`. It is also unavailable — this classifier is synchronous and takes no config beyond the record |
+| **`ssh -E <log_file>`** | **it WORKS, and is deferred rather than rejected.** Measured: with `-E`, our own auth failure leaves stderr **empty** and the wording in the log, while a nested client's failure leaves the wording **on stderr** and nothing in the log. Adopting it is a `Transport`-seam and core change this card does not make — a per-exec log path plumbed through `ExecRequest`/`SpawnPlan`, created and unlinked outside a **pure** `spawnPlan`, and read back so cc still sees ssh's own text on stderr (MUST 1), which `-E` otherwise removes. Filed as card **2026-0011** |
+
+So the residual is a **bounded, understood cost of not yet paying for `-E`**, not a wall. What the per-line anchor buys today is the reachable half: a chatty command, a mid-line occurrence and a mid-stream occurrence are all refused.
 
 ## `readFile` / `writeFile` — derived over `exec`
 

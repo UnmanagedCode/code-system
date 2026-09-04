@@ -313,19 +313,13 @@ const SSH_PREAMBLE = /^No \S+ host key is known for .* strict checking\.$/;
  * That stops a CHATTY command from reaching these rows, and stops a mid-line or
  * mid-stream occurrence — which was the reachable half of the hazard.
  *
- * WHAT IT DOES NOT GUARANTEE, AND CANNOT: a nested `ssh`/`scp`/git-over-ssh
- * inside a caller's own command that fails FIRST and prints nothing else emits
- * these exact bytes at position zero, and is classified as ours. The bytes are
- * identical whichever ssh wrote them, stdout is empty either way, the exit is
- * 255 either way, and `-O check` reports the master up in both cases (ours IS
- * up — the command is riding it), so there is no channel left to separate them.
- * Anchoring on our own destination does not work either: MEASURED, ssh names
- * the RESOLVED host (`root@172.17.0.5: …`) while `destFor` yields the operator's
- * Host ALIAS (`root@my-alias`), so that anchor would reject our own genuine
- * refusal on every alias-based remote — i.e. on the shipped default shape.
- * Stated as a limitation, with its observable consequence, in
- * docs/protocol.md → "How an ssh failure becomes a code", which owns the
- * forgeability bound.
+ * WHAT IT DOES NOT GUARANTEE: a nested `ssh`/`scp`/git-over-ssh inside a
+ * caller's own command that fails FIRST and prints nothing else emits these
+ * exact bytes at position zero, and is classified as ours. Nothing in the three
+ * fields this function receives separates the two — the candidates examined,
+ * and the one that WOULD work at a cost this card does not pay (`ssh -E`, card
+ * 2026-0011), are tabulated in docs/protocol.md → "How an ssh failure becomes a
+ * code", which owns the forgeability bound. Do not re-derive them here.
  *
  * @returns {string|null} the matched line, normalised (no CR)
  */

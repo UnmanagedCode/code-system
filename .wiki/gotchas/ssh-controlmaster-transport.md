@@ -52,6 +52,19 @@ alias. So a provider that tried to anchor this row on its own
 would **reject its own genuine refusal on every alias-based remote**, i.e. on
 the shipped default shape. `docs/protocol.md` records the resulting limitation.
 
+**`ssh -E <log_file>` DOES separate our own diagnostics from the remote
+command's.** Measured against the fixture, both arms:
+
+| arm | stderr | the `-E` log |
+|---|---|---|
+| our own auth fails (wrong key) | **empty** | carries `Permission denied (publickey).` |
+| a nested `ssh` inside the remote command fails | carries `root@127.0.0.1: Permission denied (publickey).` | **nothing** |
+
+So the classifier's inability to tell them apart is a property of the three
+fields it is given, not of ssh. Note the cost the measurement also shows: with
+`-E`, arm A's stderr is EMPTY, so cc would surface no ssh text at all unless the
+log is read back. Card 2026-0011.
+
 `env` refusing to start the command uses **two** exit codes, measured
 separately, both on stderr with an empty stdout:
 
