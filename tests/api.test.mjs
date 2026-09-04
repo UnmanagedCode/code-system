@@ -343,9 +343,22 @@ test('a config edit switches the remote off; a label-only edit does not', async 
   await call('POST', '/remotes/box/connect');
   assert.equal((await stored(store, 'box')).enabled, true);
 
-  const relabelled = await call('PATCH', '/remotes/box', { label: 'The box' });
+  // THE SHAPE THE UI ACTUALLY SENDS. frontend/app.js's edit form has no
+  // dirty-tracking: it always PATCHes `{label, config}`, with `config` spread
+  // from the stored record. A test that omits `config` exercises a request no
+  // client emits — which is exactly how the label-only path shipped broken.
+  const relabelled = await call('PATCH', '/remotes/box', {
+    label: 'The box', config: { host: 'box' },
+  });
   assert.equal(relabelled.body.remote.enabled, true, 'a rename points at the same target');
   assert.equal((await stored(store, 'box')).enabled, true);
+  assert.equal(relabelled.body.remote.baseline.state, 'ok',
+    'and the tooling verdict is about the same target, so it survives too');
+
+  // The API's own shape — `config` omitted entirely — must behave the same.
+  const omitted = await call('PATCH', '/remotes/box', { label: 'The box again' });
+  assert.equal((await stored(store, 'box')).enabled, true);
+  assert.equal(omitted.body.remote.label, 'The box again');
 
   const reconfigured = await call('PATCH', '/remotes/box', { config: { host: 'other-box' } });
   assert.equal(reconfigured.body.remote.enabled, false,
@@ -478,4 +491,63 @@ test('an unexpected error answers JSON, never express\'s HTML page', async (t) =
     assert.equal(typeof parsed.error, 'string', `${label}: the client can read {error}`);
     assert.ok(parsed.error.length > 0);
   }
+});
+
+// PINS THE PREDICATE FOR "a config change resets the gate": it is whether the
+// VALUE changed, not whether the request carried a `config` key.
+//
+// The UI always sends `{label, config}` on an edit — there is no dirty-tracking
+// — so a route testing `config !== undefined` reset the gate on every rename,
+// while the form's own copy told the operator it would not. The product
+// contradicted itself on the most ordinary action there is.
+//
+// Both arms here, because only the pair discriminates: an implementation that
+// never resets passes the first and fails the second.
+test('an identical config preserves the gate; one changed value resets it', async (t) => {
+  const stub = await stubSshCli(t, { socket: true, execStdout: GNU_OUT });
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_SSH: JSON.stringify(stub.cli) });
+  await call('POST', '/remotes', { remoteId: 'box', kind: 'ssh', config: { host: 'box', user: 'me' } });
+  await call('POST', '/remotes/box/connect');
+  assert.equal((await stored(store, 'box')).enabled, true);
+  assert.equal((await stored(store, 'box')).baseline.state, 'ok');
+
+  // ARM 1 — byte-identical config, re-sent. Nothing about the target changed.
+  const same = await call('PATCH', '/remotes/box', {
+    label: 'Renamed', config: { host: 'box', user: 'me' },
+  });
+  assert.equal(same.status, 200);
+  assert.equal(same.body.remote.label, 'Renamed', 'the rename landed');
+  assert.equal(same.body.remote.enabled, true, 'and the gate did NOT move');
+  assert.equal((await stored(store, 'box')).enabled, true);
+  assert.equal(same.body.remote.baseline.state, 'ok', 'nor did the tooling verdict');
+
+  // Key ORDER is not a change either: `validateConfig` produces a canonical
+  // shape, and a client is free to send the fields in any order.
+  const reordered = await call('PATCH', '/remotes/box', { config: { user: 'me', host: 'box' } });
+  assert.equal((await stored(store, 'box')).enabled, true, 'key order is not a config change');
+
+  // ARM 2 — ONE value changed. This is a different target: for ssh
+  // `controlPathFor` keys on (user, host), so the old master is not this
+  // remote's, and a carried-over "enabled" would be factually stale.
+  const changed = await call('PATCH', '/remotes/box', { config: { host: 'other-box', user: 'me' } });
+  assert.equal(changed.body.remote.enabled, false, 'a changed target switches the remote off');
+  assert.equal((await stored(store, 'box')).enabled, false);
+  assert.equal(changed.body.remote.baseline.state, 'unknown', 'and drops the old verdict');
+});
+
+// PINS the other half of the same predicate: DROPPING an optional field is a
+// change, and ADDING one is too. A shallow "same keys" check would miss both,
+// and for ssh either one moves the ControlPath — so the gate must reset.
+test('adding or dropping an optional config field is a config change', async (t) => {
+  const stub = await stubSshCli(t, { socket: true, execStdout: GNU_OUT });
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_SSH: JSON.stringify(stub.cli) });
+
+  await call('POST', '/remotes', { remoteId: 'box', kind: 'ssh', config: { host: 'box', user: 'me' } });
+  await call('POST', '/remotes/box/connect');
+  await call('PATCH', '/remotes/box', { config: { host: 'box' } });
+  assert.equal((await stored(store, 'box')).enabled, false, 'dropping `user` is a different destination');
+
+  await call('POST', '/remotes/box/connect');
+  await call('PATCH', '/remotes/box', { config: { host: 'box', user: 'root' } });
+  assert.equal((await stored(store, 'box')).enabled, false, 'adding `user` is too');
 });

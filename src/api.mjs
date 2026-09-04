@@ -46,6 +46,23 @@ async function cardFor(entry, { probe = true } = {}) {
   return { ...out, reachability: reach };
 }
 
+// Did the config actually CHANGE? Both sides are the canonical post-validation
+// shape a kind's `validateConfig` produces, so this compares like with like:
+// `{host:'box', user:''}` validates to `{host:'box'}` and is equal to a stored
+// `{host:'box'}`. Keys are sorted because the stored side is raw JSON off disk
+// and a client may send fields in any order — neither is a change of target.
+//
+// THE PREDICATE IS THE VALUE, NOT THE PRESENCE OF THE FIELD. The card UI's edit
+// form has no dirty-tracking: it PATCHes `{label, config}` on every save, with
+// `config` spread from the stored record. Testing `config !== undefined` here
+// therefore switched the remote off on every rename, while the form's own copy
+// promised it would not.
+function sameConfig(a, b) {
+  const canon = (o) => JSON.stringify(Object.fromEntries(
+    Object.entries(o ?? {}).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0))));
+  return canon(a) === canon(b);
+}
+
 export async function projectsNaming(remoteId, { conductorUrl = process.env.CONDUCTOR_URL, fetchImpl = globalThis.fetch } = {}) {
   if (!conductorUrl) return [];
   try {
@@ -145,13 +162,18 @@ export function createApi(deps = {}) {
         const v = createTransport(record.kind).validateConfig(config);
         if (!v.ok) return res.status(400).json({ error: v.error });
         nextConfig = v.config;
-        // A changed config may point at a different target entirely, so the old
-        // verdict is not about this remote any more — and neither is the gate.
-        // For ssh this is not merely cautious: `controlPathFor` keys on
-        // (user, host), so editing `host` yields a DIFFERENT socket, the old
-        // master is irrelevant, and a carried-over "enabled" would be stale.
-        baseline = unknownBaseline();
-        enabled = false;
+        // A config that really CHANGED may point at a different target
+        // entirely, so the old verdict is not about this remote any more — and
+        // neither is the gate. For ssh this is not merely cautious:
+        // `controlPathFor` keys on (user, host), so editing `host` yields a
+        // DIFFERENT socket, the old master is irrelevant, and a carried-over
+        // "enabled" would be factually stale.
+        //
+        // A config re-sent UNCHANGED resets nothing — see `sameConfig`.
+        if (!sameConfig(v.config, record.config)) {
+          baseline = unknownBaseline();
+          enabled = false;
+        }
       }
       const updated = makeRecord({
         remoteId: record.remoteId,
