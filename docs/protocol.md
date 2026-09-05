@@ -576,9 +576,9 @@ far-side binary as an **option**, not an operand, turning a stored remote into
 argument injection against `docker` or `ssh`.
 
 **This is refused at the store's front door, not defended against in
-`spawnPlan`** — `docker`'s `spawnPlan` builds argv from `container` today and
-card 2026-0004's will from `host`/`user`, so the rule has to hold before either
-exists. A validator that accepts an
+`spawnPlan`** — `docker`'s `spawnPlan` builds argv from `container` and `ssh`'s
+from `host`/`user`, and the rule had to hold before either existed. A validator
+that accepts an
 option-shaped value is a latent hole even while `spawnPlan` throws. Any new
 config field a kind adds gets the same treatment.
 
