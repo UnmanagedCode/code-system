@@ -142,6 +142,7 @@ export class Session {
       case 'exec': return this.#exec(f, remote);
       case 'signal': return this.#signal(f);
       case 'close': return this.#close(f);
+      case 'detach': return this.#detach(f);
       case 'readFile': return this.#readFileOpen(f, remote);
       case 'writeFile': return this.#writeOpen(f, remote);
       case 'data': return this.#writeData(f);
@@ -357,6 +358,42 @@ export class Session {
     // the kind reap whatever it left on the far side. Without this the derived
     // `sh -c` and its whole pipeline keep running.
     this.#cancelFileOp(id);
+  }
+
+  // THE OPPOSITE OF `close`: the operation is over and NOTHING is to be killed
+  // — the one thing `close` cannot say (systems-protocol.md §5). cc sends it
+  // when a redirected shell command settles on cc's own framing sentinel, which
+  // may be long before, or instead of, the `exit` we would have reported.
+  //
+  // Drop the id, cancel every deadline armed for it, emit no further frames for
+  // it, and leave the command AND ANYTHING IT BACKGROUNDED RUNNING.
+  //
+  // DROPPING IT FROM #execs IS THE SECOND HALF, not bookkeeping: MUST 3's exit
+  // reap is scoped to operations still OPEN and `shutdown()` iterates #execs,
+  // so leaving the id there would reap at exit the background job this frame
+  // exists to spare (§1 MUST 3's carve-out, §11 item 1).
+  //
+  // THE STREAM HANDLERS STAY ATTACHED, reading and discarding: §5 measured that
+  // pausing them blocks a survivor still writing and destroying them kills it
+  // with SIGPIPE. `state.closed` is what silences the frames, and `head` /
+  // `errHead` are already capped at HEAD_BYTES.
+  //
+  // `exec` IDS ONLY (§5). A detach naming a file operation or an id we do not
+  // have is DROPPED — the same answer §4 gives every frame for a closed id.
+  #detach(f) {
+    const id = String(f.id);
+    const state = this.#execs.get(id);
+    if (!state) return;
+    state.closed = true;
+    // HYGIENE, AND CURRENTLY UNOBSERVABLE: `state.closed` above already neuters
+    // both timers — `#terminate`'s `send` and the SIGKILL backstop behind it
+    // each early-return on it — so deleting these two lines changes nothing you
+    // can measure today. They stay because that masking is incidental: a change
+    // that stops setting `closed` first, or that moves the flag, would
+    // resurrect an armed deadline on an operation cc has already ended.
+    if (state.timer) clearTimeout(state.timer);
+    if (state.killTimer) clearTimeout(state.killTimer);
+    this.#execs.delete(id);
   }
 
   // A FAILED REAP IS REPORTED, NOT SWALLOWED. It still must not take the

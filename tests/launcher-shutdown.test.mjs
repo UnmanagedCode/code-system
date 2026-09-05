@@ -153,6 +153,131 @@ test('`close` on one id reaps THAT id, emits nothing further for it, and leaves 
   assert.equal((await reaped(reapLog)).length, 3, 'the remaining two were reaped at shutdown');
 });
 
+// ── `detach`: the exact opposite of `close` (systems-protocol.md §5) ──
+
+// A command that BACKGROUNDS a job and then keeps talking. The `sleep 30` is the
+// survivor `detach` exists to spare; the tick loop is what makes "no further
+// frames for that id" observable instead of vacuous.
+//
+// The shell records its OWN pid too, because the fake kind plans
+// `detached: true` — so that pid LEADS the group, and since a detached exec is
+// deliberately outside every kill path in this file, the group kill registered
+// below is the only thing that cleans it up.
+const DEADLINE_MS = 1_500;
+
+async function detachable(t, { timeoutMs } = {}) {
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  await writeRecord(store.dir, record('alpha'));
+  const reapLog = path.join(store.dir, 'reaps.jsonl');
+  const shellPidFile = path.join(store.dir, 'shell.pid');
+  const jobPidFile = path.join(store.dir, 'job.pid');
+  const l = new Launcher(['--kind', 'fake'], {
+    CODE_SYSTEM_STORE: store.dir,
+    CODE_SYSTEM_FAKE_TRANSPORT: FAKE_TRANSPORT,
+    CODE_SYSTEM_FAKE_REAP_LOG: reapLog,
+  });
+  t.after(() => l.kill());
+  await l.hello();
+  const sentAt = Date.now();
+  l.send({
+    type: 'exec', id: 'd', remoteId: 'alpha', cwd: '/tmp',
+    shell: `echo $$ > ${shellPidFile}; sleep 30 >/dev/null 2>&1 & echo $! > ${jobPidFile};`
+      + ' while :; do echo tick; sleep 0.05; done',
+    killGraceMs: 100,
+    ...(typeof timeoutMs === 'number' ? { timeoutMs } : {}),
+  });
+  const readPid = async (p) => Number((await fs.readFile(p, 'utf8').catch(() => '')).trim());
+  await settle(async () => (await readPid(jobPidFile)) > 0);
+  const jobPid = await readPid(jobPidFile);
+  const shellPid = await readPid(shellPidFile);
+  assert.ok(jobPid > 0 && shellPid > 0, 'the command recorded its own pid and its background job pid');
+  t.after(() => {
+    for (const p of [-shellPid, jobPid]) { try { process.kill(p, 'SIGKILL'); } catch { /* gone */ } }
+  });
+  // Positive proof the stream is FLOWING before we detach, so "nothing further
+  // arrived" cannot pass by nothing ever having arrived.
+  await l.waitFor(f => f.type === 'stdout' && f.id === 'd');
+  return { l, reapLog, jobPid, shellPid, sentAt, since: (ms) => new Promise(r => setTimeout(r, Math.max(0, sentAt + ms - Date.now()))) };
+}
+
+// PINS §5's `detach`: the operation ends and nothing is killed, even with a
+// deadline armed and expiring inside the test. The deadline is what makes an
+// ignored detach VISIBLE at all — a provider that drops the frame keeps the id
+// open with its timer running, and that timer is what terminates the command and
+// reaps the background job cc told it to leave alone (§1 MUST 5; §5's "cc cannot
+// detect that" is why this test exists locally rather than only in cc's battery).
+//
+// It does NOT pin the `clearTimeout` calls in `#detach`: `state.closed` already
+// makes an expired timer a no-op, so those lines are hygiene and are commented
+// as such at the source. The claim here is the observable one — the deadline
+// passes and neither reports nor kills.
+test('`detach` ends the id and kills nothing — an expired deadline included', async (t) => {
+  const { l, reapLog, jobPid, sentAt, since } = await detachable(t, { timeoutMs: DEADLINE_MS });
+  assert.ok(Date.now() - sentAt < 700,
+    'the fixture must settle well inside the armed deadline, or this test measures nothing');
+  l.send({ type: 'detach', id: 'd' });
+
+  // Snapshot BEFORE the deadline: a tick already in flight when the detach was
+  // handled is allowed to land. What must not happen is any frame after this.
+  await since(900);
+  const settled = l.frames.filter(f => f.id === 'd').length;
+  assert.ok(settled > 0, 'the id really was streaming');
+  // Well past the deadline and the 100 ms SIGKILL grace behind it.
+  await since(DEADLINE_MS + 400);
+
+  assert.equal(l.frames.filter(f => f.id === 'd').length, settled,
+    'no further frames for a detached id: the ticks stopped and the expired deadline said nothing');
+  assert.equal(l.frames.some(f => (f.type === 'exit' || f.type === 'error') && f.id === 'd'), false,
+    'the id did NOT terminate in a frame of ours — cc ended it with detach (MUST 5)');
+  assert.equal(alive(jobPid), true,
+    'the backgrounded job outlives its command, as a local shell job would');
+  assert.deepEqual(await reaped(reapLog), [],
+    'detach signals nothing and reaps nothing — that is the whole content of the frame');
+});
+
+// PINS THE MUST 3 CARVE-OUT, which cc's own battery cannot reach: MUST 3's exit
+// reap covers operations still OPEN, and a detached exec is closed (§1 MUST 3,
+// §11 item 1). The mechanism is `#execs.delete(id)` in `Session.#detach`, since
+// `shutdown()` iterates `#execs` — so a future "reap everything we ever spawned"
+// refactor breaks exactly here.
+test('a detached exec is OUT of MUST 3\'s exit reap', async (t) => {
+  const { l, reapLog, jobPid } = await detachable(t);
+  l.send({ type: 'detach', id: 'd' });
+  // A barrier, not a sleep: this exit proves the detach above was processed.
+  l.send({ type: 'exec', id: 'barrier', remoteId: 'alpha', cwd: '/tmp', argv: ['true'] });
+  await l.waitFor(f => f.type === 'exit' && f.id === 'barrier');
+
+  l.closeStdin();
+  assert.equal((await l.exited).code, 0, 'the provider still exits cleanly on stdin EOF');
+  assert.deepEqual(await reaped(reapLog), [],
+    'shutdown reaped nothing: the detached id had already left the bookkeeping MUST 3 iterates');
+  assert.equal(await settle(async () => alive(jobPid), 500), true,
+    'and the background job survived the provider, exactly as a detached local one does');
+});
+
+// THE CONTRAST WITH `close`, which reaps THAT id (test above): detach reaps
+// nothing, and neither frame may touch the other live ids.
+test('`detach` on one id reaps nothing and leaves the other ids reapable at shutdown', async (t) => {
+  const { l, reapLog } = await threeLive(t);
+  l.send({ type: 'detach', id: 'b' });
+  l.send({ type: 'exec', id: 'barrier2', remoteId: 'alpha', cwd: '/tmp', argv: ['true'] });
+  await l.waitFor(f => f.type === 'exit' && f.id === 'barrier2');
+  assert.deepEqual(await reaped(reapLog), [], 'detach reaped nothing — unlike close');
+
+  // The detached id survives shutdown BY DESIGN, so this test has to clean it
+  // up itself: capture the launcher's children while it still has them.
+  const children = await descendantShells(l.pid);
+  t.after(() => { for (const p of children) { try { process.kill(p, 'SIGKILL'); } catch { /* gone */ } } });
+
+  l.closeStdin();
+  await l.exited;
+  assert.equal((await reaped(reapLog)).length, 2,
+    'the two ids cc did NOT detach were still reaped at exit');
+  assert.equal(l.frames.some(f => f.id === 'b'), false,
+    'and nothing further was emitted for the detached id');
+});
+
 test('the host-side child really dies — the group goes, not just the direct child', async (t) => {
   const store = await tempStore();
   t.after(() => store.cleanup());

@@ -231,6 +231,44 @@ test('a deleted frame type is IGNORED — stdin and stdinClose neither refuse, k
   assert.equal(exit.signal, 'SIGTERM');
 });
 
+// PINS `detach`'s ADDRESSING: `exec` ids ONLY (systems-protocol.md §5), and an
+// id we do not have is dropped, not answered (§4). The frame has no reply of its
+// own, so the only way a misaddressed one is visible is by what it did to the
+// wrong id — which is why the readFile half is the real assertion: a `#detach`
+// that fell through to `#close`'s `#cancelFileOp` would silently abort a live
+// read, and `close` and `detach` sit one line apart.
+//
+// DETERMINISTIC, not a race: `#readFileOpen` registers the operation and returns
+// (its round trip is void-ed on purpose, MUST 4), and frames run strictly in
+// arrival order through one chain — so the `detach` below is guaranteed to land
+// while the op is registered and unfinished.
+test('`detach` is exec-ids-only: a live readFile and an id we never had are DROPPED, not answered', async (t) => {
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  await writeRecord(store.dir, record('alpha'));
+  const target = path.join(store.dir, 'payload.txt');
+  await fs.writeFile(target, 'still here\n');
+  const l = new Launcher(['--kind', 'fake'], fakeEnv(store.dir));
+  t.after(() => l.kill());
+  await l.hello();
+
+  l.send({ type: 'detach', id: 'never-opened' });
+  l.send({ type: 'readFile', id: 'r1', remoteId: 'alpha', path: target });
+  l.send({ type: 'detach', id: 'r1' });
+
+  await l.waitFor(f => f.type === 'end' && f.id === 'r1');
+  assert.equal(textOf(l.frames, 'r1', 'data'), 'still here\n',
+    'the read completed untouched — detach is not close and must not cancel a file operation');
+  assert.ok(l.frames.some(f => f.type === 'readFileResult' && f.id === 'r1'),
+    'and it answered normally, as MUST 5 requires of an id detach did not end');
+  assert.equal(l.frames.some(f => f.type === 'error'), false,
+    'neither detach was answered — an unknown id is dropped, not an error');
+
+  // The connection is still framing afterwards.
+  l.send({ type: 'exec', id: 'after', remoteId: 'alpha', cwd: '/tmp', argv: ['printf', 'ok'] });
+  assert.equal((await l.waitFor(f => f.type === 'exit' && f.id === 'after')).code, 0);
+});
+
 test('an unknown frame type and a blank line are ignored, not errors', async (t) => {
   const store = await tempStore();
   t.after(() => store.cleanup());

@@ -682,6 +682,14 @@ A file operation also carries the same `(config, handle)` pair an `exec` does, s
 a kind's `reap` is called for it. For docker and ssh that is the difference
 between a far-side pipeline being reaped and being abandoned.
 
+**A DETACHED exec is not reaped either, and that is MUST 3's own carve-out.**
+A detached command, and anything it backgrounded, is outside the loop above *by
+construction* rather than by an exception inside it. The obligation, the
+citations and the mechanism that puts it outside are in `docs/protocol.md` →
+"`detach` — the frame `close` cannot substitute for". Pinned by
+`tests/launcher-shutdown.test.mjs` → *"a detached exec is OUT of MUST 3's exit
+reap"*.
+
 **A command that exited on its own is NOT reaped, and that is deliberate.** §5
 gives `exit` as a terminal frame with no cleanup obligation attached; MUST 3
 binds at *provider exit*, not at operation completion; and cc's own reference
@@ -1025,12 +1033,12 @@ naming the invocation explicitly, and a writable `<repo>/.conformance-tmp`
 inside a host bind. It skips cleanly and loudly without the first two, and it is
 **never part of `npm test`**. It seeds its own store and remote and removes both.
 
-**What it proves:** of the 51 rows, **32 reach the shipped `docker` transport and
-pass** under the battery's own fixtures. (37 pass in total; 5 of those exercise no
-provider of ours. Two further rows reach the transport and FAIL — see the third
-bucket below — so 34 reach it at all.)
+**What it proves:** of the 55 rows, **35 reach the shipped `docker` transport and
+pass** under the battery's own fixtures. (40 pass in total; 5 of those exercise no
+provider of ours. Three further rows reach the transport and FAIL on its
+behaviour — buckets 3 and 4 below — so 38 reach it at all.)
 
-**The 14 rows that do not pass, in three buckets:**
+**The 15 rows that do not pass, in four buckets:**
 
 1. **4 skips**, the `IS_REFERENCE_PROVIDER` set every third-party run skips.
 2. **8 structural failures** — the two capability rows and the six flag rows
@@ -1040,7 +1048,13 @@ bucket below — so 34 reach it at all.)
    `exec NEVER rejects — a command that cannot start is a spawnError, not a
    throw` rows, which the bound run FOUND (card 2026-0016) and `host` cannot
    reach. They go away when that card lands.
+4. **1 close-reach failure**: `[processGroupSignal:false] detach ends the
+   operation and kills nothing; close kills as far as it reaches`. Its `detach`
+   half passes; `#close`'s far-side reap is subtree-wide while the advertised
+   `processGroupSignal: false` promises it is not (card 2026-0019). Measured
+   unsatisfiable in both capability configurations — see
+   `.wiki/gotchas/bound-conformance.md`.
 
-All three are enforced by `tests/boundConformanceExpectations.mjs` — anything not
+All four are enforced by `tests/boundConformanceExpectations.mjs` — anything not
 listed there must pass, a listed row that starts passing is red, and the run's
 total is pinned absolutely so a row vanishing from the suite is red too.
