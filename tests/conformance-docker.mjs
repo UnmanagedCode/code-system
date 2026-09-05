@@ -103,13 +103,52 @@ function watchFarSidePids(scratchDir) {
   return { stop: () => { clearInterval(timer); return seen; } };
 }
 
-let tornDown = false;
-async function teardown() {
-  if (tornDown) return;
-  tornDown = true;
-  for (const fn of cleanups.reverse()) {
-    try { await fn(); } catch (e) { console.error(`${SCRIPT}: cleanup failed: ${e?.message ?? e}`); }
-  }
+// MEMOISED, not flagged. There are two callers — `main`'s own `finally` and the
+// signal handler — and on a signal they run CONCURRENTLY: the kill that stops the
+// battery is also what resolves `main`'s wait on the child. A `if (done) return`
+// guard lets the second caller return IMMEDIATELY, so the handler re-raised the
+// signal and killed the process while the first caller was still awaiting its
+// first `fs.rm` — measured: container, scratch and store all survived a Ctrl-C.
+// Returning the same promise makes the second caller WAIT for the first.
+let teardownRun = null;
+function teardown() {
+  teardownRun ??= (async () => {
+    for (const fn of cleanups.reverse()) {
+      try { await fn(); } catch (e) { console.error(`${SCRIPT}: cleanup failed: ${e?.message ?? e}`); }
+    }
+  })();
+  return teardownRun;
+}
+
+// The battery, while it is running — at MODULE scope, because the signal handler
+// below has to reach it and `main`'s local would not be visible there.
+let suiteRun = null;
+
+/**
+ * KILL THE WHOLE RUN, and wait for it. Ordered BEFORE teardown, and that
+ * ordering is the point: teardown removes the container the battery is exec'ing
+ * into and `rm -rf`s the scratch its fixtures live in, so a battery still
+ * running at that moment is left parentless against a deleted TMPDIR and a
+ * removed container until it exits on its own.
+ *
+ * The GROUP, not the pid: cc's runner spawns a child per test file, so killing
+ * the direct child alone reopens the same hole one level down. `spawnSuite` is
+ * given `detached: true` for exactly this.
+ */
+async function killSuiteRun() {
+  const child = suiteRun;
+  suiteRun = null;
+  if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return;
+  console.error(`${SCRIPT}: killing the battery (process group ${child.pid})`);
+  await new Promise((resolve) => {
+    child.once('close', resolve);
+    // Bounded, so a wedged group cannot hold the teardown that frees the
+    // container. Whatever survives is named by the sweep below.
+    const bail = setTimeout(resolve, 5_000);
+    bail.unref?.();
+    try { process.kill(-child.pid, 'SIGKILL'); } catch { resolve(); }
+  });
+  console.error(`${SCRIPT}: battery gone`);
 }
 
 // `try/finally` COVERS EXCEPTIONS, NOT SIGNALS. A Ctrl-C between `docker run`
@@ -118,17 +157,21 @@ async function teardown() {
 // caller still sees a signal death rather than a fabricated exit code.
 //
 // SIGKILL IS UNCOVERABLE BY ANY TRAP — if the runner is `kill -9`ed, sweep by
-// hand: `docker ps -a --filter name=code-system-test-boundconf` and
-// `rm -rf <repo>/.conformance-tmp`.
+// hand, all three:
+//   docker ps -a --filter name=code-system-test-boundconf
+//   rm -rf <repo>/.conformance-tmp
+//   rm -rf /tmp/code-system-boundconf-*        # the seeded store
 let interruptedBy = null;
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(sig, () => {
     interruptedBy = sig;
-    console.error(`\n${SCRIPT}: ${sig} — tearing down before exiting`);
-    void teardown().finally(() => {
-      process.removeAllListeners(sig);
-      process.kill(process.pid, sig);
-    });
+    console.error(`\n${SCRIPT}: ${sig} — stopping the battery, then tearing down`);
+    void killSuiteRun()
+      .then(teardown)
+      .finally(() => {
+        process.removeAllListeners(sig);
+        process.kill(process.pid, sig);
+      });
   });
 }
 
@@ -253,7 +296,7 @@ async function main() {
   log(`\n${SCRIPT}: ${checkout}\n${SCRIPT}: provider ${provider}\n`);
 
   const started = Date.now();
-  const child = spawnSuite(checkout, {
+  const child = suiteRun = spawnSuite(checkout, {
     CC_CONFORMANCE_PROVIDER: provider,
     CC_CONFORMANCE_REMOTE_ID: REMOTE_ID,
     // EXPLICIT, never inherited: `dockerFixture`'s candidate list appends
@@ -267,7 +310,9 @@ async function main() {
     // tests/safeStoreRoot.mjs computes its REAL_TMP from `os.tmpdir()` too.
     TMPDIR: scratchDir,
     CODE_SYSTEM_STORE: storeRoot,
-  }, { stdio: ['ignore', 'pipe', 'pipe'] });
+    // ITS OWN PROCESS GROUP, so a signal can take the whole run down before the
+    // scratch it is reading goes away. See killSuiteRun.
+  }, { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
 
   const pidWatch = watchFarSidePids(scratchDir);
   // Tee'd rather than captured, so the run stays watchable while it happens.
@@ -275,6 +320,7 @@ async function main() {
   child.stdout.on('data', (b) => { out += b; process.stdout.write(b); });
   child.stderr.on('data', (b) => process.stderr.write(b));
   const suiteExit = await new Promise((resolve) => child.on('close', resolve));
+  suiteRun = null;
   const elapsed = Date.now() - started;
   const farSidePids = pidWatch.stop();
 
@@ -284,7 +330,8 @@ async function main() {
   // the ABSOLUTE one: the other two are relative to what the run reported, so a
   // row that vanished from the suite moves the tally and the parse together and
   // is invisible to both.
-  const tallyProblems = [...checkTally(report), ...checkTotal(report.tally)];
+  const parseProblems = checkTally(report);
+  const sizeProblems = checkTotal(report.tally);
   const problems = compareOutcomes(report.tests);
 
   log('');
@@ -314,10 +361,14 @@ async function main() {
     + `${EXPECTED.filter(e => e.outcome === 'fail').length} fail) — see`
     + ' tests/boundConformanceExpectations.mjs for each one\'s cause');
 
-  for (const p of tallyProblems) console.error(`${SCRIPT}: PARSE — ${p}`);
+  // TWO PREFIXES, because they are different events: a PARSE problem means this
+  // script can no longer read cc's reporter, while a SIZE one means cc's suite
+  // itself changed shape.
+  for (const p of parseProblems) console.error(`${SCRIPT}: PARSE — ${p}`);
+  for (const p of sizeProblems) console.error(`${SCRIPT}: SIZE — ${p}`);
   for (const p of problems) console.error(`${SCRIPT}: ${p.kind.toUpperCase()} — ${p.name}\n      ${p.message}`);
 
-  if (tallyProblems.length || problems.length) {
+  if (parseProblems.length || sizeProblems.length || problems.length) {
     console.error(`\n${SCRIPT}: FAILED — the run did not match the manifest`);
     return 1;
   }

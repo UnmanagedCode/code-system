@@ -518,21 +518,35 @@ really required — because that drift would fail only in a browser.
 ### The environment seams
 
 Every variable this plugin reads, in one place. **The list is a swept one** — a
-row added without re-sweeping is how the claim above stops being true, and it
-already did once (`CONDUCTOR_URL` and `PORT` were missing when `TMPDIR` was
-added). Re-derive it, don't extend it:
+row added without re-sweeping is how the claim above stops being true, and it has
+already failed twice that way (`CONDUCTOR_URL`/`PORT` were missing when `TMPDIR`
+was added; `CODE_SYSTEM_FAKE_REAP_LOG` when the sweep was first written).
+Re-derive it, don't extend it — **three probes, and all three are needed**:
 
 ```sh
-grep -rn 'process\.env' src/ server.mjs frontend/     # direct reads
-grep -rn 'export const .*_ENV = ' src/                # names held in constants
+# 1. named reads. tests/ is IN SCOPE: four rows below are read only there.
+grep -rhoE 'process\.env\.[A-Z][A-Z0-9_]*' src/ tests/ server.mjs frontend/ \
+  | sed 's/process\.env\.//' | sort -u
+# 2. names held in a constant, so probe 1 never sees them.
+grep -rhoE "'[A-Z][A-Z0-9_]*'" --include='*.mjs' src/ tests/ \
+  | grep -E 'CODE_SYSTEM|^.CC_' | tr -d "'" | sort -u
+# 3. the ones nothing names. `os.tmpdir()` reads TMPDIR, and no grep for the
+#    string would ever find it.
+grep -rn 'os\.tmpdir()' src/
 ```
 
-Two of these are **conductor-set** (`CONDUCTOR_URL`, `PORT`) and the rest are
+**Three kinds of hit the probes surface that are NOT rows**, and the reason is
+the same each time — they are not how this plugin is configured. `PATH` is read
+only to *compose a child's* environment; `CC_REMOTE` and `CC_EXEC_TOKEN` are
+variables we *write into the far side's*; `CC_TEST_FILE_KILL_MS` is cc's, named
+here only to say we never set it. Separately, and not a named read either:
+`execEnv`'s `base` defaults to `process.env`, which is the REPLACE branch's
+baseline — see "`exec` env across a boundary" in the wiki.
+
+Two rows are **conductor-set** (`CONDUCTOR_URL`, `PORT`) and the rest are
 **operator-set**: cc spawns the launcher with the *orchestrator's* environment,
 and the backend reads the same names in-process, so one function serves both
-surfaces. Separately, and not a named read: `execEnv`'s `base` defaults to
-`process.env`, which is the REPLACE branch's baseline — see "`exec` env across a
-boundary" in the wiki.
+surfaces.
 
 | Variable | Read by | Effect |
 |---|---|---|
@@ -544,6 +558,7 @@ boundary" in the wiki.
 | `CODE_SYSTEM_ALLOW_HOST_KIND` | `kinds/host.mjs` | permits `--kind host` at all |
 | `CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED` | `kinds/host.mjs` | permits `--kind host` with no `--remote` fence. **No shipped path sets it** |
 | `CODE_SYSTEM_FAKE_TRANSPORT` | `main.mjs` | module path for `--kind fake`. Tests only |
+| `CODE_SYSTEM_FAKE_REAP_LOG` | `tests/fakeTransport.mjs` | file the fake transport appends each `reap` to, so the shutdown tests can prove the relay ran. Tests only |
 | `CC_CHECKOUT` | `tests/ccCheckout.mjs` | gates both conformance runs |
 | `CODE_SYSTEM_ALLOW_UNSHARED_PID` | `tests/conformance-docker.mjs` | `=1` permits the bound run when the daemon refuses `--pid=container:`. **Refused by default**: cc's suite SIGKILLs a far-side pid in this namespace, and an unoccupied low pid range is luck, not a guard |
 | `TMPDIR` | `kinds/ssh.mjs` → `controlDir`, via `os.tmpdir()` | the ControlPath's parent directory; `controlPathFor` refuses rather than truncates past the ceiling. Also **set** by `tests/conformance-docker.mjs`, to redirect cc's own fixture roots |

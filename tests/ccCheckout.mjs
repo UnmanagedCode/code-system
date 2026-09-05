@@ -83,13 +83,21 @@ export function assertNoDrift(script, checkout) {
  * cc's own test runner over the conformance suite, with `cwd: <checkout>`.
  * `env` is overlaid on `process.env`; `stdio` is the caller's (the host run
  * inherits, the bound run pipes so it can parse).
+ *
+ * `detached` PUTS THE RUN IN ITS OWN PROCESS GROUP, so a caller that has to
+ * abandon it can kill the WHOLE run — cc's runner spawns a child per test file,
+ * and killing only the direct child orphans those. The bound runner needs that
+ * (it deletes the scratch those children are reading); the `host` runner does
+ * NOT take it, because it inherits stdio and detaching would stop the terminal's
+ * own Ctrl-C reaching the run at all.
  * @returns {import('node:child_process').ChildProcess}
  */
-export function spawnSuite(checkout, env, { stdio }) {
+export function spawnSuite(checkout, env, { stdio, detached = false }) {
   return spawn(process.execPath, [RUNNER_REL, SUITE_REL], {
     cwd: checkout,
     env: { ...process.env, ...env },
     stdio,
+    detached,
   });
 }
 
