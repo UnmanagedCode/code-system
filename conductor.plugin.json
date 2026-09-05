@@ -9,6 +9,6 @@
   },
   "frontend": {
     "path": "/",
-    "navLabel": "Systems"
+    "navLabel": "Code System"
   }
 }
