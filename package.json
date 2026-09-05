@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test \"tests/*.test.mjs\"",
-    "conformance": "node tests/conformance.mjs"
+    "conformance": "node tests/conformance.mjs",
+    "conformance:docker": "node tests/conformance-docker.mjs"
   },
   "dependencies": {
     "express": "^4.22.2"

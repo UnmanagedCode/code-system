@@ -80,3 +80,73 @@ export function spawnSuite(checkout, env, { stdio }) {
     stdio,
   });
 }
+
+// ── Reading what cc's runner prints ──────────────────────────────────
+//
+// cc's tests/run.mjs composes node's own `spec` reporter unconditionally, so
+// the format is node's, not cc's: `formatTestReport` renders one line per test
+// as `<symbol><name> (<ms>ms)`, with ` # <verbatim reason>` appended for a skip,
+// and the run summary as `<info-symbol> <key> <n>` diagnostics. Colours are off
+// on a pipe; the ANSI strip below is defence against a run that forces them on.
+//
+// A MIS-PARSE MUST BE LOUD, because an empty parse of a red run looks exactly
+// like a green one. `parseSpecReport` therefore also reads the reporter's OWN
+// tally, and `checkTally` compares the two — so a format change reds the gate
+// instead of silently emptying the result.
+
+const ANSI = new RegExp('\\u001b\\[[0-9;]*m', 'g');
+
+// The three symbols node's spec reporter uses, and nothing else: a line that
+// does not start with one is not a test result.
+const SYMBOLS = new Map([['✔', 'pass'], ['✖', 'fail'], ['﹣', 'skip']]);
+
+// The `info` diagnostic the summary lines carry: `<U+2139> <key> <n>`.
+const DIAG_RE = new RegExp('^ℹ (\\w+) (\\d+)$');
+
+// `<name> (<ms>ms)` with an optional ` # <reason>`. `(.*)` is greedy so a test
+// name that itself contains a parenthesised duration keeps it.
+const RESULT_RE = /^(.*) \((\d+(?:\.\d+)?)ms\)(?: # (.*))?$/;
+
+/**
+ * @param {string} text everything cc's runner wrote to stdout
+ * @returns {{tests: Map<string,{outcome:string, reason:string|null}>, tally: Record<string,number>}}
+ */
+export function parseSpecReport(text) {
+  const tests = new Map();
+  const tally = {};
+  for (const raw of text.replace(ANSI, '').split('\n')) {
+    const line = raw.trim();
+    const outcome = SYMBOLS.get(line[0]);
+    if (outcome) {
+      const m = RESULT_RE.exec(line.slice(1).trim());
+      // A result line that does not match is NOT dropped quietly: leaving it out
+      // makes the tally cross-check below disagree, which is the point.
+      if (m) tests.set(m[1], { outcome, reason: m[3] ?? null });
+      continue;
+    }
+    const diag = DIAG_RE.exec(line);
+    // LAST OCCURRENCE WINS: node emits a per-file summary and a run-level one,
+    // and the run-level figure is the whole run's.
+    if (diag) tally[diag[1]] = Number(diag[2]);
+  }
+  return { tests, tally };
+}
+
+/**
+ * The parse's self-check against the reporter's own arithmetic.
+ * @returns {string[]} empty when they agree
+ */
+export function checkTally({ tests, tally }) {
+  const counted = { pass: 0, fail: 0, skipped: 0 };
+  for (const { outcome } of tests.values()) counted[outcome === 'skip' ? 'skipped' : outcome]++;
+  const problems = [];
+  for (const key of ['pass', 'fail', 'skipped']) {
+    if (tally[key] === undefined) {
+      problems.push(`the run printed no \`${key}\` summary diagnostic — the reporter format changed`);
+    } else if (tally[key] !== counted[key]) {
+      problems.push(`parsed ${counted[key]} ${key} result lines but the reporter tallied ${tally[key]}`
+        + ' — the per-test line format changed and this parse is not to be trusted');
+    }
+  }
+  return problems;
+}
