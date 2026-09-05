@@ -139,10 +139,15 @@ export async function skipUnlessDocker(t) {
  * NOT `--rm`: a test that stops the container must leave it EXISTING-but-stopped
  * (`Error response from daemon: container … is not running`), and `--rm` would
  * delete it into the different "No such container" case instead.
+ *
+ * `args` are extra `docker run` flags, placed before the image. The bound
+ * conformance runner needs `-v`, `--user` and `--pid=container:` there
+ * (tests/conformance-docker.mjs); nothing else passes any. `t` is used only for
+ * its `after`, so a non-test caller can pass its own cleanup registrar.
  */
-export async function withContainer(t, cli, { image = 'node:24-slim', stem = 'box' } = {}) {
+export async function withContainer(t, cli, { image = 'node:24-slim', stem = 'box', args = [] } = {}) {
   const name = uniqueName(stem);
-  const res = await run([...cli, 'run', '-d', '--name', name, image, 'sleep', '600']);
+  const res = await run([...cli, 'run', '-d', '--name', name, ...args, image, 'sleep', '600']);
   t.after(async () => { await run([...cli, 'rm', '-f', name]); });
   if (res.code !== 0) throw new Error(`could not start fixture container ${name}: ${res.stderr || res.stdout}`);
   return name;

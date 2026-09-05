@@ -12,6 +12,7 @@ import {
   MIRROR_EXCLUDE_MAX, MIRROR_PATH_MAX, NdjsonDecoder, PROTOCOL_ERROR_CODES,
   PROTOCOL_VERSION, classifyStderr, decodeFrame, isBase64,
 } from '../src/launcher/protocol.mjs';
+import { CC_FILE_KILL_MS } from './ccCheckout.mjs';
 
 // UNGATED, and that is the point: the taxonomy claim used to live only in the
 // CC_CHECKOUT-gated test below, which nothing in `npm test` runs — which is how
@@ -25,6 +26,12 @@ test('the constants equal the documented values', () => {
   assert.equal(MAX_LINE_BYTES, 4 * 1024 * 1024);
   assert.equal(MIRROR_EXCLUDE_MAX, 64);
   assert.equal(MIRROR_PATH_MAX, 4096);
+  // Not a protocol constant — cc's per-file TEST hang guard, which the bound
+  // conformance runner prints its wall-clock margin against
+  // (tests/conformance-docker.mjs). Mirrored here for the same reason as the
+  // rest: a copy nothing drift-checks measures against the wrong number the day
+  // cc moves it.
+  assert.equal(CC_FILE_KILL_MS, 90_000);
 
   assert.deepEqual(PROTOCOL_ERROR_CODES, [
     'EPROTO', 'ETRANSPORT', 'ETIMEDOUT', 'EUNSUPPORTED', 'ESHELLGONE',
@@ -110,4 +117,19 @@ test('our mirror matches cc\'s own protocol.ts', { skip: !process.env.CC_CHECKOU
   };
   assert.deepEqual(PROTOCOL_ERROR_CODES, codes('PROTOCOL_ERROR_CODES'));
   assert.deepEqual(FS_ERROR_CODES, codes('FS_ERROR_CODES'));
+});
+
+// The same drift check for the one constant that is NOT in protocol.ts. cc's
+// tests/hangGuardConfig.mjs is the single source for every hang-guard deadline,
+// and each is `ms('<ENV>', <default>)` — so the default is what a mirror has to
+// track. FOLDED IN HERE rather than given a mechanism of its own: this file is
+// already the one that runs with CC_CHECKOUT in its environment, and both
+// conformance runners run it first.
+test('our mirror of cc\'s per-file hang guard matches cc\'s own', { skip: !process.env.CC_CHECKOUT }, async () => {
+  const src = await fs.readFile(
+    path.join(process.env.CC_CHECKOUT, 'tests', 'hangGuardConfig.mjs'), 'utf8');
+  const m = /export const FILE_KILL_MS\s*=\s*ms\(\s*'CC_TEST_FILE_KILL_MS'\s*,\s*([\d_]+)\s*\)/.exec(src);
+  assert.ok(m, 'cc no longer exports FILE_KILL_MS as ms(\'CC_TEST_FILE_KILL_MS\', <default>)');
+  assert.equal(CC_FILE_KILL_MS, Number(m[1].replaceAll('_', '')),
+    'the bound runner would print its hang-guard margin against a stale number');
 });

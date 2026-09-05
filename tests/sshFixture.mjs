@@ -13,10 +13,15 @@
 // suite could not exercise the thing it exists to exercise. debian:13-slim
 // satisfies the GNU/POSIX baseline the protocol assumes.
 //
-// IT IS BUILT WITH NO CONTEXT — `docker build -` with the Dockerfile on stdin —
-// because this container's filesystem is not the daemon's, so bind mounts and
-// build contexts are unavailable here. The authorized key is injected at RUN
-// time instead.
+// IT IS BUILT WITH NO CONTEXT — `docker build -` with the Dockerfile on stdin.
+// The authorized key is injected at RUN time instead.
+//
+// THE CONSTRAINT IS NARROWER THAN THIS COMMENT ONCE CLAIMED, and card 2026-0014
+// measured it: a `-v` source and a build context are resolved by the DAEMON, on
+// the HOST — so a path that exists on the host mounts fine (the workspace bind
+// does, and the bound conformance run uses it), while this container's own
+// overlay `/tmp` is nameable by nothing on the host and does not. Neither is
+// "unavailable here". See .wiki/gotchas/bound-conformance.md.
 //
 // AN AGENT IS FORWARDED INTO THIS ENVIRONMENT WITH REAL KEYS. Every generated
 // ssh_config therefore sets `IdentitiesOnly yes` and `IdentityAgent none`, so
