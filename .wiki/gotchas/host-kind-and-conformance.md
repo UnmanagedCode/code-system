@@ -40,7 +40,8 @@ else could. Three measurements refute it: `IS_REFERENCE_PROVIDER` is an
 `assertNegotiatedCapabilities` deep-equals the whole object only for the
 reference provider and otherwise loops `TOGGLED_CAPABILITIES`, which derives to
 `processGroupSignal` **alone**, tolerating `remotes`/`remoteDescriptors` as a
-superset; and `CAPABILITY_CONFIGS` is **two** configurations, not three.
+superset (**measured 2026-09-05**: flipping `docker`/`ssh` to
+`remoteDescriptors: true` moved no manifest row); and `CAPABILITY_CONFIGS` is **two** configurations, not three.
 `host` unlocks **zero** rows a bound `docker` would not.
 
 **What a third-party run does NOT verify — four skips, identical for `host` and
@@ -49,7 +50,7 @@ for a bound `docker`, all gated on `IS_REFERENCE_PROVIDER`:**
 | Test | Printed reason |
 |---|---|
 | `a provider that does not advertise remotes is never handed a remoteId` | `cc-side fixture, pinned to the reference provider: asserts what CC does, not what a provider does` |
-| `a provider without the capability advertises no mirror` | same |
+| `a provider without the capability advertises no mirror` | same — and it still skips now that `docker`/`ssh` advertise `remoteDescriptors: true`: the gate is provider **identity**, not shape |
 | `CC_CONFORMANCE_REMOTE_ID binds the fixture handle, and an explicit remoteId still wins` | `asserts the unset default` |
 | `every code in the taxonomy is produced by a real failure somewhere in this suite` | `counts producers across rows a third-party run skips` |
 
@@ -100,7 +101,9 @@ plugin under a real cc and runs no conformance battery
 / 10 fail / 4 skip** of 51, of which **32 rows exercise the shipped `docker`
 transport**. Eight of the failures have two structural causes — the hardcoded
 `processGroupSignal: false` against `CAPABILITY_CONFIGS[0]`, and `main.mjs`
-refusing `--remote`/`--mirror`/`--exclude` for a store-backed kind — and the other
+refusing `--remote`/`--mirror`/`--exclude` for a store-backed kind (the refusal
+stands now that `docker`/`ssh` do answer `describeRemote`: **the store owns the
+advertisement**, not argv) — and the other
 two are a real transport defect the run **found** (card 2026-0016), which `host`
 structurally cannot reach. The four skips below are unchanged by it. Every
 measurement, and why `ssh` does not inherit the result, is in

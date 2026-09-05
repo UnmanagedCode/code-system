@@ -13,8 +13,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { kindDescriptors } from '../src/launcher/kinds/index.mjs';
 import {
-  GATE_COPY, GATE_SHARED_COPY, baselineNotice, cardAlert, gateStatus, probeStatus,
-  routeFromSearch, searchForRoute,
+  GATE_COPY, GATE_SHARED_COPY, baselineNotice, cardAlert, gateStatus, mirrorPayload,
+  mirrorSummary, probeStatus, routeFromSearch, searchForRoute,
 } from '../frontend/cardState.mjs';
 
 const remote = (over = {}) => ({
@@ -180,4 +180,43 @@ test('the form route round-trips through the query string', () => {
   // A remoteId needing escaping survives the trip (the charset allows `.`).
   assert.deepEqual(routeFromSearch(searchForRoute({ view: 'edit', remoteId: 'a.b-c_d' })),
     { view: 'edit', remoteId: 'a.b-c_d' });
+});
+
+// ── the mirror advertisement's two decisions ─────────────────────────
+
+// PINS: THE CHECKBOX IS THE WHOLE PREDICATE. The form keeps the root and the
+// exclude text so that unticking and re-ticking does not lose what was typed —
+// which is exactly why an unticked box must still send `null` rather than
+// whatever those fields happen to hold.
+test('mirrorPayload is null when the box is unticked, whatever else the form holds', () => {
+  for (const over of [{}, { root: '/srv', exclude: '/proc\n/dev' }, { root: '', exclude: '' }]) {
+    assert.equal(mirrorPayload({ on: false, root: '/', exclude: '', ...over }), null);
+  }
+  // A missing form object is opted out too, not a crash.
+  assert.equal(mirrorPayload(undefined), null);
+  assert.equal(mirrorPayload(null), null);
+});
+
+// PINS THE TEXTAREA → WIRE RULE. NEWLINES ONLY: a path may legally contain a
+// comma or a space, so splitting on either would cut one in half. And a trailing
+// newline — which every operator leaves — must not become an empty exclude
+// entry, which the backend would refuse with a 400 about `exclude[3]`.
+test('mirrorPayload splits on newlines only, trims, and drops blank lines', () => {
+  const p = mirrorPayload({ on: true, root: '  /srv/app  ', exclude: '/proc\n  /dev  \n\n/sys\n' });
+  assert.deepEqual(p, { root: '/srv/app', exclude: ['/proc', '/dev', '/sys'] });
+
+  assert.deepEqual(mirrorPayload({ on: true, root: '/', exclude: '' }).exclude, [],
+    'an empty textarea is no entries, not one empty entry');
+  assert.deepEqual(mirrorPayload({ on: true, root: '/', exclude: '/a b,/c' }).exclude, ['/a b,/c'],
+    'a space or a comma is part of the path, never a separator');
+});
+
+// PINS: the badge appears only for a remote that opted in — a badge on every
+// card is a badge on none — and it names the ROOT, which is the one thing an
+// operator scans a card for.
+test('mirrorSummary is null for an opted-out remote and names the root otherwise', () => {
+  assert.equal(mirrorSummary(remote()), null, 'no mirror field at all');
+  assert.equal(mirrorSummary(remote({ mirror: null })), null);
+  assert.equal(mirrorSummary(remote({ mirror: { root: '/srv/app', exclude: ['/proc'] } })), 'mirror /srv/app');
+  assert.equal(mirrorSummary(remote({ mirror: { root: '/', exclude: [] } })), 'mirror /');
 });

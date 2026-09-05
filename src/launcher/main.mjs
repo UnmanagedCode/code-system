@@ -84,7 +84,8 @@ export function parseArgs(argv) {
   if (STORE_BACKED.has(o.kind) && (o.remotes.size > 0 || o.mirrors.size > 0)) {
     throw new UsageError(
       `--remote/--mirror/--exclude are not accepted for kind '${o.kind}':`
-      + ' its targets come from the code-system config store, one file per remote');
+      + ' its targets AND their mirror advertisements come from the code-system config store,'
+      + ' one file per remote — set the mirror on the remote\'s card, under Advanced');
   }
   return o;
 }

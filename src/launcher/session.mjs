@@ -504,14 +504,19 @@ export class Session {
 
   // ── describeRemote ─────────────────────────────────────────────────
 
-  #describeRemote(f, remote) {
+  // `async` because the store-backed source reads the record; `handle` returns
+  // this promise into the serialised frame chain, whose existing catch reports a
+  // throw. THE SINGLE PLACE A DESCRIPTOR IS SHAPED: a source that advertises
+  // nothing yields a frame with NEITHER field, which §2.1 calls a valid
+  // "I advertise nothing".
+  async #describeRemote(f, remote) {
     const id = String(f.id);
     if (!this.#caps.remoteDescriptors) {
       // cc reads this as "I advertise nothing" rather than failing the session.
       this.#fail(id, 'EUNSUPPORTED', 'this provider advertises no mirror descriptors');
       return;
     }
-    const m = this.#source.mirrorFor(remote?.remoteId ?? null);
+    const m = await this.#source.mirrorFor(remote?.remoteId ?? null);
     this.#write({
       type: 'remoteDescriptor',
       id,

@@ -21,6 +21,16 @@ out-of-loop). A bound `docker` run:
 | fail | **10** — 2 capability, 6 flag, 2 a real defect (below) |
 | skip | **4** — exactly the `IS_REFERENCE_PROVIDER` set in [host-kind-and-conformance.md](host-kind-and-conformance.md) |
 
+> **The harness has since moved, and the gate currently FAILS on that alone.**
+> Measured 2026-09-05 against `code-conductor_worktree_systems`: the battery
+> reports **55** rows, not 51, and four rows fail unlisted — `detach ends the
+> operation and kills nothing` and `a redirected background job outlives its
+> command`, in both capability configurations. **Pre-existing and unrelated to
+> any code-system change**: `npm run conformance` (`host`) fails the same three
+> `detach`/background rows, and the numbers below are identical at
+> `0e3c81c` and after card 2026-0017. Re-read the manifest against the current
+> suite; do not edit the counts to match.
+
 **"32 rows exercise the transport" means 32 rows REACH IT AND PASS**, and the
 definition matters: of the 37 passes, **5 exercise no provider of ours**
 (`parseFindLines …`, `an unrecognised field on a remoteDescriptor …` — which
@@ -198,6 +208,15 @@ so `sys.connect()` fails. No design satisfies both cc's fixtures and the
 `StoreRemoteSource.lookup` gate: any flag-backed target source on a shipped
 store-backed kind is a **second remote path around the single `ENOREMOTE`
 chokepoint**. Recorded as a consequence, not a gap to close.
+
+Two of those six are the mirror rows, and they stay unreachable for the SAME
+reason now that `docker`/`ssh` advertise `remoteDescriptors: true` (card
+2026-0017): the advertisement comes from `record.mirror` in the store, not from
+`--mirror`/`--exclude`. **Measured 2026-09-05, daemon 29.7.2: the flip moved no
+manifest row** — the run before and after it is outcome-identical, row for row.
+§10's third-party relaxation tolerates `remotes`/`remoteDescriptors` as a
+superset, and the two cc-side mirror rows skip on `IS_REFERENCE_PROVIDER`
+whatever the provider's shape.
 
 Related: §10 says *"`CC_CONFORMANCE_REMOTE_ID` presupposes `--remote`"*. Our
 bound run passes **no `--remote` at all** and clears the harness's bound-run

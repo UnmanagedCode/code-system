@@ -77,7 +77,9 @@ export class FlagRemoteSource {
     return { ok: true, remote: { remoteId, config: {}, root } };
   }
 
-  mirrorFor(remoteId) {
+  // `async` only so BOTH sources present the same shape and session.mjs never
+  // learns which one it has. Nothing here does I/O.
+  async mirrorFor(remoteId) {
     return this.#mirrors.get(remoteId ?? '') ?? { mirrorRoot: null, exclude: [] };
   }
 }
@@ -92,8 +94,13 @@ export class StoreRemoteSource {
   // flapped as remotes were added would be memoised wrong, and the launch argv
   // is a function of (install path, kind) only so no re-registration happens
   // when a remote appears.
+  //
+  // The same holds for `hasMirrors`: the advertisement is per remote and lives
+  // in the FRAME, so this is constant too. Neither method has a reader in
+  // `src/` — the launcher's capabilities come from the kind (main.mjs) — they
+  // are this source's stated interface, and the tests' doubles implement them.
   hasRemotes() { return true; }
-  hasMirrors() { return false; }
+  hasMirrors() { return true; }
   ids() { return []; }
 
   async lookup(remoteId) {
@@ -134,7 +141,27 @@ export class StoreRemoteSource {
     };
   }
 
-  mirrorFor() { return { mirrorRoot: null, exclude: [] }; }
+  // THE PER-REMOTE ADVERTISEMENT, read fresh off the record like everything
+  // else this source answers. `record.mirror` is null for a remote the operator
+  // did not opt in, and the empty advertisement is what cc reads as "I advertise
+  // nothing" — the same path a provider without the capability takes.
+  //
+  // PASSED THROUGH UNVALIDATED, exactly as `config` is: src/mirror.mjs validates
+  // at the store's front door, where the backend is the only writer. A
+  // hand-edited store file gets cc's own MIRROR_ADVERTISEMENT_INVALID (502)
+  // quoting the offending value, which is the authority that owns the rule.
+  //
+  // A SECOND READ, not a field on `lookup()`'s ResolvedRemote: the fence and the
+  // advertisement are different claims (see the typedef above), and cc asks for
+  // this once per connection generation.
+  async mirrorFor(remoteId) {
+    if (remoteId === null || remoteId === undefined) return { mirrorRoot: null, exclude: [] };
+    const r = await readRemote(remoteId);
+    if (!r.ok || r.record?.kind !== this.#kind) return { mirrorRoot: null, exclude: [] };
+    const m = r.record.mirror;
+    if (!m || typeof m !== 'object') return { mirrorRoot: null, exclude: [] };
+    return { mirrorRoot: m.root ?? null, exclude: Array.isArray(m.exclude) ? m.exclude : [] };
+  }
 }
 
 // THE OPERATOR GATE, launcher side — the whole enforcement of `record.enabled`.

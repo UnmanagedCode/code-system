@@ -10,8 +10,8 @@
 // under code-conductor.
 
 import {
-  GATE_COPY, GATE_SHARED_COPY, baselineNotice, cardAlert, gateStatus, probeStatus,
-  routeFromSearch, searchForRoute,
+  GATE_COPY, GATE_SHARED_COPY, baselineNotice, cardAlert, gateStatus, mirrorPayload,
+  mirrorSummary, probeStatus, routeFromSearch, searchForRoute,
 } from './cardState.mjs';
 
 function el(tag, attrs = {}, ...children) {
@@ -32,6 +32,10 @@ function el(tag, attrs = {}, ...children) {
 const state = {
   remotes: [],
   kinds: [],
+  // Served by the backend from src/mirror.mjs, so the Advanced group's prefill
+  // has ONE source. The fallback only has to keep a render before the first
+  // fetch from throwing.
+  mirrorDefaults: { root: '/', exclude: [] },
   registration: null,
   route: { view: 'list' },
   draft: null,      // the open form's field values, or null
@@ -93,6 +97,7 @@ async function refresh({ periodic = false } = {}) {
     ]);
     state.remotes = remotes.remotes;
     state.kinds = remotes.kinds;
+    if (remotes.mirrorDefaults) state.mirrorDefaults = remotes.mirrorDefaults;
     state.registration = registration;
     if (!periodic || !state.draft) render();
     document.getElementById('updated').textContent = `updated ${new Date().toLocaleTimeString()}`;
@@ -224,12 +229,59 @@ function formFor(mode) {
   // VALUE, not the presence of the field — this form has no dirty-tracking and
   // always PATCHes its config, and `sameConfig` in src/api.mjs is what decides.
   // So this sentence must not promise more than that comparison delivers.
+  //
+  // SCOPED TO THE CONNECTION FIELDS. The Advanced group below is outside
+  // `sameConfig` on the backend precisely because a mirror change names the same
+  // target, so the sentence must not claim it too.
   if (mode === 'edit') {
     fields.push(el('div', { class: 'note' },
-      'Changing a value below the label switches this remote off: a different config may point'
+      'Changing a connection value above switches this remote off: a different config may point'
       + ' at a different target entirely. Saving with every value unchanged — including editing'
-      + ' only the label — does not.'));
+      + ' only the label, or only the Advanced settings below — does not.'));
   }
+
+  // THE MIRROR ADVERTISEMENT, collapsed by default: it is off for every remote
+  // that has not opted in, and `<details>` is closed unless `open` is set. An
+  // already-mirrored remote opens it, so an operator editing one sees what is
+  // stored without hunting for it.
+  const m = draft.mirror;
+  fields.push(el('details', { class: 'advanced', open: m.on },
+    el('summary', {}, 'Advanced'),
+    el('div', { class: 'field check' },
+      el('input', {
+        id: 'f-mirror-on', type: 'checkbox', checked: m.on,
+        // WRITTEN BEFORE render(), like the kind <select>: the re-render reads
+        // the draft, so an update after it would be a frame late.
+        onchange: (e) => { m.on = e.target.checked === true; render(); },
+      }),
+      el('label', { for: 'f-mirror-on' }, 'Advertise a mirror root to code-conductor'),
+    ),
+    el('div', { class: 'field' },
+      el('label', { for: 'f-mirror-root' }, 'Mirror root'),
+      el('input', {
+        id: 'f-mirror-root', value: m.root, placeholder: '/', disabled: !m.on,
+        oninput: e => { m.root = e.target.value; },
+      }),
+      el('span', { class: 'hint' },
+        'code-conductor\'s session root becomes the image of this path, so a worker can read and'
+        + ' edit anywhere under it. / is the whole target.'),
+    ),
+    el('div', { class: 'field' },
+      el('label', { for: 'f-mirror-exclude' }, 'Excluded paths'),
+      // A TEXTAREA'S CONTENT IS A CHILD NODE, not a `value` attribute.
+      el('textarea', {
+        id: 'f-mirror-exclude', rows: 3, disabled: !m.on,
+        oninput: e => { m.exclude = e.target.value; },
+      }, m.exclude),
+      el('span', { class: 'hint' },
+        'One absolute path per line, in normal form. These are never carried across — the defaults'
+        + ' are the target\'s pseudo-filesystems.'),
+    ),
+    el('span', { class: 'hint' },
+      'code-conductor asks for this once per provider connection, so a change here reaches an'
+      + ' already-running session only after the System reconnects. Changing it does not switch'
+      + ' this remote off.'),
+  ));
 
   return el('div', { class: 'form' },
     ...fields,
@@ -239,6 +291,19 @@ function formFor(mode) {
       el('button', { disabled: submitting, onclick: () => go({ view: 'list' }) }, 'Cancel'),
     ),
   );
+}
+
+// The FORM's mirror state, which is not the wire shape: `exclude` is the raw
+// textarea text, and `cardState.mirrorPayload` is what turns it back. An
+// opted-out remote still gets the served defaults, so ticking the box offers
+// them rather than an empty form.
+function mirrorDraft(remote) {
+  const d = state.mirrorDefaults;
+  const m = remote?.mirror;
+  if (m && typeof m === 'object') {
+    return { on: true, root: String(m.root ?? ''), exclude: (m.exclude ?? []).join('\n') };
+  }
+  return { on: false, root: String(d.root ?? '/'), exclude: (d.exclude ?? []).join('\n') };
 }
 
 // A busy key for the create form, which has no remoteId yet. Leading space, so
@@ -259,10 +324,14 @@ async function submit(mode) {
         kind: draft.kind,
         label: draft.label.trim() || undefined,
         config,
+        mirror: mirrorPayload(draft.mirror),
       });
     } else {
+      // ALWAYS SENT, like `config`: the form has no dirty-tracking. Safe because
+      // the backend keeps `mirror` outside `sameConfig`, so re-sending it
+      // unchanged cannot reset the gate.
       await api('PATCH', `api/remotes/${encodeURIComponent(draft.remoteId)}`,
-        { label: draft.label, config });
+        { label: draft.label, config, mirror: mirrorPayload(draft.mirror) });
     }
     go({ view: 'list' });
   });
@@ -306,6 +375,7 @@ function controls(remote) {
           kind: remote.kind,
           label: remote.label ?? '',
           config: { ...remote.config },
+          mirror: mirrorDraft(remote),
         };
         go({ view: 'edit', remoteId: remote.remoteId });
       },
@@ -352,9 +422,12 @@ function card(remote) {
 
   const desc = descriptorFor(remote.kind);
   const baselineState = remote.baseline?.state ?? 'unknown';
+  const mirror = mirrorSummary(remote);
   c.appendChild(el('div', { class: 'meta' },
     el('span', { class: `badge kind-${remote.kind}` }, desc?.label ?? remote.kind),
     el('span', { class: `badge base-${baselineState}` }, `baseline ${baselineState}`),
+    // Only when opted in — a badge on every card is a badge on none.
+    mirror ? el('span', { class: 'badge mirror' }, mirror) : null,
   ));
 
   // The transport's OWN words about what it found, never a paraphrase: for ssh
@@ -455,7 +528,9 @@ function render() {
 
 document.getElementById('refresh').addEventListener('click', () => refresh());
 document.getElementById('add').addEventListener('click', () => {
-  state.draft = { remoteId: '', kind: state.kinds[0]?.kind ?? 'docker', label: '', config: {} };
+  state.draft = {
+    remoteId: '', kind: state.kinds[0]?.kind ?? 'docker', label: '', config: {}, mirror: mirrorDraft(null),
+  };
   go({ view: 'add' });
 });
 

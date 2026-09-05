@@ -136,6 +136,42 @@ export function baselineNotice(remote) {
   };
 }
 
+// ── the mirror advertisement ─────────────────────────────────────────
+//
+// The form holds `{on, root, exclude}` where `exclude` is the RAW TEXTAREA TEXT;
+// the wire holds `null` or `{root, exclude:[…]}`. Two shapes, deliberately: the
+// operator is editing lines of text, and turning that into the wire shape is a
+// decision (what counts as an entry, what a trailing newline means) rather than
+// a rendering. So it lives here, pure and tested.
+
+/**
+ * @param {{on:boolean, root:string, exclude:string}} formMirror
+ * @returns {null|{root:string, exclude:string[]}}
+ */
+export function mirrorPayload(formMirror) {
+  // UNTICKED IS `null`, whatever else the form holds. A half-typed root behind a
+  // closed checkbox is not an advertisement.
+  if (!formMirror?.on) return null;
+  // NEWLINE-SEPARATED ONLY. A path may legally contain a comma or a space, so
+  // splitting on either would silently cut one in half.
+  const exclude = String(formMirror.exclude ?? '')
+    .split('\n')
+    .map(s => s.trim())
+    .filter(Boolean);
+  return { root: String(formMirror.root ?? '').trim(), exclude };
+}
+
+/**
+ * The card badge for an opted-in remote. The ROOT only: the exclude count is not
+ * what an operator scans a card for, and the form is one click away.
+ * @returns {null|string}
+ */
+export function mirrorSummary(remote) {
+  const m = remote?.mirror;
+  if (!m || typeof m !== 'object' || typeof m.root !== 'string') return null;
+  return `mirror ${m.root}`;
+}
+
 // ── routing ──────────────────────────────────────────────────────────
 //
 // QUERY STRING ONLY, never a path segment. cc's proxy guarantees a trailing

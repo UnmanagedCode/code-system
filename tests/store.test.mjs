@@ -135,6 +135,21 @@ test('an absent and a malformed record are distinguished, and neither throws', a
   });
 });
 
+// PINS `mirror`'s place in the record: a TOP-LEVEL field beside `enabled`,
+// defaulting to null (opted out), and carried through verbatim when supplied.
+// makeRecord rebuilds from a fixed field list, so a field left off its
+// destructure is SILENTLY DROPPED — the hazard that once switched a remote off
+// on every rename.
+test('makeRecord defaults mirror to null and carries a supplied one through verbatim', () => {
+  const bare = makeRecord({ remoteId: 'a', kind: 'docker', config: { container: 'c' } });
+  assert.equal(bare.mirror, null, 'a remote that did not opt in advertises nothing');
+  assert.equal(bare.schema, 2, 'the mirror field arrived with schema 2');
+
+  const mirror = { root: '/', exclude: ['/proc', '/dev', '/sys'] };
+  const withMirror = makeRecord({ remoteId: 'a', kind: 'docker', config: {}, mirror });
+  assert.deepEqual(withMirror.mirror, mirror, 'not dropped, not reshaped, not reordered');
+});
+
 test('migrate quarantines what it cannot read, leaves good records alone, and is idempotent', async (t) => {
   await withStore(t, async () => {
     await writeRemote(makeRecord({ remoteId: 'good', kind: 'docker', config: { container: 'g' } }));
@@ -152,5 +167,100 @@ test('migrate quarantines what it cannot read, leaves good records alone, and is
     const second = await migrate();
     assert.deepEqual(second.quarantined, [], 'running it again is a no-op');
     assert.equal(second.scanned, 1);
+  });
+});
+
+// ── the schema 1 → 2 upgrade ─────────────────────────────────────────
+//
+// A schema-1 record predates `mirror` and advertised nothing, so the upgrade
+// writes `mirror: null` — the same "I advertise nothing" it already had. The
+// pass runs BEFORE the quarantine branch and reads raw JSON itself, because
+// readRemote refuses schema 1 with reason 'schema', which is a quarantine
+// reason: ordered the other way, every existing remote would be moved aside
+// instead of upgraded.
+
+// A schema-1 record as this store used to write one: everything the current
+// readers expect, minus `mirror`.
+const schema1 = (remoteId, over = {}) => ({
+  schema: 1,
+  remoteId,
+  kind: 'docker',
+  label: 'Legacy',
+  config: { container: 'app' },
+  enabled: true,
+  baseline: { state: 'ok', fingerprint: 'f', missing: [], checkedAt: '2026-01-01T00:00:00.000Z' },
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+  ...over,
+});
+
+// PINS THE UPGRADE ITSELF: the schema moves, `mirror: null` appears, and NOTHING
+// ELSE changes. An upgrade that quietly reset the gate or the baseline would
+// switch off every remote an operator had connected.
+test('a schema-1 record is upgraded in place, gaining mirror:null and nothing else', async (t) => {
+  await withStore(t, async () => {
+    const before = schema1('legacy');
+    await fs.mkdir(remotesDir(), { recursive: true });
+    await fs.writeFile(path.join(remotesDir(), 'legacy.json'), JSON.stringify(before, null, 2));
+
+    const r = await migrate();
+    assert.deepEqual(r.upgraded, ['legacy']);
+    assert.deepEqual(r.quarantined, [], 'an upgradable record is never quarantined');
+
+    const read = await readRemote('legacy');
+    assert.equal(read.ok, true, 'and it reads at the current schema afterwards');
+    assert.deepEqual(read.record, { ...before, schema: 2, mirror: null });
+  });
+});
+
+// PINS IDEMPOTENCE WITH NO MARKER FILE: the "already applied" self-check is the
+// store's own contents, so a second run must not rewrite a byte.
+test('running migrate twice upgrades once and leaves the file untouched', async (t) => {
+  await withStore(t, async () => {
+    await fs.mkdir(remotesDir(), { recursive: true });
+    const file = path.join(remotesDir(), 'legacy.json');
+    await fs.writeFile(file, JSON.stringify(schema1('legacy'), null, 2));
+
+    assert.deepEqual((await migrate()).upgraded, ['legacy']);
+    const afterFirst = await fs.readFile(file, 'utf8');
+
+    const second = await migrate();
+    assert.deepEqual(second.upgraded, [], 'the second run upgrades nothing');
+    assert.deepEqual(second.quarantined, []);
+    assert.equal(await fs.readFile(file, 'utf8'), afterFirst, 'and rewrites no bytes');
+  });
+});
+
+// PINS THAT THE UPGRADE IS EXACT-VERSION, and that adding it did not swallow the
+// quarantine branch: a record from the future is still moved aside, and a
+// malformed one still is too rather than throwing at backend boot.
+test('a future schema and a malformed record are still quarantined, not upgraded', async (t) => {
+  await withStore(t, async () => {
+    await fs.mkdir(remotesDir(), { recursive: true });
+    await fs.writeFile(path.join(remotesDir(), 'future.json'),
+      JSON.stringify({ ...schema1('future'), schema: 3 }));
+    await fs.writeFile(path.join(remotesDir(), 'junk.json'), '{not json');
+
+    const r = await migrate();
+    assert.deepEqual(r.upgraded, [], 'neither is at schema 1');
+    assert.deepEqual(r.quarantined.map(q => q.remoteId).sort(), ['future', 'junk']);
+    assert.deepEqual(await fs.readdir(remotesDir()), []);
+  });
+});
+
+// PINS THE GUARD THAT WOULD OTHERWISE CRASH BACKEND BOOT: writeRemote addresses
+// the file BY the record's remoteId, so rewriting a record whose id does not
+// match its filename would write the wrong file — or throw on an unaddressable
+// id, inside the pass that runs before the server listens.
+test('a schema-1 record whose remoteId does not match its filename is quarantined, not rewritten', async (t) => {
+  await withStore(t, async () => {
+    await fs.mkdir(remotesDir(), { recursive: true });
+    await fs.writeFile(path.join(remotesDir(), 'alpha.json'),
+      JSON.stringify(schema1('../escape')));
+
+    const r = await migrate();
+    assert.deepEqual(r.upgraded, []);
+    assert.deepEqual(r.quarantined.map(q => q.remoteId), ['alpha']);
+    assert.deepEqual(await fs.readdir(remotesDir()), [], 'and nothing was written under another name');
   });
 });

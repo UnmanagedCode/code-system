@@ -32,7 +32,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { remotesDir } from './paths.mjs';
 
-export const SCHEMA = 1;
+export const SCHEMA = 2;
 
 // A remoteId is TWO things at once, and both constrain it: it is a filename
 // stem, and it is the entire hand-off contract to cc — a user reads it off the
@@ -155,7 +155,12 @@ export async function deleteRemote(id) {
 // `enabled` DEFAULTS FALSE, which is also what a newly created remote gets: an
 // ssh remote genuinely has no master until `connect` runs, and a default-on
 // gate would claim a state nobody established.
-export function makeRecord({ remoteId, kind, label, config, enabled = false, baseline = null, createdAt }) {
+//
+// `mirror` SITS BESIDE `enabled`, not inside `config`, for the same reason
+// `enabled` does: it is KIND-AGNOSTIC OPERATOR POLICY, not connection details
+// the kind owns and the store must never inspect. `null` is opted out.
+// src/mirror.mjs validates it at the API's front door.
+export function makeRecord({ remoteId, kind, label, config, enabled = false, mirror = null, baseline = null, createdAt }) {
   const now = new Date().toISOString();
   return {
     schema: SCHEMA,
@@ -164,6 +169,7 @@ export function makeRecord({ remoteId, kind, label, config, enabled = false, bas
     label: label || remoteId,
     config: config ?? {},
     enabled: enabled === true,
+    mirror: mirror ?? null,
     baseline: baseline ?? { state: 'unknown', fingerprint: null, missing: [], checkedAt: null },
     createdAt: createdAt ?? now,
     updatedAt: now,

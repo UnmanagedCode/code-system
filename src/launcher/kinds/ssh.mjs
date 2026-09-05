@@ -445,7 +445,9 @@ export function createSshTransport({ cli } = {}) {
     // added would be memoised wrong. One row serves every host.
     remotes: true,
 
-    remoteDescriptors: false,
+    // ALWAYS TRUE, with the per-remote answer in the frame. The argument is
+    // docker's, and lives once at kinds/docker.mjs → remoteDescriptors.
+    remoteDescriptors: true,
 
     validateConfig(raw) {
       const o = asObject(raw);
