@@ -94,8 +94,9 @@ file.
 
 Carried by the four **request** frames only — `exec`, `readFile`, `writeFile`,
 `describeRemote` — and by nothing else. An id is bound to one remote for its
-whole lifetime; `signal`, `close`, `data` and `end` are addressed by `id` alone
-and we never look for a `remoteId` on them.
+whole lifetime; `signal`, `close`, `detach`, `data` and `end` are addressed by
+`id` alone and we never look for a `remoteId` on them
+(`systems-protocol.md:329-333` enumerates exactly those five).
 
 **The gate is therefore checked when an id is BOUND, not per chunk.** A
 `writeFile` whose opening frame was already routed completes and lands the file
@@ -127,9 +128,41 @@ a torn write" for `atomic: true`.
 | `docker` record whose container **does not exist** | `ENOREMOTE`, id-addressed, naming the **configured** container |
 | path or non-placeholder `cwd` outside a fenced remote's root | `EACCES`, id-addressed |
 | `describeRemote` without `remoteDescriptors` | `EUNSUPPORTED`, id-addressed |
+| `detach` for a live **`exec`** id | the operation ENDS: deadline cancelled, **no further frames** for it (`exit` included), the command and anything it backgrounded **left running**, and **nothing reaped** — here or at shutdown |
+| `detach` for a `readFile`/`writeFile` id, or an unknown one | **dropped** — `exec` ids only |
 | a frame for an unknown or already-settled id | **dropped**, not an error |
 | an unknown frame **type** | **ignored** — the contract's extension point |
 | a malformed line, or one past `MAX_LINE_BYTES` | `EPROTO`, **id-less**, then exit non-zero |
+
+### `detach` — the frame `close` cannot substitute for
+
+`close` is normatively *abandon and kill hard*, plus the far-side reap
+(`docs/architecture.md` → "Shutdown and reaping"). `detach` is the opposite and
+`close` cannot say it: **the operation is over and nothing is to be killed**
+(`systems-protocol.md` §5, `:374-388`). We answer it in `Session.#detach`.
+
+- **Where it comes from.** cc settles a **redirected shell command** on its own
+  closing sentinel, not on our `exit` frame, and sends `detach` then (§5
+  `:437-456`). **The `exit` may arrive later, or never** — which is why we report
+  `exit` on the child's `'close'`, and why moving that to process-exit would be a
+  regression, not a promptness win (§5 measured up to 64 KB of stdout lost that
+  way).
+- **The MUST 3 carve-out, and its mechanism.** MUST 3's exit reap covers
+  operations still **open**; a detached exec is closed and is deliberately
+  outside it (§1 `:40-57`, §11 `:859-866`). Our implementation of that carve-out
+  is the `#execs.delete(id)` in `#detach`, because `Session.shutdown()` iterates
+  `#execs` — the deletion is the carve-out, not bookkeeping.
+- **Streams stay attached**, reading and discarding: §5 measured that pausing
+  them blocks a survivor still writing and destroying them kills it with SIGPIPE.
+  `state.closed` is what silences the frames.
+- **`detach` is not a capability.** It is absent from §2's classification table
+  (`:186-198`), no launch flag gates it, and no `capabilities` key toggles it —
+  every `exec` provider owes it.
+- **It is MUST 5 (`:59-64`) and it is unenforceable at runtime**: §5 `:386-388`
+  says a provider that ignores it leaves the operation open with its deadline
+  armed and reaps the command when that fires, and **cc cannot detect that**.
+  cc's conformance battery *can* — which is the only reason the omission ever
+  surfaced. It is implemented, not tolerated.
 
 **Id-addressing is a MUST, not a nicety.** An id-less `error` frame is
 connection-level and would fail every *other* target's in-flight work

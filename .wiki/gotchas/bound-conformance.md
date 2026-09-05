@@ -7,53 +7,90 @@ battery on `host`; that it carries every other kind is a *seam* argument
 (`protocol.mjs`, `session.mjs` and `fileops.mjs` are kind-agnostic and
 `spawnPlan` is pure). This run **measures the per-kind residue** instead of
 generalising to it. Design in `docs/architecture.md` → "The bound conformance
-run"; every number below was measured on **2026-09-05**,
-against cc `8b7b10bf`, daemon `dell-work` server 29.7.2, `sudo -n docker`.
+run"; every number below was **re-measured on 2026-09-05** against cc `52701bc6`
+(worktree `code-conductor_worktree_systems`), daemon `dell-work` server 29.7.2,
+`sudo -n docker`, after card 2026-0018 implemented the `detach` frame.
 
 ## The outcome, and the coverage it buys
 
-The battery is **51 test executions** (17 in-loop × 2 `CAPABILITY_CONFIGS` + 17
+The battery is **55 test executions** (19 in-loop × 2 `CAPABILITY_CONFIGS` + 17
 out-of-loop). A bound `docker` run:
 
 | | count |
 |---|---|
-| pass | **37** |
-| fail | **10** — 2 capability, 6 flag, 2 a real defect (below) |
+| pass | **40** |
+| fail | **11** — 2 capability, 6 flag, 2 a real defect (below), 1 close's reap reach (card 2026-0019) |
 | skip | **4** — exactly the `IS_REFERENCE_PROVIDER` set in [host-kind-and-conformance.md](host-kind-and-conformance.md) |
 
-> **The harness has since moved, and the gate currently FAILS on that alone.**
-> Measured 2026-09-05 against `code-conductor_worktree_systems` (card 2026-0018).
-> The battery now reports **55** rows, not the 51 the manifest was written
-> against, and two NEW tests — `detach ends the operation and kills nothing;
-> close kills as far as it reaches` and `a redirected background job outlives its
-> command, in both capability configurations` — are unlisted failures. `detach`
-> appears nowhere in `src/`.
+> **THE 2026-09-05 DRIFT, AND HOW IT WAS RESOLVED (card 2026-0018).**
+> The battery grew **51 → 55** in cc `c4e72feb`, which added two rows inside the
+> `CAPABILITY_CONFIGS` loop (2 × 2 = 4 executions). One was then **renamed** in
+> `a9d02508` — "…in every configuration" → "…in both capability configurations"
+> — so a manifest pinned to the older spelling matches **zero** rows and reports
+> a `row-missing`, not a failure. Check the spelling before the cause.
 >
-> **The two runs fail different counts of the same two tests, and the difference
-> is not a discrepancy:**
+> The rows were **implemented, not listed**, for three reasons worth keeping:
+> `detach` is obliged by MUST 5 (`systems-protocol.md:59-64`) and §5 (`:374-388`)
+> and is deliberately absent from §2's capability table, so no flag turns it off;
+> `tests/conformance.mjs` has **no manifest at all** — it exits with cc's own
+> exit code — so the `host` gate could not have been rescued by one anyway; and
+> the manifest requires a cause that makes an outcome *forced*, which a missing
+> ~30-line frame handler in the file that already owned `close` is not.
 >
-> | Run | Unlisted failures | Which |
-> |---|---|---|
-> | `npm run conformance:docker` | **4** | both tests × both capability configurations |
-> | `npm run conformance` (`host`) | **3** | the same, except `[processGroupSignal:false] a redirected background job …`, which **passes** on `host` |
+> **THE PLAN'S PREMISE — "root cause is single, all four rows are the same
+> missing frame handler" — WAS FALSE FOR ONE ROW, and the next reader will
+> re-reach that conclusion unless they know.** Three rows were the missing
+> handler and went green with it. The fourth,
+> `[processGroupSignal:false] detach ends the operation and kills nothing; close
+> kills as far as it reaches`, only *appeared* to be: its detach assertions come
+> first, so they masked a second, unrelated failure in its **`close`** half
+> (`systems-protocol-conformance.test.mjs:259`, "without group reach close cannot
+> get to it either"). That one is the capability-vs-reap-reach mismatch now
+> listed in the manifest and carded as **2026-0019**. Measured both ways in full
+> bound runs: with `#close`'s reap `[all capabilities]` passes and this row
+> fails; without it, exactly the reverse; **40/11/4 either way**. An earlier
+> assertion in a row can hide a later one — a row's *name* is not its cause.
 >
-> **Pre-existing and unrelated to any code-system change**: both runs are
-> outcome-identical at `0e3c81c` and after card 2026-0017 — 48/3/4 for `host`,
-> 37/14/4 of 55 for the bound docker run, row for row. Re-read the manifest
-> against the current suite; do not edit the counts below to match.
+> **THE DURABLE GOTCHA: a green row under one capability config can be luck, and
+> the bound run is what says which.** Before the fix,
+> `[processGroupSignal:false] a redirected background job outlives its command`
+> passed on `host` and failed on `docker`. Not a discrepancy: on `host` with
+> `processGroupSignal:false` the plan is not `detached`, so the expired
+> deadline's `#terminate` reached only the direct `bash` and the backgrounded job
+> survived *by accident* — and `host`'s `reap` is a no-op. The same row failed on
+> `docker` because `state.terminated` → `#reap`'s `CC_EXEC_TOKEN` scan does reach
+> it. The green was an accident of the kind, not conformance.
+>
+> Pre-existing at `0e3c81c` and unrelated to the mirror work.
 
-**"32 rows exercise the transport" means 32 rows REACH IT AND PASS**, and the
-definition matters: of the 37 passes, **5 exercise no provider of ours**
-(`parseFindLines …`, `an unrecognised field on a remoteDescriptor …` — which
-drives cc's own `mirrorFixtureProvider.mjs` — and the three pure
-`CC_CONFORMANCE_REMOTE_ID` / capability-assertion rows), leaving 37 − 5 = **32**.
-Two further rows REACH the transport and fail (the defect below), so **34 reach
-it at all** — which is the figure card 2026-0014's plan predicted, against a
-different definition. Before this gate either number was zero. `host` reaches and
-passes 42 by the same subtraction.
+**"35 rows exercise the transport" means 35 rows REACH IT AND PASS**, and the
+definition matters: of the 40 passes, **5 exercise no provider of ours**, leaving
+40 − 5 = **35**. Those five are PASSES, and naming them beats describing them —
+one of the skips is easy to mistake for a sixth:
 
-Wall clock **~17 s**, against cc's 90 000 ms per-file hang guard and its 60 s
-per-test `--test-timeout` — a **5.3x** margin, printed on every run.
+1. `parseFindLines refuses a malformed entry rather than skipping it`
+2. `an unrecognised field on a remoteDescriptor is ignored, not an error` — drives
+   cc's own `mirrorFixtureProvider.mjs`
+3. `an empty or blank CC_CONFORMANCE_REMOTE_ID is unbound, never bound to a nonsense target`
+4. `a bound run is refused at the handshake unless the provider serves that target`
+5. `the third-party capability assertion tolerates a superset but pins the toggle`
+
+**Not among them:** `CC_CONFORMANCE_REMOTE_ID binds the fixture handle, and an
+explicit remoteId still wins` is a **skip**, already counted in the skip bucket —
+subtracting it here would double-count it.
+
+Three further rows REACH the transport and fail on its BEHAVIOUR — the two
+defect rows below, and the `close`-reach row (card 2026-0019) — so **38 reach it
+at all**. The two `[all capabilities]` capability rows reach it too and are
+deliberately NOT counted: they fail on the advertisement, not on anything the
+transport did. Before this gate either number was zero. `host` reaches and passes
+**46** by the same subtraction (51 pass / 0 fail / 4 skip of 55).
+
+Wall clock **15.5 – 21.6 s** across three runs on one machine (15 529 / 21 509 /
+21 569 ms), against cc's 90 000 ms per-file hang guard and its 60 s per-test
+`--test-timeout` — a **4.2 – 5.8x** margin, printed on every run. **The spread is
+the point: do not pin a single figure here**, and read the margin the runner
+prints rather than this line.
 **`CC_TEST_FILE_KILL_MS` is never set**: raising a guard pre-emptively is how a
 slow run becomes invisible. The runner warns instead, above 60 000 ms.
 
@@ -285,11 +322,21 @@ which is why the seam argument could never have surfaced this.
 
 ## The pin, and why the result is not stale
 
-`docs/` cites cc `8b7b10bf`. Measured: `tests/systems-protocol-conformance.test.mjs`
-(sha256 `5ec8d055…`) and `tests/referenceProviderHarness.mjs` (sha256
-`50b5b2e1…`) are **byte-identical** from `8b7b10bf` through the systems branch's
-HEAD at the time, `346d1a1d`. Run against `8b7b10bf` — one pin in the tree — and
-it is that byte-identity, not the pin, that says the result still holds.
+**The suite file has MOVED since `8b7b10bf`; the harness has not.** Re-measured
+2026-09-05 at cc `52701bc6` (worktree `code-conductor_worktree_systems`):
+
+| file | sha256 at `52701bc6` | was |
+|---|---|---|
+| `tests/systems-protocol-conformance.test.mjs` | `99d766848ff851c64be81c32a5242e997b8a3ffbfaaa88adda3a3bf58db25f37` | `5ec8d055…` at `8b7b10bf` |
+| `tests/referenceProviderHarness.mjs` | `50b5b2e1fd56a65951919c2b7de6a3f76553cbef0386da4c84e0ce4e38064313` | unchanged |
+
+So the **capability matrix and the two config names did not move** — only the
+battery did (51 → 55, above). It is that pair of hashes, not the commit, that
+says whether a recorded result still holds; re-take them before trusting one.
+
+**The other `8b7b10bf` citations in `docs/` are about `env`,
+`IS_REFERENCE_PROVIDER` and registration** and were NOT re-measured here. Do not
+re-point a pin you have not re-verified.
 
 **Clone the pin; never point `CC_CHECKOUT` at a live cc worktree** — the recipe
 and the before/after `git status` check are in

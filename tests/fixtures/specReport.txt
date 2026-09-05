@@ -1,68 +1,71 @@
-
-✖ [all capabilities] the handshake carries the protocol version, the provider name and the capabilities (62.284828ms)
-✔ [all capabilities] exec runs argv and shell forms, and reports stdout, stderr and the exit code (543.533996ms)
-✖ [all capabilities] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (190.410862ms)
-✔ [all capabilities] a command that cannot start carries the provider's own error code (179.499555ms)
-✔ [all capabilities] a timeout is exit 124 with timedOut set (336.549205ms)
-✖ [all capabilities] process-group signalling: the capability decides whether grandchildren are reachable (368.86426ms)
-✔ [all capabilities] concurrent execs are multiplexed by id and never mix their output (406.268883ms)
-✔ [all capabilities] the exec output caps behave identically to the local runner (414.17727ms)
-✔ [all capabilities] stdin:'ignore' hands the command a closed stdin instead of a wait (176.680287ms)
-✔ [all capabilities] readFile and writeFile round-trip, including a payload past one chunk (751.689821ms)
-✔ [all capabilities] writeFile honours atomic and exclusive, and refuses the pair (392.17268ms)
-✔ [all capabilities] readFile reports absence, a directory, and an unreadable file (417.815574ms)
-✔ [all capabilities] a read above the protocol's per-file cap is refused, not streamed (159.8631ms)
-✔ [all capabilities] stat is derived from exec and matches what fs.stat reports (627.477807ms)
-✔ [all capabilities] readDir is derived from exec, reports kinds, and refuses a file (431.897135ms)
-✔ [all capabilities] a filename containing a newline is an ERROR, never a silently dropped entry (181.519729ms)
-✔ [all capabilities] realpath, mkdir, removeTree, unlink and chmod are derived and behave like fs (2046.353018ms)
-✔ [processGroupSignal:false] the handshake carries the protocol version, the provider name and the capabilities (61.655501ms)
-✔ [processGroupSignal:false] exec runs argv and shell forms, and reports stdout, stderr and the exit code (533.765774ms)
-✖ [processGroupSignal:false] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (176.918199ms)
-✔ [processGroupSignal:false] a command that cannot start carries the provider's own error code (175.070947ms)
-✔ [processGroupSignal:false] a timeout is exit 124 with timedOut set (324.845759ms)
-✔ [processGroupSignal:false] process-group signalling: the capability decides whether grandchildren are reachable (377.784315ms)
-✔ [processGroupSignal:false] concurrent execs are multiplexed by id and never mix their output (437.934076ms)
-✔ [processGroupSignal:false] the exec output caps behave identically to the local runner (415.59724ms)
-✔ [processGroupSignal:false] stdin:'ignore' hands the command a closed stdin instead of a wait (188.448299ms)
-✔ [processGroupSignal:false] readFile and writeFile round-trip, including a payload past one chunk (787.54225ms)
-✔ [processGroupSignal:false] writeFile honours atomic and exclusive, and refuses the pair (403.089703ms)
-✔ [processGroupSignal:false] readFile reports absence, a directory, and an unreadable file (376.776071ms)
-✔ [processGroupSignal:false] a read above the protocol's per-file cap is refused, not streamed (168.21965ms)
-✔ [processGroupSignal:false] stat is derived from exec and matches what fs.stat reports (611.891761ms)
-✔ [processGroupSignal:false] readDir is derived from exec, reports kinds, and refuses a file (396.937866ms)
-✔ [processGroupSignal:false] a filename containing a newline is an ERROR, never a silently dropped entry (180.086817ms)
-✔ [processGroupSignal:false] realpath, mkdir, removeTree, unlink and chmod are derived and behave like fs (2089.965488ms)
-✔ a provider refuses a corrupted write payload — it never lands a partial file (63.401864ms)
-✖ a bound handle names its remote on exec, readFile and writeFile (65.313968ms)
-✖ an id is bound to one remote for its whole lifetime — follow-on frames carry none (77.380404ms)
-✖ ENOREMOTE is id-addressed: one dead remote is not a dead connection (70.520883ms)
-✖ a request that names NO remote is refused, never answered from a default (60.462707ms)
-﹣ a provider that does not advertise remotes is never handed a remoteId (1.268216ms) # cc-side fixture, pinned to the reference provider: asserts what CC does, not what a provider does
-✔ parseFindLines refuses a malformed entry rather than skipping it (1.583064ms)
-✖ describeRemote round-trips the mirror root and the exclude list (61.77041ms)
-﹣ a provider without the capability advertises no mirror (0.951675ms) # cc-side fixture, pinned to the reference provider: asserts what CC does, not what a provider does
-✖ describeRemote for an unknown remote is an id-addressed ENOREMOTE (68.839748ms)
-✔ an unrecognised field on a remoteDescriptor is ignored, not an error (79.407251ms)
-✔ a write above the protocol cap is refused before a byte reaches the wire (220.816155ms)
-﹣ CC_CONFORMANCE_REMOTE_ID binds the fixture handle, and an explicit remoteId still wins (0.41524ms) # asserts the unset default
-✔ an empty or blank CC_CONFORMANCE_REMOTE_ID is unbound, never bound to a nonsense target (0.249048ms)
-✔ a bound run is refused at the handshake unless the provider serves that target (2.303758ms)
-✔ the third-party capability assertion tolerates a superset but pins the toggle (3.011361ms)
-﹣ every code in the taxonomy is produced by a real failure somewhere in this suite (0.201382ms) # counts producers across rows a third-party run skips
-ℹ tests 51
+✖ [all capabilities] the handshake carries the protocol version, the provider name and the capabilities (57.309585ms)
+✔ [all capabilities] exec runs argv and shell forms, and reports stdout, stderr and the exit code (538.553483ms)
+✖ [all capabilities] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (193.221188ms)
+✔ [all capabilities] a command that cannot start carries the provider's own error code (187.435755ms)
+✔ [all capabilities] a timeout is exit 124 with timedOut set (319.190526ms)
+✖ [all capabilities] process-group signalling: the capability decides whether grandchildren are reachable (370.349589ms)
+✔ [all capabilities] detach ends the operation and kills nothing; close kills as far as it reaches (1484.678701ms)
+✔ [all capabilities] a redirected background job outlives its command, in both capability configurations (976.711937ms)
+✔ [all capabilities] concurrent execs are multiplexed by id and never mix their output (446.703049ms)
+✔ [all capabilities] the exec output caps behave identically to the local runner (398.523026ms)
+✔ [all capabilities] stdin:'ignore' hands the command a closed stdin instead of a wait (163.420127ms)
+✔ [all capabilities] readFile and writeFile round-trip, including a payload past one chunk (801.840107ms)
+✔ [all capabilities] writeFile honours atomic and exclusive, and refuses the pair (424.590799ms)
+✔ [all capabilities] readFile reports absence, a directory, and an unreadable file (397.227515ms)
+✔ [all capabilities] a read above the protocol's per-file cap is refused, not streamed (161.382455ms)
+✔ [all capabilities] stat is derived from exec and matches what fs.stat reports (631.046022ms)
+✔ [all capabilities] readDir is derived from exec, reports kinds, and refuses a file (416.547908ms)
+✔ [all capabilities] a filename containing a newline is an ERROR, never a silently dropped entry (175.436576ms)
+✔ [all capabilities] realpath, mkdir, removeTree, unlink and chmod are derived and behave like fs (2134.899884ms)
+✔ [processGroupSignal:false] the handshake carries the protocol version, the provider name and the capabilities (39.08147ms)
+✔ [processGroupSignal:false] exec runs argv and shell forms, and reports stdout, stderr and the exit code (515.379156ms)
+✖ [processGroupSignal:false] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (160.258759ms)
+✔ [processGroupSignal:false] a command that cannot start carries the provider's own error code (184.768605ms)
+✔ [processGroupSignal:false] a timeout is exit 124 with timedOut set (326.031255ms)
+✔ [processGroupSignal:false] process-group signalling: the capability decides whether grandchildren are reachable (391.110889ms)
+✖ [processGroupSignal:false] detach ends the operation and kills nothing; close kills as far as it reaches (1514.176675ms)
+✔ [processGroupSignal:false] a redirected background job outlives its command, in both capability configurations (1006.233206ms)
+✔ [processGroupSignal:false] concurrent execs are multiplexed by id and never mix their output (452.844346ms)
+✔ [processGroupSignal:false] the exec output caps behave identically to the local runner (401.961989ms)
+✔ [processGroupSignal:false] stdin:'ignore' hands the command a closed stdin instead of a wait (147.359108ms)
+✔ [processGroupSignal:false] readFile and writeFile round-trip, including a payload past one chunk (788.267496ms)
+✔ [processGroupSignal:false] writeFile honours atomic and exclusive, and refuses the pair (402.82396ms)
+✔ [processGroupSignal:false] readFile reports absence, a directory, and an unreadable file (415.346954ms)
+✔ [processGroupSignal:false] a read above the protocol's per-file cap is refused, not streamed (185.981083ms)
+✔ [processGroupSignal:false] stat is derived from exec and matches what fs.stat reports (625.928334ms)
+✔ [processGroupSignal:false] readDir is derived from exec, reports kinds, and refuses a file (395.348848ms)
+✔ [processGroupSignal:false] a filename containing a newline is an ERROR, never a silently dropped entry (168.871873ms)
+✔ [processGroupSignal:false] realpath, mkdir, removeTree, unlink and chmod are derived and behave like fs (2148.940704ms)
+✔ a provider refuses a corrupted write payload — it never lands a partial file (52.617723ms)
+✖ a bound handle names its remote on exec, readFile and writeFile (69.04959ms)
+✖ an id is bound to one remote for its whole lifetime — follow-on frames carry none (71.023823ms)
+✖ ENOREMOTE is id-addressed: one dead remote is not a dead connection (63.966792ms)
+✖ a request that names NO remote is refused, never answered from a default (56.537436ms)
+﹣ a provider that does not advertise remotes is never handed a remoteId (1.522091ms) # cc-side fixture, pinned to the reference provider: asserts what CC does, not what a provider does
+✔ parseFindLines refuses a malformed entry rather than skipping it (1.419251ms)
+✖ describeRemote round-trips the mirror root and the exclude list (65.441797ms)
+﹣ a provider without the capability advertises no mirror (1.202985ms) # cc-side fixture, pinned to the reference provider: asserts what CC does, not what a provider does
+✖ describeRemote for an unknown remote is an id-addressed ENOREMOTE (60.050769ms)
+✔ an unrecognised field on a remoteDescriptor is ignored, not an error (35.735993ms)
+✔ a write above the protocol cap is refused before a byte reaches the wire (219.234341ms)
+﹣ CC_CONFORMANCE_REMOTE_ID binds the fixture handle, and an explicit remoteId still wins (0.269966ms) # asserts the unset default
+✔ an empty or blank CC_CONFORMANCE_REMOTE_ID is unbound, never bound to a nonsense target (0.370882ms)
+✔ a bound run is refused at the handshake unless the provider serves that target (1.424682ms)
+✔ the third-party capability assertion tolerates a superset but pins the toggle (1.957553ms)
+﹣ every code in the taxonomy is produced by a real failure somewhere in this suite (0.134868ms) # counts producers across rows a third-party run skips
+ℹ tests 55
 ℹ suites 0
-ℹ pass 37
-ℹ fail 10
+ℹ pass 40
+ℹ fail 11
 ℹ cancelled 0
 ℹ skipped 4
 ℹ todo 0
-ℹ duration_ms 16380.639843
+ℹ duration_ms 21344.553425
 
 ✖ failing tests:
 
 test at tests/systems-protocol-conformance.test.mjs:91:3
-✖ [all capabilities] the handshake carries the protocol version, the provider name and the capabilities (62.284828ms)
+✖ [all capabilities] the handshake carries the protocol version, the provider name and the capabilities (57.309585ms)
   AssertionError [ERR_ASSERTION]: processGroupSignal: the flag the provider was launched with is what it advertises
   
   false !== true
@@ -84,7 +87,7 @@ test at tests/systems-protocol-conformance.test.mjs:91:3
   }
 
 test at tests/systems-protocol-conformance.test.mjs:124:3
-✖ [all capabilities] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (190.410862ms)
+✖ [all capabilities] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (193.221188ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
   + actual - expected
   
@@ -107,7 +110,7 @@ test at tests/systems-protocol-conformance.test.mjs:124:3
   }
 
 test at tests/systems-protocol-conformance.test.mjs:157:3
-✖ [all capabilities] process-group signalling: the capability decides whether grandchildren are reachable (368.86426ms)
+✖ [all capabilities] process-group signalling: the capability decides whether grandchildren are reachable (370.349589ms)
   AssertionError [ERR_ASSERTION]: with group reach the result claims nothing was left behind
   + actual - expected
   
@@ -129,7 +132,7 @@ test at tests/systems-protocol-conformance.test.mjs:157:3
   }
 
 test at tests/systems-protocol-conformance.test.mjs:124:3
-✖ [processGroupSignal:false] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (176.918199ms)
+✖ [processGroupSignal:false] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (160.258759ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
   + actual - expected
   
@@ -151,10 +154,28 @@ test at tests/systems-protocol-conformance.test.mjs:124:3
     diff: 'simple'
   }
 
-test at tests/systems-protocol-conformance.test.mjs:451:1
-✖ a bound handle names its remote on exec, readFile and writeFile (65.313968ms)
-  Error [SystemError]: provider exited (code 2): code-system launcher: --remote/--mirror/--exclude are not accepted for kind 'docker': its targets come from the code-system config store, one file per remote
-      at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:178:62)
+test at tests/systems-protocol-conformance.test.mjs:205:3
+✖ [processGroupSignal:false] detach ends the operation and kills nothing; close kills as far as it reaches (1514.176675ms)
+  AssertionError [ERR_ASSERTION]: without group reach close cannot get to it either
+  
+  false !== true
+  
+      at strict.wrapped [as equal] (file://<checkout>/tests/dom-assert-tripwire.mjs:79:17)
+      at TestContext.<anonymous> (file://<checkout>/tests/systems-protocol-conformance.test.mjs:259:16)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests/systems-protocol-conformance.test.mjs:559:1
+✖ a bound handle names its remote on exec, readFile and writeFile (69.04959ms)
+  Error [SystemError]: provider exited (code 2): code-system launcher: --remote/--mirror/--exclude are not accepted for kind 'docker': its targets AND their mirror advertisements come from the code-system config store, one file per remote — set the mirror on the remote's card, under Advanced
+      at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
       at ChildProcess._handle.onexit (node:internal/child_process:295:12) {
     code: 'ETRANSPORT',
@@ -162,10 +183,10 @@ test at tests/systems-protocol-conformance.test.mjs:451:1
     stderr: null
   }
 
-test at tests/systems-protocol-conformance.test.mjs:475:1
-✖ an id is bound to one remote for its whole lifetime — follow-on frames carry none (77.380404ms)
-  Error [SystemError]: provider exited (code 2): code-system launcher: --remote/--mirror/--exclude are not accepted for kind 'docker': its targets come from the code-system config store, one file per remote
-      at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:178:62)
+test at tests/systems-protocol-conformance.test.mjs:583:1
+✖ an id is bound to one remote for its whole lifetime — follow-on frames carry none (71.023823ms)
+  Error [SystemError]: provider exited (code 2): code-system launcher: --remote/--mirror/--exclude are not accepted for kind 'docker': its targets AND their mirror advertisements come from the code-system config store, one file per remote — set the mirror on the remote's card, under Advanced
+      at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
       at ChildProcess._handle.onexit (node:internal/child_process:295:12) {
     code: 'ETRANSPORT',
@@ -173,10 +194,10 @@ test at tests/systems-protocol-conformance.test.mjs:475:1
     stderr: null
   }
 
-test at tests/systems-protocol-conformance.test.mjs:488:1
-✖ ENOREMOTE is id-addressed: one dead remote is not a dead connection (70.520883ms)
-  Error [SystemError]: provider exited (code 2): code-system launcher: --remote/--mirror/--exclude are not accepted for kind 'docker': its targets come from the code-system config store, one file per remote
-      at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:178:62)
+test at tests/systems-protocol-conformance.test.mjs:596:1
+✖ ENOREMOTE is id-addressed: one dead remote is not a dead connection (63.966792ms)
+  Error [SystemError]: provider exited (code 2): code-system launcher: --remote/--mirror/--exclude are not accepted for kind 'docker': its targets AND their mirror advertisements come from the code-system config store, one file per remote — set the mirror on the remote's card, under Advanced
+      at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
       at ChildProcess._handle.onexit (node:internal/child_process:295:12) {
     code: 'ETRANSPORT',
@@ -184,10 +205,10 @@ test at tests/systems-protocol-conformance.test.mjs:488:1
     stderr: null
   }
 
-test at tests/systems-protocol-conformance.test.mjs:506:1
-✖ a request that names NO remote is refused, never answered from a default (60.462707ms)
-  Error [SystemError]: provider exited (code 2): code-system launcher: --remote/--mirror/--exclude are not accepted for kind 'docker': its targets come from the code-system config store, one file per remote
-      at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:178:62)
+test at tests/systems-protocol-conformance.test.mjs:614:1
+✖ a request that names NO remote is refused, never answered from a default (56.537436ms)
+  Error [SystemError]: provider exited (code 2): code-system launcher: --remote/--mirror/--exclude are not accepted for kind 'docker': its targets AND their mirror advertisements come from the code-system config store, one file per remote — set the mirror on the remote's card, under Advanced
+      at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
       at ChildProcess._handle.onexit (node:internal/child_process:295:12) {
     code: 'ETRANSPORT',
@@ -195,10 +216,10 @@ test at tests/systems-protocol-conformance.test.mjs:506:1
     stderr: null
   }
 
-test at tests/systems-protocol-conformance.test.mjs:560:1
-✖ describeRemote round-trips the mirror root and the exclude list (61.77041ms)
-  Error [SystemError]: provider exited (code 2): code-system launcher: --remote/--mirror/--exclude are not accepted for kind 'docker': its targets come from the code-system config store, one file per remote
-      at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:178:62)
+test at tests/systems-protocol-conformance.test.mjs:668:1
+✖ describeRemote round-trips the mirror root and the exclude list (65.441797ms)
+  Error [SystemError]: provider exited (code 2): code-system launcher: --remote/--mirror/--exclude are not accepted for kind 'docker': its targets AND their mirror advertisements come from the code-system config store, one file per remote — set the mirror on the remote's card, under Advanced
+      at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
       at ChildProcess._handle.onexit (node:internal/child_process:295:12) {
     code: 'ETRANSPORT',
@@ -206,10 +227,10 @@ test at tests/systems-protocol-conformance.test.mjs:560:1
     stderr: null
   }
 
-test at tests/systems-protocol-conformance.test.mjs:592:1
-✖ describeRemote for an unknown remote is an id-addressed ENOREMOTE (68.839748ms)
-  Error [SystemError]: provider exited (code 2): code-system launcher: --remote/--mirror/--exclude are not accepted for kind 'docker': its targets come from the code-system config store, one file per remote
-      at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:178:62)
+test at tests/systems-protocol-conformance.test.mjs:700:1
+✖ describeRemote for an unknown remote is an id-addressed ENOREMOTE (60.050769ms)
+  Error [SystemError]: provider exited (code 2): code-system launcher: --remote/--mirror/--exclude are not accepted for kind 'docker': its targets AND their mirror advertisements come from the code-system config store, one file per remote — set the mirror on the remote's card, under Advanced
+      at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
       at ChildProcess._handle.onexit (node:internal/child_process:295:12) {
     code: 'ETRANSPORT',
@@ -218,7 +239,6 @@ test at tests/systems-protocol-conformance.test.mjs:592:1
   }
 
 hang-guard: 1/1 files reported, 0 killed, 0 leaked process(es) swept, stream ended cleanly, run cap not reached
-hang-guard: slowest files (limit 90000ms): systems-protocol-conformance.test.mjs 16375ms
+hang-guard: slowest files (limit 90000ms): systems-protocol-conformance.test.mjs 21343ms
 
 guardrail: peak concurrent fake-claude subprocesses = 0 (budget 12)
-

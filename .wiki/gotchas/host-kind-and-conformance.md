@@ -97,16 +97,18 @@ to card 2026-0006 and that card did not do it**: 2026-0006's rig hosts the
 plugin under a real cc and runs no conformance battery
 ([hosted-integration-measured.md](hosted-integration-measured.md)).
 
-**Card 2026-0014 landed it: `npm run conformance:docker`.** It reports **37 pass
-/ 10 fail / 4 skip** of 51, of which **32 rows exercise the shipped `docker`
-transport**. Eight of the failures have two structural causes — the hardcoded
-`processGroupSignal: false` against `CAPABILITY_CONFIGS[0]`, and `main.mjs`
-refusing `--remote`/`--mirror`/`--exclude` for a store-backed kind (the refusal
-stands now that `docker`/`ssh` do answer `describeRemote`: **the store owns the
-advertisement**, not argv) — and the other
-two are a real transport defect the run **found** (card 2026-0016), which `host`
-structurally cannot reach. The four skips below are unchanged by it. Every
-measurement, and why `ssh` does not inherit the result, is in
+**Card 2026-0014 landed it: `npm run conformance:docker`.** It reports **40 pass
+/ 11 fail / 4 skip** of 55, of which **35 rows exercise the shipped `docker`
+transport** (re-measured 2026-09-05, card 2026-0018). Eight of the failures have
+two structural causes — the hardcoded `processGroupSignal: false` against
+`CAPABILITY_CONFIGS[0]`, and `main.mjs` refusing
+`--remote`/`--mirror`/`--exclude` for a store-backed kind (the refusal stands now
+that `docker`/`ssh` do answer `describeRemote`: **the store owns the
+advertisement**, not argv); two are a real transport defect the run **found**
+(card 2026-0016), which `host` structurally cannot reach; and one is `close`'s
+reap reach against that same hardcoded capability (card 2026-0019). The four
+skips below are unchanged by it. Every measurement, the failure breakdown, and
+why `ssh` does not inherit the result, are in
 [bound-conformance.md](bound-conformance.md).
 
 **RUN cc's SUITE AGAINST A CLONE OF THE PIN, NEVER A LIVE cc WORKTREE.**
