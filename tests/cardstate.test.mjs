@@ -13,7 +13,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { kindDescriptors } from '../src/launcher/kinds/index.mjs';
 import {
-  GATE_COPY, GATE_SHARED_COPY, baselineNotice, cardAlert, gateStatus, mirrorPayload,
+  GATE_COPY, baselineNotice, cardAlert, gateStatus, mirrorPayload,
   mirrorSummary, probeStatus, routeFromSearch, searchForRoute,
 } from '../frontend/cardState.mjs';
 
@@ -90,26 +90,24 @@ test('a stopped container under an enabled gate says code-system will not start 
 });
 
 // PINS: a gate-off refusal is attributed to THE GATE, not to the transport.
-// Getting this wrong is the confusion the whole two-state model exists to
-// prevent — an operator hunting a network fault they caused with a toggle.
-test('the copy names the gate as what stops commands, on every kind', () => {
-  assert.match(GATE_SHARED_COPY, /no command runs/i);
-  assert.match(GATE_SHARED_COPY, /not contacted|does not contact|never contacted/i,
-    'a disabled remote is not merely failing — it is never reached');
-  // ssh is the kind where the distinction actually bites, because it HAS a
-  // connection that could be blamed instead.
+// ssh is the kind where the distinction actually bites, because it HAS a
+// connection that could be blamed instead — so this is the one copy that
+// must say so.
+test('ssh\'s copy names the gate, not the connection, as what stops commands', () => {
   assert.match(GATE_COPY.ssh, /the gate is what stops them, not the connection/i);
 });
 
-// PINS: EVERY SERVED KIND HAS COPY. The kind set comes from the descriptors the
-// backend actually serves, so adding a kind cannot ship a wordless card.
-test('every registered kind has gate copy', () => {
-  for (const { kind } of kindDescriptors()) {
-    assert.equal(typeof GATE_COPY[kind], 'string', `${kind} has copy`);
-    assert.ok(GATE_COPY[kind].length > 0, `${kind}'s copy is not empty`);
+// PINS: NO GATE_COPY ENTRY NAMES A DEAD KIND. A served kind may have no entry
+// (a kind with nothing worth saying, like docker now), but every entry that
+// exists must name a kind the backend still serves — the kind set comes from
+// the descriptors the backend actually serves, so a removed kind cannot leave
+// its old copy stranded.
+test('every gate-copy entry names a kind the backend actually serves', () => {
+  const served = kindDescriptors().map(d => d.kind);
+  for (const [kind, copy] of Object.entries(GATE_COPY)) {
+    assert.ok(served.includes(kind), `${kind} has gate copy but is not served by the backend`);
+    assert.ok(copy.length > 0, `${kind}'s copy is not empty`);
   }
-  // And no copy for a kind nobody serves, which would be dead text.
-  assert.deepEqual(Object.keys(GATE_COPY).sort(), kindDescriptors().map(d => d.kind).sort());
 });
 
 // PINS: an `unsupported` baseline is NOT SUMMARISED AWAY. The whole value of

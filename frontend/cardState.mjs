@@ -30,20 +30,11 @@ export function gateStatus(remote) {
   return { enabled, word: enabled ? 'Enabled' : 'Disabled' };
 }
 
-// THE ONE SENTENCE EVERY KIND SHOWS, and the one that must be right: a disabled
-// remote is not failing, it is never reached.
-export const GATE_SHARED_COPY =
-  'Disabled means no command runs against this remote. code-system refuses them itself,'
-  + ' so the target is not contacted at all.';
-
-// Per kind, and the SINGLE HOME for every per-kind sentence on a card.
-// tests/cardstate.test.mjs asserts there is exactly one entry per kind the
-// backend actually serves, so a new kind cannot ship a wordless card and a
-// removed one cannot leave dead text behind.
+// Per kind, and the SINGLE HOME for every per-kind sentence on a card. An
+// entry is optional — a kind with nothing worth saying has none — but
+// tests/cardstate.test.mjs asserts every entry present names a kind the
+// backend actually serves, so a removed kind cannot leave dead text behind.
 export const GATE_COPY = {
-  docker:
-    'Enabling touches nothing on the host: code-system attaches to a container that is already'
-    + ' running, and never starts or stops one.',
   ssh:
     'Enabling also opens one authenticated SSH connection for commands to share. Disabling closes'
     + ' it and stops commands — the gate is what stops them, not the connection.',

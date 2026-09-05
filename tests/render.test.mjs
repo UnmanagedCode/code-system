@@ -224,6 +224,20 @@ test('only the disagreeing cards carry a warning, and it says the right thing', 
     'a disabled, running container is exactly what the operator asked for');
 });
 
+// PINS: the gate note renders only for a kind with copy (ssh), and never as an
+// empty element — a docker card gets no `.note` at all, not one with nothing
+// in it.
+test('the gate note renders only for a kind with copy, and never empty', async () => {
+  const { cards } = await mount();
+  const note = c => c.all(e => e.className === 'note')[0];
+
+  for (const id of ['on-up', 'on-down', 'off-up']) {
+    assert.equal(note(cardFor(cards(), id)), undefined, `${id}: docker card has no .note element`);
+  }
+  assert.match(note(cardFor(cards(), 'ssh-down')).text,
+    /the gate is what stops them, not the connection/i, 'ssh card shows its one sentence');
+});
+
 // PINS: the hand-off contract is ON the card. cc has no listRemotes frame, so
 // this string is the only thing connecting a project to this remote — and the
 // card says where to paste it.
