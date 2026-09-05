@@ -89,7 +89,14 @@ async function main() {
   log(`${SCRIPT}: scratch parent ${SCRATCH_PARENT} → host ${hostPath}`);
 
   const scratchDir = await fs.mkdtemp(path.join(SCRATCH_PARENT, 'run-'));
-  cleanups.push(() => fs.rm(scratchDir, { recursive: true, force: true }));
+  // ONE cleanup for both, in this order: `teardown` runs them LIFO, so a second
+  // entry for the parent would fire BEFORE its own child was removed and always
+  // find it non-empty. The parent goes only if this run emptied it — a concurrent
+  // run's scratch makes the rmdir ENOTEMPTY, which is the right answer.
+  cleanups.push(async () => {
+    await fs.rm(scratchDir, { recursive: true, force: true });
+    await fs.rmdir(SCRATCH_PARENT).catch(() => {});
+  });
 
   // THE CONTAINER. Every argument is measured, none is a literal:
   //  --user      the suite's EACCES row (readFile of a 000 file) requires a
@@ -226,4 +233,7 @@ try {
 } finally {
   await teardown();
 }
-process.exit(code);
+// `exitCode` RATHER THAN `process.exit()`: writes to a pipe are asynchronous, and
+// exiting outright can truncate the verdict lines above — which are the whole
+// output an operator reads.
+process.exitCode = code;
