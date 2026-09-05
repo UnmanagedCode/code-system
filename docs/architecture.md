@@ -262,8 +262,8 @@ this section needs re-checking.
 
 ### The bound conformance run
 
-`docker` and `ssh` always advertise `remotes:true`. Since cc `8b7b10bf` that no
-longer bars them from the battery: `CC_CONFORMANCE_REMOTE_ID` binds every
+`docker` and `ssh` always advertise `remotes:true` and `remoteDescriptors:true`.
+Since cc `8b7b10bf` that no longer bars them from the battery: `CC_CONFORMANCE_REMOTE_ID` binds every
 fixture handle to one named target, and the third-party capability assertion
 tolerates `remotes`/`remoteDescriptors` as a **superset**. Card 2026-0014 landed
 the rig — `npm run conformance:docker` — so the shipped `docker` transport is
@@ -339,7 +339,9 @@ the sweep is `docker ps -a --filter name=code-system-test-boundconf` plus
    2 before any frame, so the rows that launch their own provider with them never
    handshake. Deliberate, and not a gap to close: a flag-backed target source on
    a shipped store-backed kind would be a **second remote path around the single
-   `ENOREMOTE` chokepoint** in `StoreRemoteSource.lookup`.
+   `ENOREMOTE` chokepoint** in `StoreRemoteSource.lookup`. The refusal stands now
+   that `docker`/`ssh` do answer `describeRemote`: their advertisements come from
+   `record.mirror` in the store, not from argv.
 
 Related, and off-spec but legitimate: §10 says `CC_CONFORMANCE_REMOTE_ID`
 presupposes `--remote`, and this run passes none. It clears the harness's
@@ -425,6 +427,13 @@ other, and delete is an `unlink`. The record's fields are in
 `makeRecord` (`src/store.mjs`); `config` is **opaque** to the store and owned by
 the kind's `validateConfig`.
 
+**`mirror` sits beside `enabled`, not inside `config`**, and for the same reason:
+it is **kind-agnostic operator policy**, not connection details the kind owns.
+`null` means the remote advertises nothing. Keeping it out of `config` also keeps
+it out of `sameConfig` (`src/api.mjs`), so editing a mirror — which names the
+same target — does not reset the gate and the baseline the way a config change
+does. Validated once, at the API's front door, by `src/mirror.mjs`.
+
 **"Read fresh per operation" is achieved by having no cache at all.**
 `readRemote` is `readFile` + `JSON.parse` on every call, with no memoisation and
 no `fs.watch`. That absence is the mechanism: the launcher holds no remote state
@@ -479,7 +488,7 @@ layout.
 | `index.html` | the static shell |
 | `styles.css` | all styling. cc injects **no CSS and no tokens** across the iframe and hard-codes `#plugin-frame { background: #fff }` while its own shell is dark, so the token block is load-bearing, not decoration |
 | `app.js` | fetch, poll, state, `render()` — **DOM only** |
-| `cardState.mjs` | **pure, DOM-free**: the gate/probe vocabulary, the alerts, the routing |
+| `cardState.mjs` | **pure, DOM-free**: the gate/probe vocabulary, the alerts, the routing, and the mirror form↔wire conversion |
 
 **The split is the test strategy.** Every decision a card makes lives in
 `cardState.mjs` and is unit tested with `node --test` and no browser
@@ -487,6 +496,18 @@ layout.
 additionally reads the files off disk for the compliance items that fail only
 once mounted under cc, and asserts `cardState.mjs` touches no browser global —
 the moment it does, the seam is gone.
+
+**The Advanced group** (`formFor`, `frontend/app.js`) is the first and only
+`<details>` in this UI: collapsed unless the remote already advertises a mirror,
+a checkbox gating a root `<input>` and an exclude `<textarea>`. The draft holds
+**form state** — `{on, root, exclude}` with `exclude` as raw newline-separated
+text — and `mirrorPayload` / `mirrorSummary` in `cardState.mjs` convert to the
+wire shape and to the card badge, for the same reason every other card decision
+lives there. The prefill comes from the `mirrorDefaults` on `GET /api/remotes`,
+so the frontend holds no second copy of the default list. There is no per-field
+error display: a 400 from the validator reaches the operator through the existing
+top-of-page banner, which is why `validateMirror`'s messages quote the offending
+value and an entry's index.
 
 Two divergences from code-hub, each with its reason:
 
@@ -577,25 +598,46 @@ while remotes come and go.
 ### The startup pass
 
 `src/migrate.mjs` runs once at backend start, before anything serves, and has
-**exactly one job**: **quarantine** a record the current readers cannot
+**two jobs, in this order**: **upgrade** a record at the immediately previous
+schema in place, then **quarantine** a record the current readers still cannot
 understand — moved aside, never deleted. Its "already applied" self-check is the
 store's own contents, so it needs no marker file.
 
-**There is no upgrade pass and no version-handling code anywhere in this tree,
-deliberately.** Schema 1 is the first and only schema, and it has always
-included every field the readers expect — `enabled` among them — so there is no
-earlier shape to upgrade FROM. A record at any other `schema` value is from the
-future or is corrupt; either way we cannot know what it means, and quarantining
-it is the honest answer rather than a guess. `migrate.mjs`'s header says this
-explicitly, so the omission reads as a decision rather than as something
-missing.
+**Schema 1 → 2** (card 2026-0017) added `mirror` as a top-level field. A
+schema-1 record advertised nothing, so `upgradeToSchema2` rewrites it as
+`{...raw, schema: 2, mirror: null}` — the same "I advertise nothing" it already
+had, and every other field deep-equal. It is **exact-version** (`raw.schema !== 1`
+falls straight through), which is what makes a second run rewrite no bytes with
+no marker file. Unparsable JSON, a non-object, or a record whose `remoteId` does
+not match its filename all answer `'skip'` and fall into the quarantine branch.
+That last one matters — `writeRemote` addresses the file *by* the record's
+`remoteId`, so rewriting a mismatched record would write the wrong file.
 
-**When a schema 2 genuinely arrives**, its upgrade goes there and nowhere else,
-and it will have to run **before** the quarantine branch and read the raw JSON
-itself: `readRemote` refuses an unrecognised schema with reason `'schema'`, and
-`'schema'` is in `QUARANTINE_REASONS`, so an upgrade ordered after it would move
-every existing remote aside instead of upgrading it. That ordering hazard is
-recorded in the header for whoever adds the second schema.
+**No single record may take the pass down**, because `server.mjs` awaits it
+before `listen` and the backend is the operator's only repair tool. The upgrade
+**write** and the quarantine **move** are each caught: the failure is logged
+naming the record, and the loop continues. A write that failed answers `'failed'`
+and **skips the rest of that record's iteration** — it is still at schema 1,
+which `readRemote` refuses with a quarantine reason, so falling through would
+move aside a healthy record over a transient disk error, and the upgrader only
+ever scans `remotes/`. Deliberately **not** guarded: creating the remotes
+directory itself, at the top of `migrate`. That is not one record's problem, and
+a backend that cannot make its own store should fail loudly.
+
+**The upgrade runs BEFORE the quarantine branch and reads the raw JSON itself**,
+and this stays the standing constraint for schema 3: `readRemote` refuses an
+unrecognised schema with reason `'schema'`, and `'schema'` is in
+`QUARANTINE_REASONS`, so an upgrade ordered after it would move every existing
+remote aside instead of upgrading it.
+
+Application code still assumes the **current schema only** — no read-time
+dual-shape parsing, no legacy key aliases, no back-compat defaults. A record at a
+schema this version does not recognise is from the future or is corrupt, and
+quarantining it is the honest answer rather than a guess.
+
+**Known transient:** a launcher spawned against a schema-1 record *before* the
+backend's first run refuses that remote with `ENOREMOTE`, whose message already
+names the repair. The window is "plugin updated, backend not yet started".
 
 A launcher that meets a record at another schema refuses **that remote** with
 `ENOREMOTE`, quoting the schema it found and naming the backend as the repair.

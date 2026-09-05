@@ -2,9 +2,11 @@
 // `Capabilities` interface, which it negotiates on and then MEMOISES for the
 // life of a connection generation, so a wrong one is not re-derived later.
 //
-// In particular: `docker` and `ssh` advertise `remotes:true` ALWAYS, never
-// derived from store contents, because a capability that flapped as remotes
-// were added would be memoised wrong.
+// In particular: `docker` and `ssh` advertise `remotes:true` AND
+// `remoteDescriptors:true` ALWAYS, never derived from store contents, because a
+// capability that flapped as remotes were added — or as one gained or lost a
+// mirror — would be memoised wrong. The PER-REMOTE mirror answer lives in the
+// `describeRemote` frame instead (tests/mirror-frames.test.mjs).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -25,7 +27,7 @@ test('only docker and ssh are auto-registered — host is deliberately not', () 
 });
 
 for (const kind of ['docker', 'ssh']) {
-  test(`${kind} advertises processGroupSignal:false and remotes:true, on the wire`, async (t) => {
+  test(`${kind} advertises processGroupSignal:false, remotes:true and remoteDescriptors:true, on the wire`, async (t) => {
     const store = await tempStore();
     t.after(() => store.cleanup());
     const l = new Launcher(['--kind', kind], { CODE_SYSTEM_STORE: store.dir });
@@ -35,19 +37,23 @@ for (const kind of ['docker', 'ssh']) {
     assert.deepEqual(hs.capabilities, {
       processGroupSignal: false,
       remotes: true,
-      remoteDescriptors: false,
+      remoteDescriptors: true,
     });
     assert.match(hs.provider, new RegExp(`^code-system-${kind}/\\S+$`));
   });
 
-  test(`${kind} advertises remotes:true even with an EMPTY store`, async (t) => {
+  test(`${kind} advertises remotes:true and remoteDescriptors:true even with an EMPTY store`, async (t) => {
     // The registration handshake happens with zero remotes configured, and cc
-    // memoises the answer — so this must not depend on what is in the store.
+    // memoises the answer — so neither may depend on what is in the store. For
+    // `remoteDescriptors` the store is empty of MIRRORS too, and the answer is
+    // still true: an opted-out remote answers the legal empty descriptor.
     const store = await tempStore();
     t.after(() => store.cleanup());
     const l = new Launcher(['--kind', kind], { CODE_SYSTEM_STORE: store.dir });
     t.after(() => l.kill());
-    assert.equal((await l.hello()).capabilities.remotes, true);
+    const caps = (await l.hello()).capabilities;
+    assert.equal(caps.remotes, true);
+    assert.equal(caps.remoteDescriptors, true);
   });
 }
 
@@ -104,7 +110,7 @@ test('ssh\'s seams answer for real, and its negotiated capabilities did not move
   const t = createTransport('ssh');
   assert.deepEqual(
     { g: t.processGroupSignal, r: t.remotes, d: t.remoteDescriptors },
-    { g: false, r: true, d: false });
+    { g: false, r: true, d: true });
 
   // An explicit cli, so this does not depend on whether the environment running
   // the suite has CODE_SYSTEM_SSH set (tests/sshkind.test.mjs owns the seam's
@@ -137,7 +143,7 @@ test('docker\'s seams answer for real, and its negotiated capabilities did not m
   const t = createTransport('docker');
   assert.deepEqual(
     { g: t.processGroupSignal, r: t.remotes, d: t.remoteDescriptors },
-    { g: false, r: true, d: false });
+    { g: false, r: true, d: true });
 
   // An explicit cli, so this does not depend on whether the environment running
   // the suite has CODE_SYSTEM_DOCKER set (it does on a host where docker needs

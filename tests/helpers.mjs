@@ -105,6 +105,7 @@ export function record(remoteId, over = {}) {
     label: remoteId,
     config: {},
     enabled: true,
+    mirror: null,
     baseline: { state: 'unknown', fingerprint: null, missing: [], checkedAt: null },
     createdAt: '2026-09-03T00:00:00.000Z',
     updatedAt: '2026-09-03T00:00:00.000Z',

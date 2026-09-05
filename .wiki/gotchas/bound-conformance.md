@@ -21,6 +21,27 @@ out-of-loop). A bound `docker` run:
 | fail | **10** — 2 capability, 6 flag, 2 a real defect (below) |
 | skip | **4** — exactly the `IS_REFERENCE_PROVIDER` set in [host-kind-and-conformance.md](host-kind-and-conformance.md) |
 
+> **The harness has since moved, and the gate currently FAILS on that alone.**
+> Measured 2026-09-05 against `code-conductor_worktree_systems` (card 2026-0018).
+> The battery now reports **55** rows, not the 51 the manifest was written
+> against, and two NEW tests — `detach ends the operation and kills nothing;
+> close kills as far as it reaches` and `a redirected background job outlives its
+> command, in both capability configurations` — are unlisted failures. `detach`
+> appears nowhere in `src/`.
+>
+> **The two runs fail different counts of the same two tests, and the difference
+> is not a discrepancy:**
+>
+> | Run | Unlisted failures | Which |
+> |---|---|---|
+> | `npm run conformance:docker` | **4** | both tests × both capability configurations |
+> | `npm run conformance` (`host`) | **3** | the same, except `[processGroupSignal:false] a redirected background job …`, which **passes** on `host` |
+>
+> **Pre-existing and unrelated to any code-system change**: both runs are
+> outcome-identical at `0e3c81c` and after card 2026-0017 — 48/3/4 for `host`,
+> 37/14/4 of 55 for the bound docker run, row for row. Re-read the manifest
+> against the current suite; do not edit the counts below to match.
+
 **"32 rows exercise the transport" means 32 rows REACH IT AND PASS**, and the
 definition matters: of the 37 passes, **5 exercise no provider of ours**
 (`parseFindLines …`, `an unrecognised field on a remoteDescriptor …` — which
@@ -198,6 +219,15 @@ so `sys.connect()` fails. No design satisfies both cc's fixtures and the
 `StoreRemoteSource.lookup` gate: any flag-backed target source on a shipped
 store-backed kind is a **second remote path around the single `ENOREMOTE`
 chokepoint**. Recorded as a consequence, not a gap to close.
+
+Two of those six are the mirror rows, and they stay unreachable for the SAME
+reason now that `docker`/`ssh` advertise `remoteDescriptors: true` (card
+2026-0017): the advertisement comes from `record.mirror` in the store, not from
+`--mirror`/`--exclude`. **Measured 2026-09-05, daemon 29.7.2: the flip moved no
+manifest row** — the run before and after it is outcome-identical, row for row.
+§10's third-party relaxation tolerates `remotes`/`remoteDescriptors` as a
+superset, and the two cc-side mirror rows skip on `IS_REFERENCE_PROVIDER`
+whatever the provider's shape.
 
 Related: §10 says *"`CC_CONFORMANCE_REMOTE_ID` presupposes `--remote`"*. Our
 bound run passes **no `--remote` at all** and clears the harness's bound-run

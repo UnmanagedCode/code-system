@@ -15,6 +15,7 @@
 import express from 'express';
 import { refreshBaseline, unknownBaseline } from './baseline.mjs';
 import { REGISTERED_KINDS, createTransport, isKnownKind, kindDescriptors } from './launcher/kinds/index.mjs';
+import { DEFAULT_MIRROR, validateMirror } from './mirror.mjs';
 import { REQUEST_TIMEOUT_MS, readCapped, registrationState, runRegistration } from './registration.mjs';
 import { deleteRemote, isValidRemoteId, listRemotes, makeRecord, readRemote, writeRemote } from './store.mjs';
 
@@ -105,20 +106,23 @@ export function createApi(deps = {}) {
 
   // The card UI's forms come from the KINDS themselves, so a field cannot drift
   // from what `validateConfig` accepts (tests/kindmeta.test.mjs).
-  r.get('/kinds', (_req, res) => res.json({ kinds: kindDescriptors() }));
+  // `mirrorDefaults` rides along on both catalog routes so the Advanced group's
+  // prefill comes from src/mirror.mjs's ONE list rather than a second copy in
+  // the frontend. Not on /health: a liveness probe has no use for it.
+  r.get('/kinds', (_req, res) => res.json({ kinds: kindDescriptors(), mirrorDefaults: DEFAULT_MIRROR }));
 
   r.get('/remotes', async (_req, res, next) => {
     try {
       const entries = await listRemotes();
       const remotes = [];
       for (const e of entries) remotes.push(await cardFor(e));
-      res.json({ remotes, kinds: kindDescriptors() });
+      res.json({ remotes, kinds: kindDescriptors(), mirrorDefaults: DEFAULT_MIRROR });
     } catch (e) { next(e); }
   });
 
   r.post('/remotes', async (req, res, next) => {
     try {
-      const { remoteId, kind, label, config } = req.body ?? {};
+      const { remoteId, kind, label, config, mirror } = req.body ?? {};
       if (!isValidRemoteId(remoteId)) {
         return res.status(400).json({ error: `remoteId must match ^[a-z0-9][a-z0-9._-]{0,63}$ (got ${JSON.stringify(remoteId)})` });
       }
@@ -132,11 +136,18 @@ export function createApi(deps = {}) {
       const v = createTransport(kind).validateConfig(config);
       if (!v.ok) return res.status(400).json({ error: v.error });
 
+      // THE STORE'S FRONT DOOR IS THE ONLY VALIDATOR of a mirror advertisement:
+      // the backend is the only writer, and refusing here is a 400 in the
+      // operator's form instead of cc's MIRROR_ADVERTISEMENT_INVALID (502) at
+      // session start. Before any write, like the config guard above.
+      const m = validateMirror(mirror);
+      if (!m.ok) return res.status(400).json({ error: m.error });
+
       // SWITCHED OFF ON CREATION. An ssh remote genuinely has no master until
       // `connect` runs, so a default-on gate would claim a state nobody
       // established — and the operator's next action is to connect it anyway.
       const record = makeRecord({
-        remoteId, kind, label, config: v.config, enabled: false, baseline: unknownBaseline(),
+        remoteId, kind, label, config: v.config, enabled: false, mirror: m.mirror, baseline: unknownBaseline(),
       });
       await writeRemote(record);
       res.status(201).json({ remote: record });
@@ -150,7 +161,7 @@ export function createApi(deps = {}) {
     try {
       const cur = await readRemote(req.params.id);
       if (!cur.ok) return res.status(cur.reason === 'absent' ? 404 : 409).json({ error: cur.message });
-      const { label, config } = req.body ?? {};
+      const { label, config, mirror } = req.body ?? {};
       const record = cur.record;
       let nextConfig = record.config;
       let baseline = record.baseline;
@@ -158,6 +169,18 @@ export function createApi(deps = {}) {
       // list, so a field left off here is silently dropped — which for the gate
       // would mean every rename switched the remote off.
       let enabled = record.enabled;
+      // CARRIED THROUGH EXPLICITLY for the same reason, and DELIBERATELY
+      // OUTSIDE the `config` branch below: a mirror change names the SAME
+      // target, so it must not reset the gate or the baseline the way a changed
+      // config does. The form has no dirty-tracking and PATCHes `mirror` on
+      // every save, so treating it as a target change would switch the remote
+      // off on every edit.
+      let mirrorField = record.mirror ?? null;
+      if (mirror !== undefined) {
+        const m = validateMirror(mirror);
+        if (!m.ok) return res.status(400).json({ error: m.error });
+        mirrorField = m.mirror;
+      }
       if (config !== undefined) {
         const v = createTransport(record.kind).validateConfig(config);
         if (!v.ok) return res.status(400).json({ error: v.error });
@@ -181,6 +204,7 @@ export function createApi(deps = {}) {
         label: label === undefined ? record.label : label,
         config: nextConfig,
         enabled,
+        mirror: mirrorField,
         baseline,
         createdAt: record.createdAt,
       });

@@ -89,28 +89,33 @@ const KINDS = [
   { kind: 'ssh', label: 'SSH hosts', configFields: [{ name: 'host', label: 'Host', required: true, placeholder: 'my-box', hint: 'a Host alias' }, { name: 'user', label: 'User', required: false, placeholder: '', hint: 'optional' }] },
 ];
 
+// Served by the backend from src/mirror.mjs; the Advanced group prefills from
+// the GET /api/remotes body, never from a copy in the frontend.
+const MIRROR_DEFAULTS = { root: '/', exclude: ['/proc', '/dev', '/sys'] };
+const STORED_MIRROR = { root: '/srv/app', exclude: ['/proc', '/srv/app/tmp'] };
+
 const okBaseline = { state: 'ok', fingerprint: 'f', missing: [], checkedAt: 'x' };
 const unknownBaseline = { state: 'unknown', fingerprint: null, missing: [], checkedAt: null };
 
 const REMOTES = [
   { // gate on, probe up
     remoteId: 'on-up', kind: 'docker', label: 'Running app', enabled: true,
-    config: { container: 'app' }, baseline: okBaseline,
+    config: { container: 'app' }, mirror: null, baseline: okBaseline,
     reachability: { connected: true, detail: "container 'app' running (img) since T", fingerprint: 'f' },
   },
   { // gate on, probe DOWN — the docker warn row
     remoteId: 'on-down', kind: 'docker', label: 'Stopped app', enabled: true,
-    config: { container: 'stopped' }, baseline: okBaseline,
+    config: { container: 'stopped' }, mirror: null, baseline: okBaseline,
     reachability: { connected: false, detail: "container 'stopped' exists but is not running", fingerprint: null },
   },
   { // gate off, probe up — no alert, and the card still shows reality
     remoteId: 'off-up', kind: 'docker', label: 'Disabled app', enabled: false,
-    config: { container: 'app2' }, baseline: unknownBaseline,
+    config: { container: 'app2' }, mirror: null, baseline: unknownBaseline,
     reachability: { connected: true, detail: "container 'app2' running (img) since T", fingerprint: 'f2' },
   },
   { // gate on, master DOWN — the ssh warn row
     remoteId: 'ssh-down', kind: 'ssh', label: 'Box', enabled: true,
-    config: { host: 'box', user: 'me' },
+    config: { host: 'box', user: 'me' }, mirror: STORED_MIRROR,
     baseline: {
       state: 'unsupported',
       fingerprint: 'g',
@@ -129,7 +134,11 @@ const REGISTRATION = { state: 'ok', rows: [{ id: 'docker', state: 'ok', message:
 
 // `reply` lets a test script one non-GET route's answer — which is how the
 // action handlers, not just the render path, get put under test.
-function installFetch({ remotes = REMOTES, registration = REGISTRATION, reply = null } = {}) {
+// `mirrorDefaults` is overridable — including to `null` — because "the backend
+// has not served them yet" is a real state the form has to render in.
+function installFetch({
+  remotes = REMOTES, registration = REGISTRATION, reply = null, mirrorDefaults = MIRROR_DEFAULTS,
+} = {}) {
   const calls = [];
   Object.defineProperty(globalThis, 'fetch', {
     configurable: true,
@@ -142,7 +151,8 @@ function installFetch({ remotes = REMOTES, registration = REGISTRATION, reply = 
       });
       const scripted = reply?.(path, init.method ?? 'GET');
       if (scripted) return { ok: scripted.ok !== false, status: scripted.status ?? 200, json: async () => scripted.body ?? {} };
-      const body = path === 'api/remotes' ? { remotes, kinds: KINDS }
+      const body = path === 'api/remotes'
+        ? { remotes, kinds: KINDS, ...(mirrorDefaults ? { mirrorDefaults } : {}) }
         : path === 'api/registration' ? registration
           : {};
       return { ok: true, status: 200, json: async () => body };
@@ -274,7 +284,8 @@ test('the add form renders one input per descriptor field, per kind', async () =
   const tile = cards().at(-1);
   assert.match(tile.text, /New remote/);
   const ids = tile.all(e => e.tagName === 'input').map(i => i.attrs.id);
-  assert.deepEqual(ids, ['f-id', 'f-label', 'f-container'], 'docker is the first kind');
+  assert.deepEqual(ids, ['f-id', 'f-label', 'f-container', 'f-mirror-on', 'f-mirror-root'],
+    'docker is the first kind, and the Advanced group renders last');
   assert.match(tile.text, /the container/, "and the descriptor's hint is shown");
 
   // Switching kind swaps the config fields for the other kind's, including its
@@ -283,7 +294,7 @@ test('the add form renders one input per descriptor field, per kind', async () =
   for (const fn of select.handlers.change ?? []) fn({ target: { value: 'ssh' } });
   const after = cards().at(-1);
   assert.deepEqual(after.all(e => e.tagName === 'input').map(i => i.attrs.id),
-    ['f-id', 'f-label', 'f-host', 'f-user']);
+    ['f-id', 'f-label', 'f-host', 'f-user', 'f-mirror-on', 'f-mirror-root']);
   assert.match(after.text, /User \(optional\)/);
 });
 
@@ -296,7 +307,7 @@ test('Edit opens an inline form on its own card, pre-filled, and warns about the
 
   const edited = cardFor(cards(), 'ssh-down');
   const inputs = edited.all(e => e.tagName === 'input');
-  assert.deepEqual(inputs.map(i => i.attrs.id), ['f-label', 'f-host', 'f-user'],
+  assert.deepEqual(inputs.map(i => i.attrs.id), ['f-label', 'f-host', 'f-user', 'f-mirror-on', 'f-mirror-root'],
     'the remoteId is NOT editable — it is never renamed once created');
   assert.equal(inputs.find(i => i.attrs.id === 'f-host').attrs.value, 'box', 'pre-filled');
   assert.equal(inputs.find(i => i.attrs.id === 'f-user').attrs.value, 'me');
@@ -429,4 +440,151 @@ test('Copy confirms only after the write actually resolves', async () => {
   await new Promise(r => setImmediate(r));
   assert.equal(wrote, 'on-up', 'the remoteId, verbatim');
   assert.equal(copy.text, 'Copied');
+});
+
+// ── the Advanced group: the mirror advertisement ─────────────────────
+//
+// The FIRST <details> in this UI. Everything the group decides lives in the pure
+// cardState.mjs; what these rows pin is the WIRING — that it renders collapsed
+// or open per the record, that the checkbox really enables the fields, and that
+// the value actually leaves in the request body.
+
+const inputById = (root, id) => root.all(e => e.tagName === 'input' && e.attrs.id === id)[0];
+const detailsOf = root => root.all(e => e.tagName === 'details')[0];
+const textareaOf = root => root.all(e => e.tagName === 'textarea')[0];
+
+// PINS: a new remote does not advertise anything, the group is out of the way,
+// and the fields carry the DEFAULTS SERVED BY THE BACKEND — so ticking the box
+// offers a usable advertisement rather than an empty form.
+test('the add form renders the Advanced group collapsed, unticked, prefilled from the served defaults', async () => {
+  const { byId, cards } = await mount();
+  byId.get('add').click();
+  const tile = cards().at(-1);
+
+  const details = detailsOf(tile);
+  assert.notEqual(details, undefined, 'the group is rendered');
+  assert.equal('open' in details.attrs, false, 'and collapsed: nothing is advertised yet');
+  assert.equal('checked' in inputById(tile, 'f-mirror-on').attrs, false);
+  assert.equal(inputById(tile, 'f-mirror-root').attrs.value, MIRROR_DEFAULTS.root);
+  assert.equal(textareaOf(tile).text, MIRROR_DEFAULTS.exclude.join('\n'),
+    'the three pseudo-filesystems, one per line');
+  assert.equal('disabled' in inputById(tile, 'f-mirror-root').attrs, true,
+    'and the fields are disabled while the box is unticked');
+});
+
+// PINS: an operator editing an already-mirrored remote SEES what is stored,
+// without hunting for it — the one case where the group must be open.
+test('the edit form for a mirrored remote opens the group, ticked and pre-filled', async () => {
+  const { cards } = await mount();
+  cardFor(cards(), 'ssh-down').all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
+  const edited = cardFor(cards(), 'ssh-down');
+
+  assert.equal('open' in detailsOf(edited).attrs, true);
+  assert.equal('checked' in inputById(edited, 'f-mirror-on').attrs, true);
+  assert.equal(inputById(edited, 'f-mirror-root').attrs.value, STORED_MIRROR.root);
+  assert.equal(textareaOf(edited).text, STORED_MIRROR.exclude.join('\n'));
+  assert.equal('disabled' in inputById(edited, 'f-mirror-root').attrs, false, 'and editable');
+});
+
+// PINS THE OTHER HALF: a remote that opted out gets the same collapsed,
+// unticked group on edit — the form must not imply an advertisement that is not
+// stored.
+test('the edit form for an unmirrored remote leaves the group collapsed and unticked', async () => {
+  const { cards } = await mount();
+  cardFor(cards(), 'off-up').all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
+  const edited = cardFor(cards(), 'off-up');
+
+  assert.equal('open' in detailsOf(edited).attrs, false);
+  assert.equal('checked' in inputById(edited, 'f-mirror-on').attrs, false);
+  assert.equal(inputById(edited, 'f-mirror-root').attrs.value, MIRROR_DEFAULTS.root,
+    'and ticking it would offer the defaults, not an empty root');
+});
+
+// PINS THE CHECKBOX WIRING: it writes the draft and re-renders, so the disabled
+// fields become editable. A handler that re-rendered before writing would leave
+// them disabled for a frame and lose the click.
+test('ticking the box re-renders with the mirror fields enabled', async () => {
+  const { byId, cards } = await mount();
+  byId.get('add').click();
+  const box = inputById(cards().at(-1), 'f-mirror-on');
+  for (const fn of box.handlers.change ?? []) fn({ target: { checked: true } });
+
+  const after = cards().at(-1);
+  assert.equal('checked' in inputById(after, 'f-mirror-on').attrs, true);
+  assert.equal('disabled' in inputById(after, 'f-mirror-root').attrs, false);
+  assert.equal('disabled' in textareaOf(after).attrs, false);
+  assert.equal('open' in detailsOf(after).attrs, true, 'and the group stays open across the re-render');
+});
+
+// PINS THAT THE VALUE ACTUALLY LEAVES. No test in this file asserted a submitted
+// POST body at all before this one — the form could have rendered perfectly and
+// sent nothing.
+test('Create posts the mirror: null when unticked, the typed advertisement when ticked', async () => {
+  const posted = async (tick) => {
+    const { byId, cards, calls } = await mount({ remotes: [] });
+    byId.get('add').click();
+    const tile = cards().at(-1);
+    for (const fn of inputById(tile, 'f-id').handlers.input ?? []) fn({ target: { value: 'app' } });
+    if (tick) {
+      const box = inputById(tile, 'f-mirror-on');
+      for (const fn of box.handlers.change ?? []) fn({ target: { checked: true } });
+      const open = cards().at(-1);
+      for (const fn of inputById(open, 'f-mirror-root').handlers.input ?? []) fn({ target: { value: '/srv/app' } });
+      for (const fn of textareaOf(open).handlers.input ?? []) fn({ target: { value: '/proc\n/dev\n' } });
+    }
+    const form = cards().at(-1);
+    form.all(e => e.tagName === 'button' && e.text === 'Create')[0].click();
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    return calls.find(c => c.method === 'POST' && c.path === 'api/remotes')?.body;
+  };
+
+  const off = await posted(false);
+  assert.notEqual(off, undefined, 'the POST really happened');
+  assert.equal(off.mirror, null, 'an unticked box sends the explicit "advertise nothing"');
+
+  const on = await posted(true);
+  assert.deepEqual(on.mirror, { root: '/srv/app', exclude: ['/proc', '/dev'] },
+    'the typed root, and the lines as entries — the trailing newline is not one');
+});
+
+// PINS ITEM 3's GUARD: only the backend writes `mirror`, but the store is a
+// directory of JSON files, and a hand-edited `exclude` that is a STRING would
+// make `.join` a TypeError inside `render()` — blanking the entire card list,
+// not just this form. The form degrades to an empty exclude box instead.
+test('a hand-edited mirror does not crash the edit form', async () => {
+  const broken = REMOTES.map(r => (r.remoteId === 'off-up'
+    ? { ...r, mirror: { root: '/srv', exclude: 'not-an-array' } }
+    : r));
+  const { cards } = await mount({ remotes: broken });
+  assert.equal(cards().length, broken.length, 'every card still rendered');
+
+  cardFor(cards(), 'off-up').all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
+  const edited = cardFor(cards(), 'off-up');
+  assert.equal(inputById(edited, 'f-mirror-root').attrs.value, '/srv', 'the usable half survives');
+  assert.equal(textareaOf(edited).text, '', 'and the unusable half is empty, not a thrown render');
+});
+
+// PINS ITEM 9: the defaults have ONE source, the backend. Before that answer
+// lands there is nothing truthful to prefill — offering root `/` with an empty
+// exclude list would contradict the form's own copy — so the group is absent
+// rather than wrong, and a form submitted in that state advertises nothing.
+test('with no served defaults the Advanced group is absent, and Create still posts mirror:null', async () => {
+  const { byId, cards, calls } = await mount({ remotes: [], mirrorDefaults: null });
+  byId.get('add').click();
+  const tile = cards().at(-1);
+
+  assert.equal(detailsOf(tile), undefined, 'no group at all');
+  assert.equal(inputById(tile, 'f-mirror-on'), undefined);
+  assert.deepEqual(tile.all(e => e.tagName === 'input').map(i => i.attrs.id), ['f-id', 'f-label', 'f-container'],
+    'and the connection fields are untouched');
+
+  for (const fn of inputById(tile, 'f-id').handlers.input ?? []) fn({ target: { value: 'app' } });
+  tile.all(e => e.tagName === 'button' && e.text === 'Create')[0].click();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+
+  const body = calls.find(c => c.method === 'POST' && c.path === 'api/remotes')?.body;
+  assert.notEqual(body, undefined, 'the POST really happened');
+  assert.equal(body.mirror, null, 'and it advertises nothing, explicitly');
 });

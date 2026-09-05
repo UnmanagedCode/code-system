@@ -30,13 +30,18 @@ body {
   padding-bottom: env(safe-area-inset-bottom);
 }
 
-button, select, input {
+button, select, input, textarea {
   background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
   border-radius: 8px; padding: 6px 10px; font: inherit;
 }
 button { cursor: pointer; }
 button:disabled { opacity: .4; cursor: not-allowed; }
-button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+/* A disabled mirror field is still READABLE — the operator has to be able to see
+   what ticking the box would advertise. */
+input:disabled, textarea:disabled { opacity: .5; }
+button:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: -1px;
+}
 
 /* Top bar */
 #topbar {
@@ -100,6 +105,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .badge.base-ok { color: var(--accent); border-color: rgba(108,194,74,0.45); }
 .badge.base-unsupported { color: var(--danger); border-color: rgba(227,90,90,0.4); }
 .badge.base-unknown { color: var(--muted); }
+.badge.mirror { color: var(--amber); border-color: var(--border); }
 .detail { color: var(--muted); font-size: 12px; margin-top: 4px; word-break: break-word; }
 
 /* The hand-off contract, made visible: this exact string goes into a cc
@@ -134,8 +140,27 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .form { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
 .field { display: flex; flex-direction: column; gap: 3px; }
 .field label { font-size: 12px; color: var(--muted); }
-.field input, .field select { font-family: var(--mono); font-size: 13px; }
+.field input, .field select, .field textarea { font-family: var(--mono); font-size: 13px; }
 .field .hint { font-size: 11px; color: var(--muted); }
+.field textarea { resize: vertical; min-height: 60px; }
+/* A checkbox and its label read as one row, not as a stacked label/field pair. */
+.field.check { flex-direction: row; align-items: center; gap: 7px; }
+.field.check input { width: auto; flex: 0 0 auto; }
+.field.check label { font-size: 13px; color: var(--text); }
+
+/* The mirror advertisement: collapsed unless the remote has opted in. The first
+   and only <details> in this UI. */
+details.advanced {
+  border-top: 1px solid var(--border); padding-top: 8px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+details.advanced > summary {
+  color: var(--muted); font-size: 12px; cursor: pointer; list-style: none;
+}
+details.advanced > summary::-webkit-details-marker { display: none; }
+details.advanced > summary::before { content: '▸ '; }
+details.advanced[open] > summary::before { content: '▾ '; }
+details.advanced > .hint { font-size: 11px; color: var(--muted); }
 .form-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .card.add-tile { border-left-color: var(--muted); }
 

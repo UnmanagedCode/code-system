@@ -189,10 +189,20 @@ export function createDockerTransport({ cli } = {}) {
     // (systems-protocol.md §11).
     remotes: true,
 
-    // v1 answers no mirror advertisement: the session root images the project
-    // root and `offset === ""`. Advertising a wider `mirrorRoot` later is
-    // additive with no migration.
-    remoteDescriptors: false,
+    // ALWAYS TRUE, for the SAME reason `remotes` is, and never derived from
+    // store contents: cc memoises the handshake per connection generation, so a
+    // capability that flapped as remotes gained or lost a mirror would be
+    // memoised wrong. The PER-REMOTE answer lives in the `describeRemote`
+    // FRAME, from `record.mirror` (src/launcher/remotes.mjs) — and a remote the
+    // operator did not opt in answers a descriptor with NEITHER field, which
+    // §2.1 calls a valid "I advertise nothing" and cc takes down exactly the
+    // path a provider that never heard of the frame takes.
+    //
+    // WHAT IT COSTS: one extra request/response pair per target per connection
+    // generation for an opted-out remote. Everything downstream of the answer is
+    // unchanged — cc's NO_ADVERTISEMENT → noMirror(systemPath) is the same
+    // geometry, the same walk, the same exec frames.
+    remoteDescriptors: true,
 
     validateConfig(raw) {
       const o = asObject(raw);

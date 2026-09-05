@@ -18,14 +18,14 @@ Sent once, before any other frame, in answer to cc's `hello`.
 
 ```json
 {"type":"hello","protocol":1,"provider":"code-system-docker/0.1.0",
- "capabilities":{"processGroupSignal":false,"remotes":true,"remoteDescriptors":false}}
+ "capabilities":{"processGroupSignal":false,"remotes":true,"remoteDescriptors":true}}
 ```
 
 | Capability | `docker` | `ssh` | `host` |
 |---|---|---|---|
 | `processGroupSignal` | **`false`, final** — see below | **`false`, final** — same reason | `true` unless `--no-process-group-signal` |
 | `remotes` | `true` always | `true` always | at least one `--remote` |
-| `remoteDescriptors` | `false` | `false` | at least one `--mirror`/`--exclude` |
+| `remoteDescriptors` | `true` always | `true` always | at least one `--mirror`/`--exclude` |
 
 **Those three keys and no more.** They are cc's `Capabilities` interface
 verbatim (`src/systems/protocol.ts`); a missing key reads as `false` and an
@@ -55,10 +55,40 @@ known position.
 signal fidelity, i.e. a `Transport.signal` seam relaying into the far host — and
 it is not restated here. `reap` SIGKILLs the far-side subtree either way.
 
-`docker` and `ssh` advertise `remotes:true` **always**, never derived from what
-is in the store — cc memoises the handshake per connection generation, so a
-capability that flapped as remotes were added would be memoised wrong. See
+`docker` and `ssh` advertise `remotes:true` **and `remoteDescriptors:true`
+always**, never derived from what is in the store — cc memoises the handshake per
+connection generation, so a capability that flapped as remotes were added, or as
+one gained or lost a mirror, would be memoised wrong. See
 `docs/architecture.md` for what that costs and why it is accepted.
+
+### The mirror advertisement (`describeRemote` → `remoteDescriptor`)
+
+The **capability** is constant per kind; the **per-remote** answer is the frame.
+Both come out of `src/launcher/session.mjs`'s single descriptor-shaping site,
+fed by `StoreRemoteSource.mirrorFor` (`src/launcher/remotes.mjs`), which reads
+`record.mirror` fresh off the store.
+
+| Remote | Answer |
+|---|---|
+| enabled, `record.mirror` set | `{"type":"remoteDescriptor","id":…,"mirrorRoot":<mirror.root>,"exclude":[…]}` — the stored entries, in the stored order |
+| enabled, `record.mirror` null | `{"type":"remoteDescriptor","id":…}` — **neither field**, §2.1's valid "I advertise nothing"; cc takes the `NO_ADVERTISEMENT` → `noMirror(systemPath)` path, identical geometry to before this existed |
+| switched **off**, or unknown id | id-addressed `ENOREMOTE` — `lookup` runs before the frame's own handler, for all four request frames |
+
+**Cost of the always-`true` capability:** one extra request/response pair per
+target per connection generation for a remote that advertises nothing. Nothing
+downstream of the answer changes.
+
+**A mirror edit is not live.** cc re-asks only on a new connection generation, so
+a change reaches an already-running session after the System reconnects. The
+card's Advanced group says so.
+
+**Validated at the store's front door, never here.** `src/mirror.mjs`
+(`validateMirror`, bounded by `MIRROR_EXCLUDE_MAX` / `MIRROR_PATH_MAX` from
+`src/launcher/protocol.mjs`) refuses a bad advertisement with a **400** on
+`POST`/`PATCH`, where the operator can see it. The launcher passes what is stored
+through unvalidated, exactly as it does `config`, so cc's
+`MIRROR_ADVERTISEMENT_INVALID` (502) is reachable only by hand-editing a store
+file.
 
 ## `remoteId` routing
 
@@ -562,10 +592,10 @@ only and re-derived at every start.
 | `GET /api/health` | any response counts as alive |
 | `GET /api/registration` | `{state, rows:[{id,state,httpStatus,message}], checkedAt}` — `blocked`/`unreachable` messages are rendered verbatim |
 | `POST /api/registration/retry` | the only retry; user-driven |
-| `GET /api/kinds` | `{kinds:[{kind,label,configFields}]}` — the card UI's form definition, per registered kind. `GET /api/health` keeps a **plain** kind-name list: a liveness probe has no use for descriptors |
-| `GET /api/remotes` | every stored remote, each with a live `reachability` and a `baseline`; an unreadable record appears as `{remoteId, broken:{reason,message}}` rather than being hidden. Its `kinds` field is the **descriptor array**, the same shape `GET /api/kinds` serves |
-| `POST /api/remotes` | create — validates the `remoteId` charset, delegates `config` to the kind. Created **`enabled: false`**. 400 / 409 |
-| `PATCH /api/remotes/:id` | edit everything **except** `remoteId`; a changed `config` resets `baseline` to `unknown` **and `enabled` to `false`**; a label-only edit preserves both |
+| `GET /api/kinds` | `{kinds:[{kind,label,configFields}], mirrorDefaults:{root,exclude}}` — the card UI's form definition, per registered kind, plus the Advanced group's prefill from `src/mirror.mjs`'s `DEFAULT_MIRROR`. `GET /api/health` keeps a **plain** kind-name list: a liveness probe has no use for descriptors or defaults |
+| `GET /api/remotes` | every stored remote, each with a live `reachability`, a `baseline` and its `mirror`; an unreadable record appears as `{remoteId, broken:{reason,message}}` rather than being hidden. Its `kinds` field is the **descriptor array**, the same shape `GET /api/kinds` serves, and it carries the same `mirrorDefaults` |
+| `POST /api/remotes` | create — validates the `remoteId` charset, delegates `config` to the kind, and validates `mirror` with `src/mirror.mjs` (**400**, message quoting the offending value and an exclude entry's index). An absent `mirror` stores `null`. Created **`enabled: false`**. 400 / 409 |
+| `PATCH /api/remotes/:id` | edit everything **except** `remoteId`; a changed `config` resets `baseline` to `unknown` **and `enabled` to `false`**; a label-only edit preserves both. **A `mirror` change resets neither** — it names the same target — and an omitted `mirror` preserves the stored one. An invalid `mirror` is a 400 and writes nothing |
 | `POST /api/remotes/:id/connect` | 200 `{remote}` — the kind's `connect` **first**, then the gate. 404 absent / 409 unreadable / **502** `{error, remote}` on a transport refusal |
 | `POST /api/remotes/:id/disconnect` | 200 `{remote, warning?}` — the gate **first**, then the kind's `disconnect`. 404 / 409 as above |
 | `DELETE /api/remotes/:id` | delete, **warning** when any cc project still names this `remoteId` |

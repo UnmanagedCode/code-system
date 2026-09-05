@@ -74,7 +74,7 @@ The launcher and the backend share **no in-memory state**: the launcher reads th
 
 See [`.wiki/decisions/architecture-shape.md`](.wiki/decisions/architecture-shape.md) for the source of truth and rationale.
 
-- **One cc System row per provider KIND, not per remote.** Two rows total — `docker` and `ssh` — each advertising `remotes:true`. cc has no `listRemotes` frame, so this plugin's own UI is the only catalog of remotes.
+- **One cc System row per provider KIND, not per remote.** Two rows total — `docker` and `ssh` — each advertising `remotes:true` **and `remoteDescriptors:true`**, always. cc has no `listRemotes` frame, so this plugin's own UI is the only catalog of remotes.
 - **System is a transport, not the remote system.** The cc System row is just how cc reaches a target. The real unit of identity is the remote/`remoteId`, and config is stored per `remoteId`.
 - **Ownership split:** the **launcher** owns execution; the **backend** owns config storage and the UI.
 - **Attach-only connect toggle.** Connecting to a remote never starts or stops a container.
@@ -99,4 +99,6 @@ See [`.wiki/decisions/architecture-shape.md`](.wiki/decisions/architecture-shape
 - **No long-lived shell, and no carry-over between commands.** cc's protocol has no persistent shell, so every redirected shell command runs as its own one-shot: **nothing persists — not even the working directory.** Every command starts at the project root, and cc tells the worker when its `cd` was discarded; exports, shell functions and background jobs do not survive either. See [`.wiki/gotchas/no-persistent-shell.md`](.wiki/gotchas/no-persistent-shell.md) and `docs/features.md`.
 - **Registration is refused (400) when the projects root is inside a git repository.** cc will not place session roots under a `.git` ancestor, and it checks this *before* spawning the provider — so registration fails in a devcontainer whose projects root is itself a repo. The plugin surfaces cc's own message, which names the directory and the fix. See [`.wiki/gotchas/active-registration.md`](.wiki/gotchas/active-registration.md).
 - **`BASH_RULES_NOT_ENFORCEABLE`.** If the user's `~/.claude/settings.json` has any `Bash(...)` entry under `permissions.deny`/`permissions.ask`, every remote spawn from this plugin is refused. This is host configuration, not a provider bug. See [`.wiki/gotchas/host-environment.md`](.wiki/gotchas/host-environment.md).
+- **A mirror change is not live.** A card's **Advanced** group sets how much of the target a worker can see; cc asks for it once per provider connection, so an edit reaches an already-running session only after the System reconnects. See [`.wiki/gotchas/mirror-advertisement.md`](.wiki/gotchas/mirror-advertisement.md) and [`docs/features.md`](docs/features.md).
+
 - **Plugin must live on the `local` system (`PLUGIN_BACKEND_LOCAL_ONLY`).** The plugin backend itself is not relocatable to a remote System.

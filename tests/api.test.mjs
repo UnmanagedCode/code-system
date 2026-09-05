@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
 import { createApi } from '../src/api.mjs';
+import { DEFAULT_MIRROR } from '../src/mirror.mjs';
 import { SCHEMA } from '../src/store.mjs';
 import { fakeConductor, stubDockerCli, stubSshCli, tempStore } from './helpers.mjs';
 
@@ -556,4 +557,121 @@ test('adding or dropping an optional config field is a config change', async (t)
   await call('POST', '/remotes/box/connect');
   await call('PATCH', '/remotes/box', { config: { host: 'box', user: 'root' } });
   assert.equal((await stored(store, 'box')).enabled, false, 'adding `user` is too');
+});
+
+// ── the mirror advertisement, backend side ───────────────────────────
+//
+// `mirror` is KIND-AGNOSTIC OPERATOR POLICY sitting beside `enabled`, not part
+// of the kind-owned `config`. That placement is what these tests are about: the
+// store's front door is its only validator, and — unlike a config change — a
+// mirror change names the SAME target, so it must not reset the gate.
+
+const MIRROR = { root: '/', exclude: ['/proc', '/dev', '/sys'] };
+
+// PINS: opting in stores exactly what was sent, and opting out stores the
+// explicit `null` cc reads as "I advertise nothing".
+test('POST stores a mirror, and stores null when none is sent', async (t) => {
+  const { call, store } = await withApi(t);
+  const made = await call('POST', '/remotes', {
+    remoteId: 'with', kind: 'docker', config: { container: 'a' }, mirror: MIRROR,
+  });
+  assert.equal(made.status, 201);
+  assert.deepEqual(made.body.remote.mirror, MIRROR);
+  assert.deepEqual((await stored(store, 'with')).mirror, MIRROR, 'and it is what landed on disk');
+
+  await call('POST', '/remotes', { remoteId: 'without', kind: 'docker', config: { container: 'b' } });
+  assert.equal((await stored(store, 'without')).mirror, null);
+});
+
+// PINS: an invalid advertisement is a 400 IN THE FORM, quoting the offending
+// value — not cc's MIRROR_ADVERTISEMENT_INVALID (502) at session start — and
+// nothing is written.
+test('POST refuses an invalid mirror 400 and writes nothing', async (t) => {
+  const { call } = await withApi(t);
+  const bad = await call('POST', '/remotes', {
+    remoteId: 'evil', kind: 'docker', config: { container: 'a' }, mirror: { root: '/a/../b' },
+  });
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /^mirror: /);
+  assert.ok(bad.body.error.includes('"/a/../b"'), `the message quotes the value: ${bad.body.error}`);
+  assert.deepEqual((await call('GET', '/remotes')).body.remotes, [], 'nothing was written');
+});
+
+test('PATCH refuses an invalid mirror 400 and leaves the stored record unchanged', async (t) => {
+  const { call, store } = await withApi(t);
+  await call('POST', '/remotes', {
+    remoteId: 'app', kind: 'docker', config: { container: 'a' }, mirror: MIRROR,
+  });
+  const before = await stored(store, 'app');
+
+  const bad = await call('PATCH', '/remotes/app', { mirror: { root: '/', exclude: ['/'] } });
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /covers the mirror root/);
+  assert.deepEqual(await stored(store, 'app'), before, 'the record is byte-for-byte what it was');
+});
+
+// PINS THE WHOLE POINT OF KEEPING `mirror` OUT OF `config`: a config change may
+// name a different target, so it resets the gate and the baseline; a mirror
+// change names the SAME target, so it must not. The form promises exactly this.
+test('a mirror-only PATCH leaves the gate and the baseline alone', async (t) => {
+  const { call, store } = await withApi(t);
+  await call('POST', '/remotes', { remoteId: 'app', kind: 'docker', config: { container: 'a' } });
+  // Enable it and give it a real baseline verdict, so both have something to lose.
+  await call('POST', '/remotes/app/connect');
+  const probed = { ...(await stored(store, 'app')), baseline: { state: 'ok', fingerprint: 'f', missing: [], checkedAt: 'T' } };
+  const { writeFile } = (await import('node:fs')).promises;
+  const { join } = await import('node:path');
+  await writeFile(join(store.dir, 'remotes', 'app.json'), JSON.stringify(probed, null, 2));
+
+  const patched = await call('PATCH', '/remotes/app', { label: 'App', mirror: MIRROR });
+  assert.equal(patched.status, 200);
+  assert.deepEqual(patched.body.remote.mirror, MIRROR);
+  assert.equal(patched.body.remote.enabled, true, 'the gate did not move');
+  assert.equal(patched.body.remote.baseline.state, 'ok', 'and neither did the baseline verdict');
+});
+
+// PINS THE OTHER HALF: a CONFIG change still resets both, and carries the stored
+// mirror through untouched while doing it.
+test('a config change still resets the gate, and carries the stored mirror through', async (t) => {
+  const { call, store } = await withApi(t);
+  await call('POST', '/remotes', {
+    remoteId: 'app', kind: 'docker', config: { container: 'a' }, mirror: MIRROR,
+  });
+  await call('POST', '/remotes/app/connect');
+  assert.equal((await stored(store, 'app')).enabled, true);
+
+  const patched = await call('PATCH', '/remotes/app', { config: { container: 'b' } });
+  assert.equal(patched.body.remote.enabled, false, 'a different config may be a different target');
+  assert.equal(patched.body.remote.baseline.state, 'unknown');
+  assert.deepEqual(patched.body.remote.mirror, MIRROR, 'but the advertisement is not collateral');
+});
+
+// PINS THE makeRecord FIELD-LIST HAZARD: makeRecord rebuilds from a fixed list,
+// so a field the PATCH handler does not carry through EXPLICITLY is silently
+// dropped. The form always sends `mirror`, but a rename from any other client
+// must not erase it.
+test('a PATCH that omits mirror preserves the stored one', async (t) => {
+  const { call, store } = await withApi(t);
+  await call('POST', '/remotes', {
+    remoteId: 'app', kind: 'docker', config: { container: 'a' }, mirror: MIRROR,
+  });
+  const patched = await call('PATCH', '/remotes/app', { label: 'Renamed' });
+  assert.equal(patched.body.remote.label, 'Renamed');
+  assert.deepEqual(patched.body.remote.mirror, MIRROR);
+  assert.deepEqual((await stored(store, 'app')).mirror, MIRROR);
+});
+
+// PINS: the defaults the Advanced group prefills come from src/mirror.mjs over
+// REST, so the frontend cannot grow a second copy of the list.
+test('both catalog routes serve the mirror defaults, and cards carry the mirror', async (t) => {
+  const { call } = await withApi(t);
+  const expected = { root: DEFAULT_MIRROR.root, exclude: [...DEFAULT_MIRROR.exclude] };
+  assert.deepEqual((await call('GET', '/kinds')).body.mirrorDefaults, expected);
+  assert.deepEqual((await call('GET', '/remotes')).body.mirrorDefaults, expected);
+
+  await call('POST', '/remotes', {
+    remoteId: 'app', kind: 'docker', config: { container: 'a' }, mirror: MIRROR,
+  });
+  assert.deepEqual((await call('GET', '/remotes')).body.remotes[0].mirror, MIRROR,
+    'the card carries it, so the edit form can pre-fill from the list response');
 });

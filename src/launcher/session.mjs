@@ -504,20 +504,31 @@ export class Session {
 
   // ── describeRemote ─────────────────────────────────────────────────
 
-  #describeRemote(f, remote) {
+  // `async` because the store-backed source reads the record; `handle` returns
+  // this promise into the serialised frame chain, whose existing catch reports a
+  // throw. THE SINGLE PLACE A DESCRIPTOR IS SHAPED: a source that advertises
+  // nothing yields a frame with NEITHER field, which §2.1 calls a valid
+  // "I advertise nothing".
+  async #describeRemote(f, remote) {
     const id = String(f.id);
     if (!this.#caps.remoteDescriptors) {
       // cc reads this as "I advertise nothing" rather than failing the session.
       this.#fail(id, 'EUNSUPPORTED', 'this provider advertises no mirror descriptors');
       return;
     }
-    const m = this.#source.mirrorFor(remote?.remoteId ?? null);
-    this.#write({
-      type: 'remoteDescriptor',
-      id,
-      ...(m.mirrorRoot ? { mirrorRoot: m.mirrorRoot } : {}),
-      ...(m.exclude && m.exclude.length > 0 ? { exclude: m.exclude } : {}),
-    });
+    const m = await this.#source.mirrorFor(remote?.remoteId ?? null);
+    const frame = { type: 'remoteDescriptor', id };
+    // ABSENT vs FALSY, and the distinction is load-bearing. A stored root of
+    // `""` or `0` is an INVALID claim, not an absent one, and swallowing it here
+    // would turn cc's MIRROR_ADVERTISEMENT_INVALID into a silently different
+    // session. Only `null`/`undefined` mean "nothing advertised".
+    if (m.mirrorRoot != null) frame.mirrorRoot = m.mirrorRoot;
+    // An EMPTY LIST really is the same as none — §2.1's "advertise nothing" —
+    // so it is omitted. Anything else present goes on the wire for cc to judge.
+    if (m.exclude != null && !(Array.isArray(m.exclude) && m.exclude.length === 0)) {
+      frame.exclude = m.exclude;
+    }
+    this.#write(frame);
   }
 
   // ── shutdown: protocol MUST 3 ──────────────────────────────────────
