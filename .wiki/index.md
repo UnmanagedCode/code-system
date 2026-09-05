@@ -17,6 +17,7 @@ Durable knowledge about this project: gotchas, decisions, glossary. Read this fi
 - [gotchas/baseline-probe-two-tier.md](gotchas/baseline-probe-two-tier.md) — the tooling probe is cached on a reachability fingerprint; check the flag not the binary; busybox `stat` succeeds and is wrong; the live busybox verdict is FOUR capabilities, not three
 - [gotchas/docker-exec-transport.md](gotchas/docker-exec-transport.md) — measured `docker exec` behaviour: children survive their host client; a never-started command reports on STDOUT with exit 127/128 while daemon refusals use stderr; `processGroupSignal` could be `true` and why it is not; `env -i --` (dropping the `--` lets a frame env key hijack the cwd) and the HOME discriminator; `-i` iff `stdin:'pipe'`; no `ps` in `node:24-slim`
 - [gotchas/ssh-controlmaster-transport.md](gotchas/ssh-controlmaster-transport.md) — measured `ssh` behaviour: exit 255 classifies NOTHING (a command's own 255 is indistinguishable); ssh takes a SHELL STRING so the far side's login shell re-parses it; `ControlMaster=auto` needs the control DIRECTORY and fails without it while `no` still multiplexes (which is why `spawnPlan` can stay pure); never emit `-M` (doubled it means `ask`); `-T` vs `RequestTTY force`; `-O check` speaks on stderr; the known_hosts policy is `ask` + `BatchMode`
+- [gotchas/hosted-integration-measured.md](gotchas/hosted-integration-measured.md) — what card 2026-0006 measured with a REAL cc hosting the plugin: cc has no plugin search path (clone into a scratch `PROJECTS_ROOT`, never adopt the real checkout — every mutating plugin route rewrites `CONVENTIONS.md`); a plugin restart cannot kill a live worker because the launcher is cc's child; the target really does need `/bin/bash` + GNU tooling; an unsupported target is refused at ADOPT, not at first use; cc's per-command ceiling is 605 s and the Bash tool's `timeout` never reaches cc
 - [gotchas/exec-env-across-a-boundary.md](gotchas/exec-env-across-a-boundary.md) — `ExecRequest.env` is the FRAME's env and `null` means the FAR SIDE's, never the launcher's `process.env`; `CC_REMOTE` overlaid last, by the kind; cc sends NO `env` on any `exec`, and keep the REPLACE branch anyway; name the interpreter absolutely
 
 ## Decisions
@@ -25,6 +26,7 @@ Durable knowledge about this project: gotchas, decisions, glossary. Read this fi
 
 ## Glossary
 
+- **`systems-protocol.md §N`** — a section of **cc's** wire spec, cited throughout `src/`, `docs/`, `tests/` and here. The file is **not in this repo**: read it at `$CC_CHECKOUT/docs/systems-protocol.md` in a code-conductor checkout (`docs/protocol.md`).
 - **System** (cc concept) — a transport row in cc's config; this plugin registers one per provider KIND (`docker`, `ssh`), not one per remote.
 - **remote / `remoteId`** — the actual target machine or container. Config is stored per `remoteId`. This is the real "remote system"; the cc System is just how cc reaches it.
 - **provider** — this plugin's code for one KIND of transport (`docker` or `ssh`), running on cc's host.

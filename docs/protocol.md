@@ -7,6 +7,11 @@ exchange, and the backend REST surface.
 The wire contract itself is code-conductor's `docs/systems-protocol.md`; this
 page records only **our** side of it.
 
+**That file is not in this repo.** Every `systems-protocol.md §N` citation in
+`src/`, `docs/`, `tests/` and `.wiki/` points at
+`$CC_CHECKOUT/docs/systems-protocol.md` in a code-conductor checkout —
+`CC_CHECKOUT` being the same variable `npm run conformance` is gated on.
+
 ## The handshake
 
 Sent once, before any other frame, in answer to cc's `hello`.
