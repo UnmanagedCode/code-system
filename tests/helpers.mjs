@@ -237,7 +237,7 @@ export async function stubSshCli(t, {
   exitExit = 0, exitStdout = '', exitStderr = 'Exit request sent.\n',
   connectExit = 0, connectStderr = '',
   execStdout = 'CCREAP ok 0 7\n', execStderr = '', execExit = 0,
-  socket = false, answers = null, master = false,
+  socket = false, answers = null, master = false, checkKilled = false,
 } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'code-system-sshstub-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
@@ -248,6 +248,10 @@ export async function stubSshCli(t, {
   const q = JSON.stringify;
   // The one cold wording, measured, shared by both `-O` verbs.
   const cold = `printf 'Control socket connect(%s): No such file or directory\\n' "$cp" >&2; exit 255`;
+  // `-O check` DIES BY SIGNAL instead of answering. The stub is spawned
+  // detached, so it leads its own process group and `kill -9 $$` reproduces
+  // exactly what `runSsh`'s timeout does to it — without waiting one out.
+  const killSelf = 'if [ "$verb" = check ]; then kill -9 $$; fi';
   await fs.writeFile(bin, [
     '#!/bin/sh',
     `printf '%s\\n' "$@" >> ${q(argvLog)}`,
@@ -262,6 +266,7 @@ export async function stubSshCli(t, {
     // Quiet: with the control directory absent — the normal state for every
     // operation except `connect` — this simply does not happen, and its
     // complaint must not reach the stderr under assertion.
+    checkKilled ? killSelf : ':',
     // Quiet: with the control directory absent — the normal state for every
     // operation except `connect` — this simply does not happen, and its
     // complaint must not reach the stderr under assertion. Never in `master`
@@ -278,7 +283,12 @@ export async function stubSshCli(t, {
       // EXITS 0 — owning no socket.
       `case " $* " in *" -N "*)`
         + ` if [ -e "$cp" ]; then`
-        + ` printf 'ControlSocket %s already exists, disabling multiplexing\\n' "$cp" >&2; exit 0; fi;`
+        // CRLF, because that is what ssh writes (measured with `od -c` against
+        // the fixture: the line ends `…multiplexing \r \n`). An LF here would
+        // let the suite prove only the easy case — the guard is line-anchored,
+        // and a future rewrite to a whole-string anchor would break on the real
+        // bytes while staying green against a convenient LF.
+        + ` printf 'ControlSocket %s already exists, disabling multiplexing\\r\\n' "$cp" >&2; exit 0; fi;`
         + ` printf '%b' ${q(connectStderr)} >&2;`
         + ` [ ${connectExit} -ne 0 ] && exit ${connectExit};`
         + ` : > "$cp"; : > ${q(marker)}; exit 0 ;; esac`,

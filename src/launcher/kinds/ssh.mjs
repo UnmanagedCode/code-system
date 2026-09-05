@@ -260,7 +260,21 @@ function destFor(config) {
 /**
  * The single funnel for every ssh invocation this module makes. Bounded, and
  * never rejects for a non-zero exit: the caller reads `code`/`stderr`.
- * @returns {Promise<{code:number|null, stdout:string, stderr:string, error:Error|null}>}
+ *
+ * `signal` IS SEPARATE FROM `code` ON PURPOSE, and it is the difference between
+ * "ssh answered no" and "ssh never got to answer". A child that dies by signal
+ * reports `code === null`, and this function's OWN timeout is implemented as a
+ * group SIGKILL — so without this field a timed-out invocation is
+ * indistinguishable from a clean exit 1, and `connect`'s reclaim would unlink a
+ * LIVE master's socket on a check that never completed.
+ *
+ * `code ?? 1` stays: `reachability`, `disconnect` and `reap` all want a
+ * signalled invocation to read as their ordinary negative ("not connected",
+ * "already closed", "could not prove the relay"), which is the safe reading for
+ * each. `connect` is the ONE caller that must not, and it reads `signal`.
+ *
+ * @returns {Promise<{code:number|null, signal:string|null, stdout:string,
+ *   stderr:string, error:Error|null}>}
  */
 function runSsh(cli, args, { timeoutMs }) {
   return new Promise((resolve) => {
@@ -269,7 +283,7 @@ function runSsh(cli, args, { timeoutMs }) {
       // detached so the timeout can kill the whole group: an operator's wrapper
       // invocation may put ssh a generation below us.
       child = spawn(cli[0], [...cli.slice(1), ...args], { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
-    } catch (e) { resolve({ code: null, stdout: '', stderr: '', error: e }); return; }
+    } catch (e) { resolve({ code: null, signal: null, stdout: '', stderr: '', error: e }); return; }
     const out = [];
     const err = [];
     let settled = false;
@@ -285,9 +299,10 @@ function runSsh(cli, args, { timeoutMs }) {
     };
     child.stdout?.on('data', b => out.push(b));
     child.stderr?.on('data', b => err.push(b));
-    child.on('error', e => done({ code: null, stdout: '', stderr: '', error: e }));
-    child.on('close', code => done({
+    child.on('error', e => done({ code: null, signal: null, stdout: '', stderr: '', error: e }));
+    child.on('close', (code, signal) => done({
       code: code ?? 1,
+      signal: signal ?? null,
       stdout: Buffer.concat(out).toString('utf8'),
       stderr: Buffer.concat(err).toString('utf8'),
       error: null,
@@ -320,12 +335,24 @@ const NO_CONTROL_SOCKET = 'Control socket connect(';
 // background `ssh -N` that owns no socket and that `-f` has already daemonised
 // out of our process group. (rig RESULTS §C2, OpenSSH_10.0p2.)
 //
-// An unanchored match is safe HERE where it is not in `classifyFailure`: `-N`
-// carries no remote command, so nothing but ssh writes to this stream.
+// NOTHING IN OUR ARGV BOUNDS THAT SURVIVOR. `ControlPersist` governs how long a
+// MASTER lingers idle, and this one is not a master — it is an ordinary client
+// that lost its multiplexing. It lives until the connection drops or someone
+// kills it. Its actual lifetime is UNMEASURED; the fix is not to bound it but
+// not to create it.
 //
-// MEASURED WITH CRLF, so it is matched against `allOf` (which strips the CR) and
-// never the raw stderr: `$` under /m sits before the `\n`, and the `\r` in
-// between would make this never fire — a guard that fails OPEN, silently.
+// Matched as a WHOLE LINE (`^…$` under /m), not as a substring. A line match is
+// safe HERE where a loose one is not in `classifyFailure`: `-N` carries no
+// remote command, so nothing but ssh writes to this stream.
+//
+// THE LINE IS CRLF-TERMINATED (measured, `od -c`), and the anchoring survives
+// that without help: ECMAScript counts `\r` as a LineTerminator, so `$` under
+// /m matches before it exactly as it does before `\n`. Verified both ways, and
+// the stub feeds the guard the real CRLF bytes. `allOf` is applied for
+// consistency with this module's other stderr readers and because it is the
+// form the error message quotes — it is NOT what makes this fire. What would
+// break is dropping /m for a whole-string anchor: that one really does need the
+// CR gone.
 const SOCKET_TAKEN = /^ControlSocket .+ already exists, disabling multiplexing$/m;
 const CONNECT_FAILED = 'ssh: connect to host ';
 const NO_RESOLVE = 'ssh: Could not resolve hostname ';
@@ -594,12 +621,23 @@ export function createSshTransport({ cli } = {}) {
 
       // ── (a) IS ONE ALREADY LIVE? ────────────────────────────────────
       const pre = await checkMaster(argv0, controlPath, dest);
-      if (pre.error || pre.code === null) {
-        // We do NOT know whether a master is live. Reclaiming on this would
-        // orphan a healthy one, so it is a throw and the ControlPath is left
-        // exactly as it was found.
-        throw new Error(`could not run '${argv0.join(' ')}' to check for a master to '${dest}':`
-          + ` ${pre.error?.message ?? 'no exit status'}`
+      // A CHECK THAT DID NOT COMPLETE IS NOT A "NO". Any non-zero exit below is
+      // read as "no master" and licenses the unlink at (b) — so a check that
+      // could not run, or that was KILLED BEFORE IT ANSWERED, must never reach
+      // it: unlinking then would orphan a live master and re-authenticate,
+      // which is the very pair of legs this method exists to prevent.
+      //
+      // `signal` is the load-bearing half. `runSsh` collapses a signal death to
+      // `code: 1` for its other callers, and its own timeout kills the group —
+      // so a pre-check that merely TIMED OUT against a healthy master arrives
+      // here indistinguishable from a clean "no master" unless the signal is
+      // read. The ControlPath is left exactly as it was found.
+      if (pre.error || pre.code === null || pre.signal !== null) {
+        const why = pre.error?.message
+          ?? (pre.signal ? `it was killed by ${pre.signal} before answering`
+            + ` (the bound is ${CHECK_TIMEOUT_MS} ms)` : 'no exit status');
+        throw new Error(`could not ask '${argv0.join(' ')}' whether a master to '${dest}' is`
+          + ` live: ${why} — refusing to touch the control socket '${controlPath}'`
           + ` (override the ssh invocation with ${SSH_ENV})`);
       }
       if (pre.code === 0) {
@@ -617,8 +655,15 @@ export function createSshTransport({ cli } = {}) {
       // and nothing else's — inside the 0700 directory just ensured — and (a)
       // has just proved nothing is listening on it. A directory here fails with
       // EISDIR and is reported with its errno; there is no recursive delete.
-      // It also makes failure self-healing: a `connect` that dies after (c)
-      // leaves a socket the NEXT `connect` reclaims.
+      //
+      // ON EVERY PATH THAT REACHES (c) THE CONTROLPATH IS NOW ABSENT — that is
+      // the precondition (d)'s proof rests on. The errno branch does not reach
+      // (c) at all; it throws, and leaves whatever it found in place.
+      //
+      // It also makes failure self-healing, in the shape that matters: a
+      // `connect` that died leaving a DEAD socket is reclaimed here by the next
+      // one. (A failure that left a LIVE master is healed at (a) instead — the
+      // next `connect` reuses it and returns.)
       try { await fs.unlink(controlPath); }
       catch (e) {
         if (e?.code !== 'ENOENT') {
@@ -634,7 +679,9 @@ export function createSshTransport({ cli } = {}) {
         { timeoutMs: CONNECT_TIMEOUT_MS });
       if (res.code !== 0) {
         throw new Error(`ssh could not open a master connection to '${dest}': `
-          + `${first(res.stderr) || res.error?.message || `exit ${res.code}`}`);
+          + `${first(res.stderr) || res.error?.message
+            || (res.signal ? `it was killed by ${res.signal} before answering`
+              + ` (the bound is ${CONNECT_TIMEOUT_MS} ms)` : `exit ${res.code}`)}`);
       }
 
       // ── (d) PROVE THE MASTER **THIS CALL** IS RESPONSIBLE FOR ───────
@@ -648,15 +695,20 @@ export function createSshTransport({ cli } = {}) {
       // success, and neither can an exit 0 that created nothing.
       //
       // WHAT IT DOES NOT GUARANTEE: a concurrent `connect()` FROM ANOTHER
-      // PROCESS can still bind between (b) and (c), and then the socket and the
-      // live master (d) sees are not ours. Nothing in `-O check`'s output
-      // identifies the owner — `Master running (pid=…)` is the MASTER's pid,
-      // which we never learn because `-f` daemonises it — so closing this would
-      // need a mechanism this module does not have. The loser of that race gets
-      // the degrade and THROWS rather than reporting success, leaving one
-      // orphan bounded by ControlPersist. No in-process lock is taken: connect
-      // state lives in the socket, not in memory (see this file's header), and
-      // a lock would not cover two processes anyway.
+      // PROCESS can bind at any point from (b) until (d)'s `lstat` — not merely
+      // until (c) — and a socket that appears in that whole window passes the
+      // `lstat` and the check identically. Nothing in `-O check`'s output
+      // identifies the owner: `Master running (pid=…)` is the MASTER's pid,
+      // which we never learn because `-f` daemonises it. So the loser of that
+      // race is caught only by the WORDING below — which holds for stock ssh
+      // and is what the fixture measures, but is not a proof: an operator
+      // wrapper that rewrites stderr, or a future OpenSSH rewording, and the
+      // loser reports a success it did not earn. Closing this properly needs a
+      // mechanism this module does not have.
+      //
+      // No in-process lock is taken: connect state lives in the socket, not in
+      // memory (see this file's header), and a lock would not cover two
+      // processes anyway.
       if (SOCKET_TAKEN.test(allOf(res.stderr))) {
         throw new Error(`ssh did not open the master to '${dest}': something else took the control`
           + ` socket '${controlPath}' first, so this connection degraded to no multiplexing`
@@ -668,9 +720,15 @@ export function createSshTransport({ cli } = {}) {
           + ` socket at '${controlPath}'`);
       }
       const check = await checkMaster(argv0, controlPath, dest);
-      if (check.code !== 0) {
+      if (check.code !== 0 || check.signal !== null) {
+        // `exit ${code}` is the LAST resort, and it must not render `exit null`:
+        // a check that could not run has no exit status to report, so say what
+        // actually happened to it.
+        const why = first(check.stderr) || check.error?.message
+          || (check.signal ? `it was killed by ${check.signal} before answering`
+            : `exit ${check.code}`);
         throw new Error(`ssh reported success opening a master to '${dest}' but the control socket`
-          + ` '${controlPath}' does not answer: ${first(check.stderr) || `exit ${check.code}`}`);
+          + ` '${controlPath}' does not answer: ${why}`);
       }
       return { controlPath, detail: first(check.stderr) };
     },

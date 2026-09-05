@@ -299,18 +299,22 @@ inherit branch the assignments are ours, but `<command…>[0]` is the frame's ow
 | stdin | nothing in argv. `stdin:'ignore'` already gives ssh a closed stdin, and `'pipe'` is how `writeFile`'s payload arrives and EOF propagates |
 | `detached` | never. The remote command is not an OS descendant of the client, so a group kill does not reach it |
 
-**`connect` is three invocations, in this order, and it is idempotent.**
+**`connect` is four steps, in this order — two ssh invocations and two
+filesystem operations — and it is idempotent.**
 
-| # | invocation | on what it finds |
+| # | step | on what it finds |
 |---|---|---|
-| 1 | `-o ControlMaster=no -O check -- <dest>` | **exit 0** → return `{controlPath, detail}` at once; nothing is spawned and nothing authenticates. **Could not run** (`error`, or no exit status) → throw naming `CODE_SYSTEM_SSH`, touching nothing. **Any other non-zero** → no master; continue |
-| 2 | `unlink(<ControlPath>)` | `ENOENT` is fine. Any other errno is a throw naming the path. A socket whose master is dead is **reclaimed**, because `disconnect` never clears one |
-| 3 | `-o ControlMaster=yes -N -f -- <dest>` | non-zero → throw. **Exit 0 is not sufficient**: `ControlSocket <p> already exists, disabling multiplexing` anywhere in its stderr is a throw, because ssh degrades to an unmultiplexed connection and exits 0, leaving a background `ssh -N` that owns no socket |
-| 4 | `lstat`, then `-O check` again | no file, or a non-zero check → throw. Together with step 2 leaving the path absent, this proves the master **this call** opened, not merely that one answers |
+| 1 | ssh `-o ControlMaster=no -O check -- <dest>` | **exit 0** → return `{controlPath, detail}` at once; nothing is spawned and nothing authenticates. **Did not complete** — spawn failed, no exit status, or **killed by a signal before answering** (which is how its own 5 s bound arrives) → throw naming `CODE_SYSTEM_SSH`, touching nothing. **Any other non-zero** → no master; continue |
+| 2 | `unlink(<ControlPath>)` | `ENOENT` is fine. Any other errno is a throw naming the path, and it does not continue. A socket whose master is dead is **reclaimed**, because `disconnect` never clears one |
+| 3 | ssh `-o ControlMaster=yes -N -f -- <dest>` | non-zero → throw. **Exit 0 is not sufficient**: a whole stderr LINE reading `ControlSocket <p> already exists, disabling multiplexing` is a throw, because ssh degrades to an unmultiplexed connection and exits 0, leaving a background `ssh -N` that owns no socket. The line is CRLF-terminated (measured); the match is line-anchored, which is CRLF-safe in JS |
+| 4 | `lstat`, then step 1's invocation again | no file, or a check that answered non-zero or did not answer → throw. Together with step 2 leaving the path absent on every route that reaches step 3, this proves the master **this call** opened, not merely that one answers |
 
 Step 1's non-zero reading is deliberately the same one `reachability` gives the
 same command — the wording is never consulted — so the probe and the connect
-path cannot disagree about one master.
+path cannot disagree about one master. The **did-not-complete** case is where
+they part: `reachability` reads it as "not connected" (a card must always
+answer), while `connect` refuses, because a non-answer there would license
+step 2's unlink against a master that may well be alive.
 
 
 

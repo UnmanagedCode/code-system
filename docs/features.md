@@ -194,9 +194,10 @@ in your own `known_hosts` (`ssh-keyscan`, or verifying the fingerprint by hand).
 
 **Connecting shares one authenticated connection.** The first connect opens an
 SSH ControlMaster and later commands ride it, so five commands cost one
-authentication instead of five. **Pressing Connect again costs nothing** — a
-remote that is already connected is already in the requested state, so nothing
-is opened and nothing authenticates. If the shared connection died without being
+authentication instead of five. **Pressing Connect again costs no
+authentication** — a remote that is already connected is already in the
+requested state, so nothing is opened; the button just checks the existing
+connection is still up. If the shared connection died without being
 closed (the machine rebooted, or the master was killed), Connect notices and
 opens a fresh one.
 

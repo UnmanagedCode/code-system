@@ -286,11 +286,16 @@ Read that row carefully — every part of it is a hazard:
   connects *normally*. So the far side **authenticates again** (visible as a +1
   in sshd's `Accepted publickey` count), and a caller guarding on the exit code
   sees nothing at all.
-- **The process survives us.** `-f` daemonises it, so it is out of our process
-  group and `runSsh`'s timeout kill cannot reach it. Counted in `/proc`: one
-  ControlPath, **two** `ssh … -N -f` naming it, of which one owns no socket.
-  Nothing reaps it but `ControlPersist` (600 s per orphan), and the call count
-  is unbounded — several were live at once during the 2026-0006 rig run.
+- **The process survives us, and NOTHING IN OUR ARGV BOUNDS IT.** `-f`
+  daemonises it, so it is out of our process group and `runSsh`'s timeout kill
+  cannot reach it. Counted in `/proc`: one ControlPath, **two** `ssh … -N -f`
+  naming it, of which one owns no socket. `ControlPersist=600` does **not**
+  bound it — that governs how long an idle *master* lingers, and this survivor
+  is not a master; it is an ordinary client that lost its multiplexing, and it
+  lives until its connection drops or someone kills it. **Its actual lifetime is
+  UNMEASURED** — no test here waits one out, because the fix stops creating
+  them. The call count is unbounded either way: several were live at once during
+  the 2026-0006 rig run.
 - **A trailing `-O check` PASSES.** It is addressed at the *path*, so it answers
   for whatever master owns it — here the healthy original. "Prove the master
   answers" is therefore not a proof that *this call* opened one.
@@ -299,10 +304,25 @@ Hence `connect`'s shape: ask first (`-O check`), return without spawning when a
 master already answers, and after a spawn require BOTH that ssh did not print
 this line AND that a socket exists that did not exist a moment before.
 
-**The line is CRLF-terminated** (`…multiplexing\r\n`), like the host-key refusal
-in §1. An anchored `/…$/m` match therefore never fires unless the CR is stripped
-first — `kinds/ssh.mjs`'s `allOf` is what does that, and dropping it would
-silently disable the guard rather than break it loudly.
+**The line is CRLF-terminated**, like the host-key refusal in §1 — measured, not
+inferred. Raw bytes of that stderr, `od -c`:
+
+```
+0000120   a   b   l   i   n   g       m   u   l   t   i   p   l   e   x
+0000140   i   n   g  \r  \n
+```
+
+The provider matches this as a **whole line** (`/^…$/m`), and that is CRLF-safe
+without help: **ECMAScript counts `\r` as a LineTerminator**, so `$` under `/m`
+matches before the `\r` just as it does before a `\n`. Checked both ways —
+`/^…multiplexing$/m` is `true` against the CRLF form, the LF form and the bare
+line. `kinds/ssh.mjs` still routes it through `allOf`, but for consistency with
+its other stderr readers, **not** because the guard needs it.
+
+The trap is one level over: **drop the `/m` for a whole-string anchor and the CR
+does break it** (`/^ControlSocket .+ multiplexing$/` is `false` against the CRLF
+bytes). The stub in `tests/helpers.mjs` emits the CRLF form so the guard is
+always fed the real bytes rather than a convenient LF.
 
 See also: [kill-relay.md](kill-relay.md),
 [exec-env-across-a-boundary.md](exec-env-across-a-boundary.md),

@@ -799,19 +799,35 @@ test('connect is IDEMPOTENT: a second call opens no second master', async (t) =>
 // every other signal we have.
 test('connect refuses to report success when ssh says it degraded to no multiplexing', async (t) => {
   await withTmpdir(t);
-  // The pre-check must say NO MASTER, or `connect` never reaches the master
-  // start at all — which is the OTHER half of the fix and is pinned above.
-  // Both checks answer 255 here, and that is deliberate: the degrade guard runs
-  // BEFORE the proving check, so the rejection this asserts can only come from
-  // the guard. A build without it throws "does not answer" instead, and reds.
+  // THE SCENARIO IS BUILT, NOT STIPULATED, and it is the surviving cross-process
+  // race: the pre-check finds nothing, and by the time `-N` runs SOMEONE ELSE
+  // owns the path. So this call sees the real leg-3 shape —
+  //   ssh EXITS 0, a master IS live at the ControlPath, and the proving
+  //   `-O check` therefore PASSES —
+  // and must still refuse, because the master answering is not the one it
+  // opened. `master: true` with a cold start plus a degrade wording on stderr
+  // is exactly that: the stub creates the socket and marks a master live while
+  // announcing the degrade. Delete the guard and this call reports success.
   const stub = await stubSsh(t, {
-    connectExit: 0,
-    connectStderr: 'ControlSocket /tmp/x/s already exists, disabling multiplexing\n',
-    checkExit: 255, checkStderr: 'Control socket connect(/tmp/x/s): No such file or directory\n',
+    master: true, connectExit: 0,
+    // THE MEASURED BYTES, CRLF and all, so the guard is fed what ssh really
+    // writes rather than a convenient LF. (It is line-anchored and JS treats
+    // `\r` as a line terminator, so this is not what makes the match work — it
+    // is what stops the suite from only ever proving the easy case.)
+    connectStderr: 'ControlSocket /tmp/x/s already exists, disabling multiplexing\r\n',
   });
-  await assert.rejects(() => createSshTransport({ cli: stub.cli }).connect(CONFIG),
+  const tr = createSshTransport({ cli: stub.cli });
+
+  await assert.rejects(() => tr.connect(CONFIG),
     /disabling multiplexing|already exists/,
     'exit 0 and a passing -O check must not launder a master this call did not open');
+
+  // THE OTHER HALF OF THE PREMISE, asserted rather than assumed: a master really
+  // IS live at that path now, so the `-O check` this call declined to trust
+  // would have said yes. Without that, the rejection above could be coming from
+  // a failing check rather than from the degrade guard.
+  assert.equal((await tr.reachability(CONFIG)).connected, true,
+    'the premise: the check that connect refused to trust would have PASSED');
 });
 
 // PINS THE RULING on a ControlPath whose master is DEAD (SIGKILLed, or the box
@@ -848,6 +864,37 @@ test('connect RECLAIMS a stale ControlPath rather than degrading against it', as
   assert.equal(await fs.readFile(cp, 'utf8'), '',
     'the dead socket must be replaced, not degraded against — the stale bytes are gone');
   await fs.stat(stub.marker);   // throws unless a LIVE master now stands behind the path
+});
+
+// PINS THE SHARPEST EDGE ON THE RECLAIM, and it is the one a plain
+// "could it spawn" guard misses. Every non-zero `-O check` licenses the unlink
+// at (b) — so a check that was KILLED BEFORE IT ANSWERED must never be read as
+// one, or `connect` unlinks a LIVE master's socket and then re-authenticates,
+// which is both legs of the defect this method exists to prevent.
+//
+// THIS IS THE TIMEOUT'S OWN PATH, asserted on the outcome rather than waited
+// out. `runSsh` bounds every invocation by SIGKILLing the process group, and a
+// child that dies by signal reports `code === null` — which `runSsh` collapses
+// to `code: 1` for its other callers. So a timed-out check against a healthy
+// master arrives at `connect` byte-identical to a clean "no master" unless the
+// SIGNAL is read, and the stub reproduces that observable with `kill -9 $$`.
+test('connect: a control-socket check KILLED before it answered is a throw, never a reclaim', async (t) => {
+  await withTmpdir(t);
+  await fs.mkdir(controlDir(), { recursive: true, mode: 0o700 });
+  const cp = controlPathFor(CONFIG);
+  const bytes = 'a LIVE master owns this socket';
+  await fs.writeFile(cp, bytes);
+  const stub = await stubSsh(t, { checkKilled: true });
+
+  await assert.rejects(() => createSshTransport({ cli: stub.cli }).connect(CONFIG), (e) => {
+    assert.match(e.message, /SIGKILL/, e.message);
+    assert.match(e.message, /refusing to touch/, e.message);
+    return true;
+  });
+  assert.equal(await fs.readFile(cp, 'utf8'), bytes,
+    'the control socket must be EXACTLY as it was found — no unlink on a check that never answered');
+  assert.equal((await stub.argv()).includes('-N'), false,
+    'and nothing was spawned, so nothing re-authenticated');
 });
 
 // PINS THE ONE LIMIT ON THAT RECLAIM. Any non-zero `-O check` counts as "no

@@ -638,15 +638,27 @@ and returns without spawning anything when a master already answers. Pressing
 Connect on a connected remote therefore costs one 5 s-bounded `-O check` and no
 authentication.
 
+**A pre-check that did not COMPLETE is not a "no".** Every non-zero exit
+licenses the reclaim below, so a check killed before it answered — which is
+exactly how its own 5 s bound arrives, as a group SIGKILL — must be told apart
+from one that answered "no master". `runSsh` collapses a signal death to
+`code: 1` for its other callers, where reading it as their ordinary negative is
+the safe choice; `connect` is the one caller that reads the `signal` and
+refuses, leaving the ControlPath untouched.
+
 What the proving check asks changed with it: not "does *a* master answer at this
 path" — that is what let a degraded call launder the original's health — but
 "did **this call** put one there", as two facts. ssh did not announce the
 degrade, and a socket exists now that did not exist a moment ago. The residual
 bound is a **concurrent `connect` from another process** binding between the
 unlink and the spawn; nothing in `-O check`'s output identifies a master's
-owner, so the loser throws rather than reporting success and leaves one orphan
-bounded by `ControlPersist`. No in-process lock is taken — connect state lives
-in the socket, and a lock would not cover two processes anyway.
+owner, so the loser is caught only by ssh's degrade **wording** — good enough
+for stock ssh, and what the fixture measures, but not a proof: rewrite that
+stderr and the loser reports an unearned success. The orphan it leaves is
+**not** bounded by `ControlPersist`, which governs an idle *master*; a degraded
+survivor is an ordinary client and lives until its connection drops. Its
+lifetime is unmeasured. No in-process lock is taken — connect state lives in the
+socket, and a lock would not cover two processes anyway.
 
 **A stale ControlPath is RECLAIMED, not refused.** ssh unlinks its socket on
 `-O exit` but not when the master dies, so a SIGKILL or a reboot leaves the file
