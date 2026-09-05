@@ -268,10 +268,19 @@ function destFor(config) {
  * indistinguishable from a clean exit 1, and `connect`'s reclaim would unlink a
  * LIVE master's socket on a check that never completed.
  *
- * `code ?? 1` stays: `reachability`, `disconnect` and `reap` all want a
- * signalled invocation to read as their ordinary negative ("not connected",
- * "already closed", "could not prove the relay"), which is the safe reading for
- * each. `connect` is the ONE caller that must not, and it reads `signal`.
+ * `code ?? 1` stays, and the three callers that live with it do NOT all read a
+ * signalled invocation the same way:
+ *
+ * - `reachability` and `reap` get their ordinary negative — "not connected",
+ *   "could not prove the relay" — which is the safe reading for each.
+ * - `disconnect` THROWS. A signalled `-O exit` carries no cold-shape prefix on
+ *   stderr (empty, when the kill lands before ssh writes), so it matches
+ *   neither the exit-0 return nor the `NO_CONTROL_SOCKET` one and reports
+ *   `exit 1`. That is correct, not a gap: a disconnect that was killed closed
+ *   nothing, and "already closed" would be a claim it cannot make.
+ *
+ * `connect` is the one caller that must not collapse it at all, and it is the
+ * only one that reads `signal`.
  *
  * @returns {Promise<{code:number|null, signal:string|null, stdout:string,
  *   stderr:string, error:Error|null}>}
@@ -349,10 +358,10 @@ const NO_CONTROL_SOCKET = 'Control socket connect(';
 // that without help: ECMAScript counts `\r` as a LineTerminator, so `$` under
 // /m matches before it exactly as it does before `\n`. Verified both ways, and
 // the stub feeds the guard the real CRLF bytes. `allOf` is applied for
-// consistency with this module's other stderr readers and because it is the
-// form the error message quotes — it is NOT what makes this fire. What would
-// break is dropping /m for a whole-string anchor: that one really does need the
-// CR gone.
+// consistency with this module's other stderr readers and for nothing else — it
+// is NOT what makes this fire, nor what the refusal quotes (that is `first`).
+// What would break is dropping /m for a whole-string anchor: that one really
+// does need the CR gone.
 const SOCKET_TAKEN = /^ControlSocket .+ already exists, disabling multiplexing$/m;
 const CONNECT_FAILED = 'ssh: connect to host ';
 const NO_RESOLVE = 'ssh: Could not resolve hostname ';

@@ -299,8 +299,9 @@ inherit branch the assignments are ours, but `<command…>[0]` is the frame's ow
 | stdin | nothing in argv. `stdin:'ignore'` already gives ssh a closed stdin, and `'pipe'` is how `writeFile`'s payload arrives and EOF propagates |
 | `detached` | never. The remote command is not an OS descendant of the client, so a group kill does not reach it |
 
-**`connect` is four steps, in this order — two ssh invocations and two
-filesystem operations — and it is idempotent.**
+**`connect` is four steps, in this order, and it is idempotent.** Steps 1, 3 and
+4 each spawn ssh — **three spawns**, in two invocation shapes (`-O check` twice,
+`-N -f` once); steps 2 and 4 each also do one filesystem operation.
 
 | # | step | on what it finds |
 |---|---|---|
