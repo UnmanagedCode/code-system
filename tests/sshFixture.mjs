@@ -227,6 +227,55 @@ export async function markerCount(cli, name, marker) {
 }
 
 /**
+ * Live processes ON THIS HOST whose argv names `controlPath` — the master,
+ * plus any redundant client that failed to take ownership of it. The host-side
+ * twin of `markerCount`, and the same reason for /proc over `ps`: this
+ * devcontainer is not guaranteed a `ps`.
+ *
+ * The manual reproducer this replaces is `ps -eo pid,args | grep
+ * ControlMaster=yes`, whose tell is SEVERAL `ssh … -N -f` naming the SAME
+ * ControlPath.
+ *
+ * MATCH AN EXACT ARGV ELEMENT, not a substring of the joined line.
+ * `sshBaseArgs` emits `-o` and `ControlPath=<p>` as two elements and
+ * /proc/<pid>/cmdline is NUL-separated, so an exact element compare is right —
+ * a substring match over the joined string would also count a DIFFERENT remote
+ * whose path is a prefix of ours, and would count this scanning process itself
+ * if the path ever reached its argv.
+ *
+ * Every read is best-effort: a pid can exit between readdir and read (ENOENT)
+ * and /proc holds entries we may not read (EACCES). Both are skipped, never
+ * thrown — a race must not red a test about orphans.
+ *
+ * TAKE THE COUNT AFTER `connect()` HAS RESOLVED: the provider's own `-O check`
+ * invocations name the same ControlPath but are short-lived and already reaped
+ * by then, so a settled count is exactly the masters.
+ *
+ * @returns {Promise<{count:number, pids:number[], cmdlines:string[]}>}
+ *   `pids` so a test can SIGKILL the master out of band; `cmdlines` so a failure
+ *   NAMES the orphans instead of asserting `2 !== 1`.
+ */
+export async function controlPathProcs(controlPath) {
+  const want = `ControlPath=${controlPath}`;
+  const pids = [];
+  const cmdlines = [];
+  let entries;
+  try { entries = await fs.readdir('/proc'); }
+  catch { return { count: 0, pids, cmdlines }; }
+  for (const d of entries) {
+    if (!/^\d+$/.test(d)) continue;
+    let raw;
+    try { raw = await fs.readFile(path.join('/proc', d, 'cmdline'), 'utf8'); }
+    catch { continue; }
+    const parts = raw.split('\0').filter(Boolean);
+    if (!parts.includes(want)) continue;
+    pids.push(Number(d));
+    cmdlines.push(parts.join(' '));
+  }
+  return { count: pids.length, pids, cmdlines };
+}
+
+/**
  * How many times sshd has ACCEPTED AN AUTHENTICATION. sshd runs with `-e`, so
  * it logs to stderr and `docker logs` has it.
  *

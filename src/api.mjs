@@ -246,9 +246,11 @@ export function createApi(deps = {}) {
 
       const updated = { ...record, enabled: true, updatedAt: new Date().toISOString() };
       await writeRemote(updated);
-      // A REAL RE-PROBE, not a claim: a successful ssh connect changes the
-      // control socket's inode, which moves the fingerprint, which re-probes the
-      // baseline — all inside this response.
+      // A REAL RE-PROBE, not a claim: an ssh connect that OPENED a master
+      // changes the control socket's inode, which moves the fingerprint, which
+      // re-probes the baseline — all inside this response. On the idempotent
+      // path (a master was already live) the inode does not move, and the
+      // baseline correctly re-probes nothing: no connection changed.
       res.json({ remote: await cardFor({ ok: true, record: updated }) });
     } catch (e) { next(e); }
   });

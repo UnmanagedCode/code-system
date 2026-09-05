@@ -295,11 +295,38 @@ function runSsh(cli, args, { timeoutMs }) {
   });
 }
 
+/**
+ * THE ONE `-O check` INVOCATION. `reachability` and `connect` must ask the
+ * socket the SAME way, or the probe and the connect path could disagree about
+ * the same master — and `connect`'s decision to reclaim a stale ControlPath
+ * rests on this answering exactly as the probe does.
+ *
+ * Returns the RAW result: each caller owns its own interpretation of a non-zero
+ * exit (`reachability` words it for a card, `connect` reads it as "no master").
+ */
+function checkMaster(cli, controlPath, dest) {
+  return runSsh(cli, [...sshBaseArgs(controlPath, { master: 'no' }), '-O', 'check', '--', dest],
+    { timeoutMs: CHECK_TIMEOUT_MS });
+}
+
 // ssh's own wordings, MEASURED against OpenSSH_10.0p2. Every one of these is
 // exit 255, which is why the text is what classifies and the code never can:
 // a missing control socket, an unreachable host, a bad hostname and a remote
 // command that itself exits 255 are all exit 255.
 const NO_CONTROL_SOCKET = 'Control socket connect(';
+// MEASURED, and it is the whole reason exit 0 could not be trusted: a second
+// `ControlMaster=yes` against an EXISTING ControlPath does not fail. ssh prints
+// this, disables multiplexing, connects normally and EXITS 0 — leaving a
+// background `ssh -N` that owns no socket and that `-f` has already daemonised
+// out of our process group. (rig RESULTS §C2, OpenSSH_10.0p2.)
+//
+// An unanchored match is safe HERE where it is not in `classifyFailure`: `-N`
+// carries no remote command, so nothing but ssh writes to this stream.
+//
+// MEASURED WITH CRLF, so it is matched against `allOf` (which strips the CR) and
+// never the raw stderr: `$` under /m sits before the `\n`, and the `\r` in
+// between would make this never fire — a guard that fails OPEN, silently.
+const SOCKET_TAKEN = /^ControlSocket .+ already exists, disabling multiplexing$/m;
 const CONNECT_FAILED = 'ssh: connect to host ';
 const NO_RESOLVE = 'ssh: Could not resolve hostname ';
 const BAD_HOSTNAME = 'hostname contains invalid characters';
@@ -504,9 +531,7 @@ export function createSshTransport({ cli } = {}) {
       try { controlPath = controlPathFor(config); }
       catch (e) { return no(e instanceof Error ? e.message : String(e)); }
 
-      const res = await runSsh(
-        argv0, [...sshBaseArgs(controlPath, { master: 'no' }), '-O', 'check', '--', dest],
-        { timeoutMs: CHECK_TIMEOUT_MS });
+      const res = await checkMaster(argv0, controlPath, dest);
 
       if (res.error || res.code === null) {
         return no(`could not run '${argv0.join(' ')}': ${res.error?.message ?? 'no exit status'}`
@@ -543,8 +568,16 @@ export function createSshTransport({ cli } = {}) {
 
     // THE DEDICATED MASTER. `-N` (no remote command) + `-f` (background only
     // AFTER authentication succeeds), so success is bounded by ConnectTimeout
-    // with no polling loop — and then it PROVES itself with one `-O check`
-    // rather than trusting exit 0.
+    // with no polling loop — and then it PROVES itself rather than trusting
+    // exit 0.
+    //
+    // IT IS IDEMPOTENT, and that is not free: a `ControlMaster=yes` over a LIVE
+    // ControlPath does NOT fail. ssh says `ControlSocket … already exists,
+    // disabling multiplexing`, connects normally and EXITS 0 — so the far side
+    // authenticates again and the backgrounded `ssh -N` owns no socket, while a
+    // trailing `-O check` inspects the ORIGINAL master and reports success.
+    // Hence the pre-check below: the only way not to spawn that is not to spawn
+    // it. (.wiki/gotchas/ssh-controlmaster-transport.md)
     //
     // This is the one operation that binds a socket, so it is the one that
     // needs the control directory — and being async, it is allowed the I/O that
@@ -552,8 +585,50 @@ export function createSshTransport({ cli } = {}) {
     async connect(config) {
       const dest = destFor(config);
       const controlPath = controlPathFor(config);
+      // FIRST, BEFORE ANY ssh RUNS. Not only about the socket we may be about
+      // to bind: on the already-connected path below we hand back a socket that
+      // lives in this directory, and a group- or world-accessible one is
+      // exactly where another local user can pre-create a socket at our
+      // derivable path.
       await ensureControlDir();
 
+      // ── (a) IS ONE ALREADY LIVE? ────────────────────────────────────
+      const pre = await checkMaster(argv0, controlPath, dest);
+      if (pre.error || pre.code === null) {
+        // We do NOT know whether a master is live. Reclaiming on this would
+        // orphan a healthy one, so it is a throw and the ControlPath is left
+        // exactly as it was found.
+        throw new Error(`could not run '${argv0.join(' ')}' to check for a master to '${dest}':`
+          + ` ${pre.error?.message ?? 'no exit status'}`
+          + ` (override the ssh invocation with ${SSH_ENV})`);
+      }
+      if (pre.code === 0) {
+        // IDEMPOTENT. Nothing is spawned and nothing authenticates — the master
+        // that is already there IS the requested state, exactly as "already
+        // closed" is `disconnect`'s.
+        return { controlPath, detail: first(pre.stderr) };
+      }
+
+      // ── (b) NOT LIVE. CLEAR A DEAD SOCKET OUT OF THE WAY ────────────
+      // ssh unlinks its socket on `-O exit` but NOT when the master dies, so a
+      // SIGKILL or a reboot leaves the file behind. `connect` reclaims it: this
+      // is the only path out, because `disconnect` reads every cold shape as
+      // "already disconnected" and never clears stray files. The path is ours
+      // and nothing else's — inside the 0700 directory just ensured — and (a)
+      // has just proved nothing is listening on it. A directory here fails with
+      // EISDIR and is reported with its errno; there is no recursive delete.
+      // It also makes failure self-healing: a `connect` that dies after (c)
+      // leaves a socket the NEXT `connect` reclaims.
+      try { await fs.unlink(controlPath); }
+      catch (e) {
+        if (e?.code !== 'ENOENT') {
+          throw new Error(`no master answers at the ssh control socket '${controlPath}' for`
+            + ` '${dest}', and the stale file there could not be cleared:`
+            + ` ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+
+      // ── (c) OPEN IT ─────────────────────────────────────────────────
       const res = await runSsh(
         argv0, [...sshBaseArgs(controlPath, { master: 'yes' }), '-N', '-f', '--', dest],
         { timeoutMs: CONNECT_TIMEOUT_MS });
@@ -561,9 +636,38 @@ export function createSshTransport({ cli } = {}) {
         throw new Error(`ssh could not open a master connection to '${dest}': `
           + `${first(res.stderr) || res.error?.message || `exit ${res.code}`}`);
       }
-      const check = await runSsh(
-        argv0, [...sshBaseArgs(controlPath, { master: 'no' }), '-O', 'check', '--', dest],
-        { timeoutMs: CHECK_TIMEOUT_MS });
+
+      // ── (d) PROVE THE MASTER **THIS CALL** IS RESPONSIBLE FOR ───────
+      // The criterion is not "does A master answer at this path" — that is what
+      // let a degraded call report the original master's health as its own. It
+      // is "did THIS call put one there", as two facts: ssh did not announce the
+      // degrade, and a socket exists now that did not exist a moment ago —
+      // guaranteed by (b), which leaves the path absent either way.
+      //
+      // WHAT IT GUARANTEES: a redundant or degraded master cannot report
+      // success, and neither can an exit 0 that created nothing.
+      //
+      // WHAT IT DOES NOT GUARANTEE: a concurrent `connect()` FROM ANOTHER
+      // PROCESS can still bind between (b) and (c), and then the socket and the
+      // live master (d) sees are not ours. Nothing in `-O check`'s output
+      // identifies the owner — `Master running (pid=…)` is the MASTER's pid,
+      // which we never learn because `-f` daemonises it — so closing this would
+      // need a mechanism this module does not have. The loser of that race gets
+      // the degrade and THROWS rather than reporting success, leaving one
+      // orphan bounded by ControlPersist. No in-process lock is taken: connect
+      // state lives in the socket, not in memory (see this file's header), and
+      // a lock would not cover two processes anyway.
+      if (SOCKET_TAKEN.test(allOf(res.stderr))) {
+        throw new Error(`ssh did not open the master to '${dest}': something else took the control`
+          + ` socket '${controlPath}' first, so this connection degraded to no multiplexing`
+          + ` — ${first(res.stderr)}`);
+      }
+      try { await fs.lstat(controlPath); }
+      catch {
+        throw new Error(`ssh reported success opening a master to '${dest}' but created no control`
+          + ` socket at '${controlPath}'`);
+      }
+      const check = await checkMaster(argv0, controlPath, dest);
       if (check.code !== 0) {
         throw new Error(`ssh reported success opening a master to '${dest}' but the control socket`
           + ` '${controlPath}' does not answer: ${first(check.stderr) || `exit ${check.code}`}`);

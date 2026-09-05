@@ -224,10 +224,20 @@ depend on the host being up:
 | directory present, socket absent | 255 | the same |
 | ControlPath exists as a **regular file** | 255 | `Control socket connect(<p>): Connection refused` |
 | ControlPath exists as a **directory** | 255 | the same |
+| **a real socket whose MASTER IS DEAD** (SIGKILLed) | 255 | the same — `Connection refused` |
+
+The last row is the one card 2026-0013 added, measured against the fixture: the
+socket file **outlives its master**, because ssh unlinks it on `-O exit` but not
+when the master dies. `-O exit` against it exits 255 and **leaves the file
+there**. So it is *indistinguishable by stderr* from a stray regular file — which
+is why `connect`'s reclaim keys on the FILESYSTEM (unlink, then prove a socket
+exists that did not a moment ago) and never on the wording.
 
 A regular file or a directory sitting at the ControlPath therefore reads as
 "already disconnected" — correctly: there is no master there, which is the
-requested state, and clearing stray files is not `disconnect`'s job.
+requested state, and clearing stray files is not `disconnect`'s job. Somebody
+still has to clear a dead one or the remote is unconnectable for ever; that
+somebody is `connect` (§12), which is the only operation with a reason to.
 
 ## 10. A remote command survives its killed client
 
@@ -259,6 +269,40 @@ first — see [kill-relay.md](kill-relay.md).
   no missing capabilities), which is why the fixture is not Alpine: busybox
   fails four capabilities and `fileops` would be gated off, making the live
   suite vacuous.
+
+## 12. `ControlMaster=yes` over an EXISTING ControlPath does NOT fail
+
+**This is the measurement card 2026-0013 exists for**, and it is the reason a
+`connect` could report success while doing the opposite of its job. Measured
+against the fixture with a master already live on the path:
+
+| invocation | exit | stderr |
+|---|---|---|
+| `-o ControlMaster=yes -N -f --  <dest>`, ControlPath **live** | **0** | `ControlSocket <p> already exists, disabling multiplexing` |
+
+Read that row carefully — every part of it is a hazard:
+
+- **Exit 0.** ssh clears `control_path`, drops to `ControlMaster=no` and
+  connects *normally*. So the far side **authenticates again** (visible as a +1
+  in sshd's `Accepted publickey` count), and a caller guarding on the exit code
+  sees nothing at all.
+- **The process survives us.** `-f` daemonises it, so it is out of our process
+  group and `runSsh`'s timeout kill cannot reach it. Counted in `/proc`: one
+  ControlPath, **two** `ssh … -N -f` naming it, of which one owns no socket.
+  Nothing reaps it but `ControlPersist` (600 s per orphan), and the call count
+  is unbounded — several were live at once during the 2026-0006 rig run.
+- **A trailing `-O check` PASSES.** It is addressed at the *path*, so it answers
+  for whatever master owns it — here the healthy original. "Prove the master
+  answers" is therefore not a proof that *this call* opened one.
+
+Hence `connect`'s shape: ask first (`-O check`), return without spawning when a
+master already answers, and after a spawn require BOTH that ssh did not print
+this line AND that a socket exists that did not exist a moment before.
+
+**The line is CRLF-terminated** (`…multiplexing\r\n`), like the host-key refusal
+in §1. An anchored `/…$/m` match therefore never fires unless the CR is stripped
+first — `kinds/ssh.mjs`'s `allOf` is what does that, and dropping it would
+silently disable the guard rather than break it loudly.
 
 See also: [kill-relay.md](kill-relay.md),
 [exec-env-across-a-boundary.md](exec-env-across-a-boundary.md),
