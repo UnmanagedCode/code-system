@@ -51,7 +51,7 @@ The last row is the one worth reading carefully:
   just pays its own authentication instead of sharing one. Connect again to get
   the multiplexing back. This is a performance warning, not a broken remote.
 
-## Disabled means no command runs
+## A disabled remote refuses every command
 
 A remote you have not connected is **switched off**, and every operation against
 it is refused — by code-system itself, on cc's host. **The target is not

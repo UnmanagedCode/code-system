@@ -10,7 +10,7 @@
 // under code-conductor.
 
 import {
-  GATE_COPY, GATE_SHARED_COPY, baselineNotice, cardAlert, gateStatus, mirrorPayload,
+  GATE_COPY, baselineNotice, cardAlert, gateStatus, mirrorPayload,
   mirrorSummary, probeStatus, routeFromSearch, searchForRoute,
 } from './cardState.mjs';
 
@@ -461,10 +461,10 @@ function card(remote) {
 
   c.appendChild(credRow(remote.remoteId));
 
-  // Both sentences, always: the shared one says what Disabled means at all, the
-  // per-kind one says what enabling THIS kind actually does.
-  c.appendChild(el('div', { class: 'note' },
-    `${GATE_SHARED_COPY} ${GATE_COPY[remote.kind] ?? ''}`.trim()));
+  // Only when this kind has something worth saying — a note with nothing in
+  // it is worse than no note.
+  const gateCopy = GATE_COPY[remote.kind];
+  if (gateCopy) c.appendChild(el('div', { class: 'note' }, gateCopy));
 
   c.appendChild(controls(remote));
 
