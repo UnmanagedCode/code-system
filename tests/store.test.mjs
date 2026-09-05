@@ -276,10 +276,6 @@ test('a schema-1 record whose remoteId does not match its filename is quarantine
 // schema 1, which readRemote refuses with a quarantine reason, so an unguarded
 // fall-through would move aside a record the next boot upgrades cleanly.
 test('an upgrade that cannot be written is logged, and the record is left for the next boot', async (t) => {
-  if (process.getuid?.() === 0) {
-    t.skip('root ignores the read-only store directory this test needs');
-    return;
-  }
   await withStore(t, async () => {
     await fs.mkdir(remotesDir(), { recursive: true });
     const file = path.join(remotesDir(), 'legacy.json');
@@ -289,6 +285,16 @@ test('an upgrade that cannot be written is logged, and the record is left for th
     // the pass gets all the way to the write and fails only there.
     await fs.chmod(remotesDir(), 0o500);
 
+    // MEASURED, NEVER ASSUMED. Root ignores the mode bits, and so do some
+    // filesystems — and a test that answered that by skipping would assert
+    // NOTHING and still report green, which is the one failure mode this repo
+    // refuses for its environment-dependent suites (see the ssh suite's
+    // prove-by-count). So the precondition is probed, and BOTH branches assert.
+    const probe = path.join(remotesDir(), '.writable-probe');
+    const enforced = await fs.writeFile(probe, 'x').then(
+      async () => { await fs.rm(probe, { force: true }); return false; },
+      () => true);
+
     const lines = [];
     let r;
     // Restored INSIDE the body, not in a `t.after`: withStore's own cleanup hook
@@ -296,6 +302,18 @@ test('an upgrade that cannot be written is logged, and the record is left for th
     // ran.
     try { r = await migrate({ log: m => lines.push(m) }); }
     finally { await fs.chmod(remotesDir(), 0o700); }
+
+    if (!enforced) {
+      // The guard itself is unreachable here. Assert the half that still holds
+      // — the pass completes and upgrades — and say loudly why the rest did not
+      // run, so a green line in this environment is not read as coverage.
+      t.diagnostic('mode 0500 did not stop a write (running as root?):'
+        + ' the upgrade-write guard was NOT exercised by this run');
+      assert.deepEqual(r.upgraded, ['legacy'], 'migrate still completes and upgrades');
+      assert.ok(lines.some(l => /upgraded remote 'legacy' schema 1 → 2/.test(l)),
+        `and logs it: ${JSON.stringify(lines)}`);
+      return;
+    }
 
     assert.deepEqual(r.upgraded, [], 'nothing claims to have been upgraded');
     assert.deepEqual(r.quarantined, [], 'and NOTHING was moved aside');

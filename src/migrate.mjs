@@ -22,11 +22,16 @@
 // schema is left untouched — so running the pass twice is a no-op without a
 // marker file to keep in sync.
 //
-// NOTHING IN THIS PASS MAY THROW. server.mjs awaits it BEFORE `listen`, and the
-// backend is the operator's only repair tool — so one record's failure (a full
-// disk, a read-only mount, an unrenameable file) is logged and skipped, never
-// allowed to take the UI and the API down for every other remote. Both the
-// upgrade write and the quarantine move are guarded individually.
+// NO ONE RECORD MAY TAKE THE PASS DOWN. server.mjs awaits it BEFORE `listen`,
+// and the backend is the operator's only repair tool — so a PER-RECORD failure
+// (a full disk, an unrenameable file) is logged and skipped, never allowed to
+// cost every other remote its UI and API. Guarded individually: the upgrade
+// write, and the quarantine move.
+//
+// DELIBERATELY NOT GUARDED: ensuring the remotes directory itself exists, at the
+// top of `migrate`. That is not one record's problem — a backend that cannot
+// create its own store has nothing to serve, and failing loudly at boot is the
+// honest answer.
 //
 // SCHEMA 1 → 2 (card 2026-0017) added `mirror`, the per-remote mirror
 // advertisement, as a top-level field beside `enabled` (src/store.mjs). A

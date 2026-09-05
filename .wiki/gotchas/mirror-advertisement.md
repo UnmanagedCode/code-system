@@ -48,7 +48,7 @@ badly.
 
 **5. Containment is `path.posix.relative`, NEVER a string prefix.** `/app-backup`
 is not inside `/app`, and `/app` is not inside `/a`. On cc's side one predicate
-(`withinPosix`, `mirror.ts:49-54`) serves its exclude test and its validation
+(`withinPosix`, `mirror.ts:49-53`) serves its exclude test and its validation
 alike. **We share no code with it**: `src/mirror.mjs:61-64` has its own
 `coversRoot`, because the mirror lives in the **far side's** path space whatever
 the backend runs on, so the platform-path `withinRoot`

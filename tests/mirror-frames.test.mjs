@@ -132,6 +132,46 @@ test('an invalid stored mirror reaches cc verbatim, for cc to refuse', async (t)
   assert.deepEqual(d2.exclude, ['/proc']);
 });
 
+// PINS THE SAME RULE FOR A NON-OBJECT `mirror`, which is its own input class:
+// property access on a primitive yields `undefined`, so a projection that only
+// read `.root`/`.exclude` would drop the value entirely and emit the legal empty
+// descriptor — the exact laundering the row above exists to prevent, surviving
+// in the one shape that has no fields to read. An ARRAY is here too because
+// `typeof [] === 'object'` puts it on the object path unless it is excluded
+// deliberately.
+test('a non-object mirror is forwarded, not silently dropped', async (t) => {
+  const cases = [
+    ['prim-string', 'oops'],
+    ['prim-number', 42],
+    ['prim-bool', true],
+    ['arr', ['/proc', '/dev']],
+  ];
+  const { l } = await launcher(t, cases.map(([id, mirror]) => dockerRecord(id, { mirror })));
+
+  for (const [id, mirror] of cases) {
+    l.send({ type: 'describeRemote', id: `d-${id}`, remoteId: id });
+    const d = await l.waitFor(f => f.type === 'remoteDescriptor' && f.id === `d-${id}`);
+    assert.deepEqual(d, { type: 'remoteDescriptor', id: `d-${id}`, mirrorRoot: mirror },
+      `${id}: the stored value is on the wire for cc to refuse, not swallowed`);
+    // The failure this guards against is indistinguishable from success unless
+    // stated: an empty descriptor is what cc reads as a VALID "advertise
+    // nothing", so dropping the value runs a working session on the wrong root.
+    assert.notDeepEqual(d, { type: 'remoteDescriptor', id: `d-${id}` },
+      `${id}: must NOT be the legal empty descriptor`);
+  }
+});
+
+// PINS THE BOUNDARY THE ROW ABOVE MUST NOT OVERSHOOT: an EMPTY OBJECT is not a
+// bad claim. cc's own validateAdvertisement reads `{}` as "advertise nothing" —
+// absent, null and `{}` all build the identical advertisement — so forwarding it
+// as an empty descriptor is agreement with cc, not laundering.
+test('an empty object mirror is the empty descriptor, matching cc\'s own reading', async (t) => {
+  const { l } = await launcher(t, [dockerRecord('blank', { mirror: {} })]);
+  l.send({ type: 'describeRemote', id: 'd1', remoteId: 'blank' });
+  const d = await l.waitFor(f => f.type === 'remoteDescriptor' && f.id === 'd1');
+  assert.deepEqual(d, { type: 'remoteDescriptor', id: 'd1' });
+});
+
 // PINS THE OTHER SIDE OF THAT LINE: an empty exclude LIST really is the same as
 // none (§2.1's "advertise nothing"), so it is omitted rather than sent as `[]`.
 // Without this, loosening the emit to `!= null` would silently start putting an

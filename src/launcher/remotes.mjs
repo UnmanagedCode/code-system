@@ -162,12 +162,21 @@ export class StoreRemoteSource {
     // `null` IS THE ONLY SHAPE WE ANSWER FOR — it is what the backend writes for
     // a remote that opted out. Everything else is forwarded as it was stored.
     if (m === null || m === undefined) return { mirrorRoot: null, exclude: [] };
+    // A NON-OBJECT HAS NO FIELDS TO PROJECT, and projecting it anyway is a
+    // laundering hole: `m.root` on a string, a number, a boolean or an array is
+    // `undefined`, both emit guards then skip, and `"mirror": "oops"` goes out
+    // as the LEGAL EMPTY DESCRIPTOR — cc runs a working project-root session
+    // instead of refusing. So the value itself rides `mirrorRoot`, where cc's
+    // shape check ("mirrorRoot must be a string…") is what refuses it.
+    // `typeof null === 'object'` is already excluded above.
+    if (typeof m !== 'object' || Array.isArray(m)) return { mirrorRoot: m, exclude: [] };
     // NO COERCION, AND THE OMISSION IS THE POINT. Defaulting a hand-edited
     // `{root: 123, exclude: "x"}` to the empty advertisement would launder an
     // INVALID claim into a VALID one: cc would take the NO_ADVERTISEMENT path
     // and silently run a different, working session instead of refusing with
     // MIRROR_ADVERTISEMENT_INVALID. Same posture as `config` — the store's front
-    // door validates, this passes through.
+    // door validates, this passes through. An EMPTY object is not laundering:
+    // cc's own validateAdvertisement reads `{}` as "advertise nothing" too.
     return { mirrorRoot: m.root, exclude: m.exclude };
   }
 }

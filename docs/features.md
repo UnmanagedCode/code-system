@@ -181,7 +181,9 @@ root is the local image of.
 
 - **The group is collapsed unless the remote already advertises a mirror**, and
   a remote that has never opted in advertises nothing — exactly the behaviour
-  from before this existed.
+  from before this existed. It is **absent entirely** until the card list's first
+  fetch returns, since the defaults it prefills from are served by the backend
+  and the form holds no copy of them.
 - **Paths must be absolute and already in normal form.** `/app/`, `/a/./b` and
   `/a/../b` are refused in the form, because code-conductor refuses to normalise
   a provider's claim about its own layout. An exclude covering the mirror root is

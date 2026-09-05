@@ -608,11 +608,21 @@ schema-1 record advertised nothing, so `upgradeToSchema2` rewrites it as
 `{...raw, schema: 2, mirror: null}` — the same "I advertise nothing" it already
 had, and every other field deep-equal. It is **exact-version** (`raw.schema !== 1`
 falls straight through), which is what makes a second run rewrite no bytes with
-no marker file, and it **never throws**: unparsable JSON, a non-object, or a
-record whose `remoteId` does not match its filename all return `false` and fall
-into the quarantine branch. That last guard matters — `writeRemote` addresses the
-file *by* the record's `remoteId`, so rewriting a mismatched record would write
-the wrong file or throw inside the pass that runs before the server listens.
+no marker file. Unparsable JSON, a non-object, or a record whose `remoteId` does
+not match its filename all answer `'skip'` and fall into the quarantine branch.
+That last one matters — `writeRemote` addresses the file *by* the record's
+`remoteId`, so rewriting a mismatched record would write the wrong file.
+
+**No single record may take the pass down**, because `server.mjs` awaits it
+before `listen` and the backend is the operator's only repair tool. The upgrade
+**write** and the quarantine **move** are each caught: the failure is logged
+naming the record, and the loop continues. A write that failed answers `'failed'`
+and **skips the rest of that record's iteration** — it is still at schema 1,
+which `readRemote` refuses with a quarantine reason, so falling through would
+move aside a healthy record over a transient disk error, and the upgrader only
+ever scans `remotes/`. Deliberately **not** guarded: creating the remotes
+directory itself, at the top of `migrate`. That is not one record's problem, and
+a backend that cannot make its own store should fail loudly.
 
 **The upgrade runs BEFORE the quarantine branch and reads the raw JSON itself**,
 and this stays the standing constraint for schema 3: `readRemote` refuses an
