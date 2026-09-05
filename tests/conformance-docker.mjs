@@ -146,6 +146,20 @@ async function killSuiteRun() {
     // container. Whatever survives is named by the sweep below.
     const bail = setTimeout(resolve, 5_000);
     bail.unref?.();
+    // RE-CHECKED ADJACENT TO THE KILL, because `kill(-pid)` is the most
+    // dangerous call in this file: if the group is gone and the OS has recycled
+    // the pgid, it lands on somebody else's processes.
+    //
+    // IT NARROWS NOTHING TODAY, AND IT CLOSES NOTHING EVER. Measured: the guard
+    // above, this line and the kill are ONE synchronous span — no event-loop
+    // turn between them — so `exitCode` cannot transition inside it, and the
+    // case that actually matters (the group gone at the OS level, not yet reaped
+    // by node) reads `null` at both points and is invisible from here. POSIX
+    // offers no atomic "signal this group if it is still the group I meant".
+    // What this line buys is that the check cannot be SEPARATED from the kill:
+    // an `await` inserted above would open a real window, and this check is
+    // already inside it.
+    if (child.exitCode !== null || child.signalCode !== null) { resolve(); return; }
     try { process.kill(-child.pid, 'SIGKILL'); } catch { resolve(); }
   });
   console.error(`${SCRIPT}: battery gone`);
