@@ -7,8 +7,8 @@
 // stored remote into argument injection against docker or ssh.
 //
 // REFUSED HERE, at the store's front door, rather than defended against in each
-// kind's spawnPlan. `docker`'s spawnPlan places `container` after `--` today and
-// card 2026-0004's will interpolate `host`/`user`; the rule had to hold before
+// kind's spawnPlan. `docker`'s spawnPlan places `container` after `--` and
+// `ssh`'s interpolates `host`/`user`; the rule had to hold before
 // either existed, because a validator that accepts an option-shaped value is a
 // latent hole even while spawnPlan throws.
 //

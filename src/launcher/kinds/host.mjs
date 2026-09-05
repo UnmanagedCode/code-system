@@ -147,8 +147,8 @@ export function createHostTransport({
     },
 
     // A host child IS our OS descendant, so killing its group — which the core
-    // already does before calling this — suffices. `docker` implements this for
-    // real (a token scan inside the container); `ssh` in card 2026-0004.
+    // already does before calling this — suffices. `docker` and `ssh` implement
+    // it for real (a token scan on the far side, both from kinds/reapscript.mjs).
     async reap() {},
   };
 }

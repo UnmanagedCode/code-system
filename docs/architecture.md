@@ -192,8 +192,8 @@ against the root with no `realpath`, so a symlink inside the root points whereve
 it likes and is not refused. This is deliberate and not worth fixing: on `host`,
 `exec` is arbitrary by design (`cat` reads the same file), and the fence exists
 only for the test vehicle — production `docker`/`ssh` remotes carry no root at
-all. **`docker` does not, and card 2026-0004 must not, treat it as a containment
-primitive.**
+all. **Neither `docker` nor `ssh` treats it as a containment primitive, and a
+future kind must not either.**
 
 **Its capabilities are DERIVED FROM ITS FLAGS, and that is load-bearing.**
 
@@ -269,8 +269,12 @@ tolerates `remotes`/`remoteDescriptors` as a **superset**. **A bound run against
 the real `docker` kind is therefore supported and worth doing** — it measures
 the shipped kind rather than a generalisation from `host`. What it needs is a
 container that shares the test process's filesystem (a bind mount), which is rig
-territory and **stays with card 2026-0006**: cards 2026-0003 and 2026-0004
-landed the two transports and their live suites, not the bound conformance rig.
+territory: cards 2026-0003 and 2026-0004 landed the two transports and their
+live suites, not the bound conformance rig. **It was scoped to card 2026-0006
+and card 2026-0006 did not do it** — that pass built a rig that hosts the plugin
+under a real cc and runs no conformance battery at all
+(`.wiki/gotchas/hosted-integration-measured.md` records what it did measure), so
+a bound run is still unowned.
 **A bound `ssh` run is further off than a bound `docker` one** — bind mounts are
 unavailable from this container at all, which is also why the ssh fixture image
 is built with no build context.
