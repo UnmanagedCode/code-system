@@ -115,11 +115,11 @@ export const EXPECTED = [
   ...['[all capabilities]', '[processGroupSignal:false]'].map(tag => ({
     name: `${tag} exec NEVER rejects — a command that cannot start is a spawnError, not a throw`,
     outcome: 'fail',
-    cause: 'a DEFECT, filed as its own card, not a forced outcome: src/launcher/session.mjs streams the'
+    cause: 'a DEFECT (card 2026-0016), not a forced outcome: src/launcher/session.mjs streams the'
       + ' docker CLI\'s own OCI diagnostic to cc as the command\'s stdout before classifyFailure can'
       + ' recognise it (src/launcher/kinds/docker.mjs), so cc\'s ExecOutputCollector.result leaves'
       + ' `output` holding that text instead of the spawnError. Measured: the diagnostic is on STDOUT,'
-      + ' 151 bytes ending CRLF, stderr empty, exit 127. Delete this entry when the card lands.',
+      + ' 151 bytes ending CRLF, stderr empty, exit 127. Delete this entry when card 2026-0016 lands.',
   })),
 
   // ── --remote / --mirror / --exclude: structurally unreachable ─────

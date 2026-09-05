@@ -85,13 +85,22 @@ needs a container sharing the test process's filesystem (a bind mount) — card
 (`tests/docker-live.test.mjs`), not the bound conformance rig. **It was scoped
 to card 2026-0006 and that card did not do it**: 2026-0006's rig hosts the
 plugin under a real cc and runs no conformance battery
-([hosted-integration-measured.md](hosted-integration-measured.md)). A bound run
-is still unowned.
+([hosted-integration-measured.md](hosted-integration-measured.md)).
+
+**Card 2026-0014 landed it: `npm run conformance:docker`.** It reports **37 pass
+/ 10 fail / 4 skip** of 51, of which **32 rows exercise the shipped `docker`
+transport**. Eight of the failures have two structural causes — the hardcoded
+`processGroupSignal: false` against `CAPABILITY_CONFIGS[0]`, and `main.mjs`
+refusing `--remote`/`--mirror`/`--exclude` for a store-backed kind — and the other
+two are a real transport defect the run **found** (card 2026-0016), which `host`
+structurally cannot reach. The four skips below are unchanged by it. Every
+measurement, and why `ssh` does not inherit the result, is in
+[bound-conformance.md](bound-conformance.md).
 
 **RUN cc's SUITE AGAINST A CLONE OF THE PIN, NEVER A LIVE cc WORKTREE.**
-`tests/conformance.mjs` runs cc's own test runner with `cwd: <checkout>`, and a
-`code-conductor` worktree somebody else is working in has a moving HEAD and may
-be read-only to you. Clone it (a clone reads the source and writes only to the
+Both conformance runners run cc's own test runner with `cwd: <checkout>`
+(`tests/ccCheckout.mjs`), and a `code-conductor` worktree somebody else is
+working in has a moving HEAD and may be read-only to you. Clone it (a clone reads the source and writes only to the
 destination), check out the pin, and point `CC_CHECKOUT` at the clone:
 
 ```sh

@@ -260,36 +260,92 @@ and their printed reasons are the list of what the run does not check:
 A **fifth** skip, or a different reason string, means the harness changed and
 this section needs re-checking.
 
-### The consequence for a bound conformance run
+### The bound conformance run
 
 `docker` and `ssh` always advertise `remotes:true`. Since cc `8b7b10bf` that no
 longer bars them from the battery: `CC_CONFORMANCE_REMOTE_ID` binds every
 fixture handle to one named target, and the third-party capability assertion
-tolerates `remotes`/`remoteDescriptors` as a **superset**. **A bound run against
-the real `docker` kind is therefore supported and worth doing** — it measures
-the shipped kind rather than a generalisation from `host`. What it needs is a
-container that shares the test process's filesystem (a bind mount), which is rig
-territory: cards 2026-0003 and 2026-0004 landed the two transports and their
-live suites, not the bound conformance rig. **It was scoped to card 2026-0006
-and card 2026-0006 did not do it** — that pass built a rig that hosts the plugin
-under a real cc and runs no conformance battery at all
-(`.wiki/gotchas/hosted-integration-measured.md` records what it did measure), so
-a bound run is still unowned.
-**A bound `ssh` run is further off than a bound `docker` one** — bind mounts are
-unavailable from this container at all, which is also why the ssh fixture image
-is built with no build context.
+tolerates `remotes`/`remoteDescriptors` as a **superset**. Card 2026-0014 landed
+the rig — `npm run conformance:docker` — so the shipped `docker` transport is
+**measured** under the battery's own fixtures rather than generalised to from
+`host`. Every measurement behind this section is in
+`.wiki/gotchas/bound-conformance.md`; the design is here.
 
-Until then, the seam is what carries the argument: `protocol.mjs`, `session.mjs`
-and `fileops.mjs` are kind-agnostic and `spawnPlan` is pure, so **`host` passing
-the core suite proves the core for every kind.** The per-kind residue is argv
-construction, `reap` and `classifyFailure` — covered for `docker` by unit tests
-on the pure `spawnPlan` plus `tests/docker-live.test.mjs` against a real
-container, and for `ssh` by `tests/sshkind.test.mjs` plus
-`tests/ssh-live.test.mjs` against a real sshd.
+**What the rig is.** `tests/conformance-docker.mjs` establishes filesystem
+identity by measurement, starts one container, probes the tooling baseline,
+seeds one store record, runs cc's suite, parses the reporter's output and
+compares it against a manifest. `tests/ccCheckout.mjs` holds everything it
+shares with the `host` runner: the `CC_CHECKOUT` gate, the drift check, the
+spawn, and the parse. `tests/boundConformanceFixture.mjs` owns identity;
+`tests/boundConformanceExpectations.mjs` owns the manifest;
+`tests/boundconformance.test.mjs` covers the pure halves of both in `npm test`,
+with no docker.
+
+**The `TMPDIR` seam is what makes it possible.** cc's suite builds its fixtures
+with node's own `fs`, rooting every one at `os.tmpdir()` — which reads `TMPDIR`
+on every call. Pointing it at a directory the container also sees redirects the
+fixtures with **no edit to cc**, and it survives cc's own run isolation because
+`tests/safeStoreRoot.mjs` derives its `REAL_TMP` from `os.tmpdir()` too.
+
+**The container's shape, and why each argument is there.** `--user
+<uid>:<gid>` — the suite's `EACCES` row chmods a file to `000` and requires the
+refusal, and a default `node:24-slim` runs as root, which reads it. `-v <host
+path>:<container path>` of the repo's gitignored `.conformance-tmp` — **a `-v`
+source path is resolved by the daemon, on the host**, so only paths that exist
+on the host are bindable; `/tmp` in this container is its own overlay and is
+not, while the workspace bind is. Both halves of that pair are measured and
+cross-checked (`docker inspect .Mounts` against `/proc/self/mountinfo`), never
+literals. `--pid=container:<self>` — cc's suite records a grandchild's pid from a
+command the **far side** ran and then SIGKILLs that number in **its own**
+namespace; sharing the namespace is what makes those the same pid.
+
+**The manifest is one table doing both jobs.** Anything not listed must PASS;
+anything listed must produce exactly its listed outcome, verbatim skip reason
+included; and a listed row that starts passing is **red**, because a manifest
+that only catches regressions has stopped discriminating. Every entry carries a
+mandatory `cause`, and the module throws at import without one.
+
+**The two structural non-coverages, with their causes.**
+
+1. **`processGroupSignal`.** `src/launcher/kinds/docker.mjs` hardcodes `false` —
+   a locked decision, argued below under "The `host` kind" and in
+   `.wiki/gotchas/docker-exec-transport.md`. `CAPABILITY_CONFIGS[0]` passes no
+   flags and requires `true`, and §10's third-party relaxation covers
+   `remotes`/`remoteDescriptors` only, so **two rows of that configuration fail
+   and neither is skipped**. §10 names our exact shape — a provider that accepts
+   `--no-process-group-signal` and ignores it — as failing rather than skipping.
+2. **The six `--remote`/`--mirror`/`--exclude` rows.**
+   `src/launcher/main.mjs` refuses those flags for a store-backed kind with exit
+   2 before any frame, so the rows that launch their own provider with them never
+   handshake. Deliberate, and not a gap to close: a flag-backed target source on
+   a shipped store-backed kind would be a **second remote path around the single
+   `ENOREMOTE` chokepoint** in `StoreRemoteSource.lookup`.
+
+Related, and off-spec but legitimate: §10 says `CC_CONFORMANCE_REMOTE_ID`
+presupposes `--remote`, and this run passes none. It clears the harness's
+bound-run precondition only because `StoreRemoteSource.hasRemotes()` is constant
+`true` — the constant is the reason it is legitimate.
+
+**`ssh` does not inherit the result, and needs its own card.** The bound run's
+whole value is the per-kind residue, and the two residues differ in exactly the
+axis the battery stresses hardest: `docker`'s `spawnPlan` hands the far side an
+**argv vector**, `ssh`'s hands it a **single shell string the far side's login
+shell re-parses**. The battery's `a file with spaces`, `two\nlines`, `hello —
+héllo` and multi-chunk base64 payloads are therefore a quoting test for `ssh` and
+a no-op for `docker`.
+
+**The seam still carries the rest**, and is why one bound kind is enough:
+`protocol.mjs`, `session.mjs` and `fileops.mjs` are kind-agnostic and `spawnPlan`
+is pure, so **`host` passing the core suite proves the core for every kind.** The
+per-kind residue is argv construction, `reap` and `classifyFailure` — covered for
+`docker` by unit tests on the pure `spawnPlan`, `tests/docker-live.test.mjs`
+against a real container, and now the bound run; and for `ssh` by
+`tests/sshkind.test.mjs` plus `tests/ssh-live.test.mjs` against a real sshd.
 
 **Run cc's suite against a CLONE of the pin, never against a live cc worktree.**
-`tests/conformance.mjs` runs cc's own test runner with `cwd: <checkout>`, so
-`CC_CHECKOUT` must not point at a checkout somebody else is working in:
+Both conformance runners run cc's own test runner with `cwd: <checkout>`
+(`tests/ccCheckout.mjs`), so `CC_CHECKOUT` must not point at a checkout somebody
+else is working in:
 
 ```sh
 git clone --no-hardlinks <cc-checkout> /tmp/cc-pin && git -C /tmp/cc-pin checkout <pin>
@@ -446,7 +502,8 @@ the same names in-process, so one function serves both surfaces.
 | `CODE_SYSTEM_ALLOW_HOST_KIND` | `kinds/host.mjs` | permits `--kind host` at all |
 | `CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED` | `kinds/host.mjs` | permits `--kind host` with no `--remote` fence. **No shipped path sets it** |
 | `CODE_SYSTEM_FAKE_TRANSPORT` | `main.mjs` | module path for `--kind fake`. Tests only |
-| `CC_CHECKOUT` | `tests/conformance.mjs` | gates the conformance run |
+| `CC_CHECKOUT` | `tests/ccCheckout.mjs` | gates both conformance runs |
+| `TMPDIR` | `kinds/ssh.mjs` → `controlPathFor`, via `os.tmpdir()` | the ControlPath's parent directory; refused rather than truncated past the 100-byte ceiling. Also **set** by `tests/conformance-docker.mjs`, to redirect cc's own fixture roots |
 
 **Why the docker and ssh CLIs are env vars rather than store fields or launch
 flags.** One argument, and it covers both.
@@ -856,3 +913,21 @@ sets the variable — which is how a stale `EBUSY` outlived cc removing it. The
 claim itself now also lives in the file's **ungated** test as a literal
 `deepEqual`, so a re-added or reordered code reds a plain `npm test` with no
 checkout at all, and the gated test is pure drift detection.
+
+```sh
+CC_CHECKOUT=/path/to/code-conductor \
+  CODE_SYSTEM_DOCKER='["sudo","-n","docker"]' npm run conformance:docker
+```
+
+The **bound** run: the same battery, unedited, against `--kind docker` over a
+container that shares this process's filesystem. Four inputs, all required:
+`CC_CHECKOUT` (a clone of the pin), a reachable daemon, `CODE_SYSTEM_DOCKER`
+naming the invocation explicitly, and a writable `<repo>/.conformance-tmp`
+inside a host bind. It skips cleanly and loudly without the first two, and it is
+**never part of `npm test`**. It seeds its own store and remote and removes both.
+
+**What it proves:** 32 of 51 rows against the shipped `docker` transport, under
+the battery's own fixtures. **What it structurally cannot:** the two capability
+rows and the six flag rows above, whose causes are in the section that names
+them. Both halves are enforced by `tests/boundConformanceExpectations.mjs` —
+anything not listed there must pass, and a listed row that starts passing is red.
