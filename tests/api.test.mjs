@@ -224,7 +224,9 @@ test('a newly created remote is switched OFF', async (t) => {
 // connect changes the control socket's inode, which moves the fingerprint,
 // which re-probes the baseline — all inside the action's own response.
 test('connect opens the ssh master, sets the gate, and answers a freshly probed card', async (t) => {
-  const stub = await stubSshCli(t, { socket: true, checkExit: 0, execStdout: GNU_OUT });
+  // A COLD START (`master: true`, nothing live yet): against a master that
+  // already answers, `connect` is idempotent and starts nothing at all.
+  const stub = await stubSshCli(t, { master: true, execStdout: GNU_OUT });
   const { call, store } = await withApi(t, {}, { CODE_SYSTEM_SSH: JSON.stringify(stub.cli) });
   await call('POST', '/remotes', { remoteId: 'box', kind: 'ssh', config: { host: 'box', user: 'me' } });
 
@@ -237,8 +239,10 @@ test('connect opens the ssh master, sets the gate, and answers a freshly probed 
 
   const argv = await stub.argv();
   assert.ok(argv.includes('-N'), 'a dedicated master was started');
-  assert.ok(argv.indexOf('check') > argv.indexOf('-N'),
+  assert.ok(argv.lastIndexOf('check') > argv.indexOf('-N'),
     'and PROVEN with `-O check` afterwards, rather than trusting exit 0');
+  assert.ok(argv.indexOf('check') < argv.indexOf('-N'),
+    'and PRE-CHECKED before it, which is what makes a second Connect free');
 });
 
 // PINS ATTACH-ONLY AT ITS SHARPEST POINT: the one situation in which a provider
@@ -270,7 +274,9 @@ test('connecting a docker remote whose container is STOPPED never starts it', as
 // reverse order would leave a remote reporting itself usable while every
 // operation against it failed at the transport.
 test('a connect the transport refuses leaves the gate OFF, carrying ssh\'s own words', async (t) => {
-  const stub = await stubSshCli(t, { connectExit: 255, connectStderr: 'Permission denied (publickey).\n' });
+  const stub = await stubSshCli(t, {
+    master: true, connectExit: 255, connectStderr: 'Permission denied (publickey).\n',
+  });
   const { call, store } = await withApi(t, {}, { CODE_SYSTEM_SSH: JSON.stringify(stub.cli) });
   await call('POST', '/remotes', { remoteId: 'box', kind: 'ssh', config: { host: 'box' } });
 

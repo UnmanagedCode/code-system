@@ -211,20 +211,47 @@ export async function stubDockerCli(t, {
  * A stub `ssh`. `socket: true` makes it CREATE a file at the requested
  * ControlPath, so `reachability`'s fingerprint has a real inode and ctime to
  * read. `answers` puts the `-O check` branch on the answers files.
+ *
+ * `master: true` REPLACES the canned `-O check` / `-O exit` / `-N` exits with a
+ * MODEL OF THE REAL SOCKET LIFECYCLE, which is what an idempotence test needs:
+ * canned exits cannot distinguish "a master is already there" from "one was
+ * just opened". Liveness is a marker file BESIDE the argv log, kept separate
+ * from the ControlPath file so `live`, `stale` (a ControlPath whose master is
+ * dead) and `cold` are three distinguishable states:
+ *
+ *   -O check   marker present → 0, `Master running (pid=4242)`
+ *              absent         → 255, the measured cold wording
+ *   -N         ControlPath ALREADY EXISTS → the MEASURED DEFECT: print
+ *              `ControlSocket <p> already exists, disabling multiplexing`,
+ *              EXIT 0, and touch nothing (no socket, no marker)
+ *              otherwise → create both, exit `connectExit`
+ *   -O exit    marker present → remove both, 0, `Exit request sent.`
+ *              absent         → 255, the same cold wording
+ *
+ * That `-N` branch is what makes a second-connect test discriminating rather
+ * than decorative: delete the caller's pre-check and the stub reproduces the
+ * degrade on its own.
  */
 export async function stubSshCli(t, {
   checkExit = 0, checkStdout = '', checkStderr = 'Master running (pid=4242)\n',
   exitExit = 0, exitStdout = '', exitStderr = 'Exit request sent.\n',
   connectExit = 0, connectStderr = '',
   execStdout = 'CCREAP ok 0 7\n', execStderr = '', execExit = 0,
-  socket = false, answers = null,
+  socket = false, answers = null, master = false, checkKilled = false,
 } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'code-system-sshstub-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const argvLog = path.join(dir, 'argv.txt');
   const bin = path.join(dir, 'ssh');
+  const marker = path.join(dir, 'master.alive');
   const ans = answers ? await answersFiles(dir, answers) : null;
   const q = JSON.stringify;
+  // The one cold wording, measured, shared by both `-O` verbs.
+  const cold = `printf 'Control socket connect(%s): No such file or directory\\n' "$cp" >&2; exit 255`;
+  // `-O check` DIES BY SIGNAL instead of answering. The stub is spawned
+  // detached, so it leads its own process group and `kill -9 $$` reproduces
+  // exactly what `runSsh`'s timeout does to it — without waiting one out.
+  const killSelf = 'if [ "$verb" = check ]; then kill -9 $$; fi';
   await fs.writeFile(bin, [
     '#!/bin/sh',
     `printf '%s\\n' "$@" >> ${q(argvLog)}`,
@@ -239,20 +266,50 @@ export async function stubSshCli(t, {
     // Quiet: with the control directory absent — the normal state for every
     // operation except `connect` — this simply does not happen, and its
     // complaint must not reach the stderr under assertion.
-    socket ? '[ -n "$cp" ] && [ -d "$(dirname "$cp")" ] && : > "$cp"' : ':',
-    ans
-      ? `if [ "$verb" = check ]; then cat ${q(ans.files.out)}; cat ${q(ans.files.err)} >&2;`
-        + ` exit "$(cat ${q(ans.files.code)})"; fi`
-      : `if [ "$verb" = check ]; then printf '%b' ${q(checkStdout)}; printf '%b' ${q(checkStderr)} >&2; exit ${checkExit}; fi`,
-    `if [ "$verb" = exit ]; then printf '%b' ${q(exitStdout)}; printf '%b' ${q(exitStderr)} >&2; exit ${exitExit}; fi`,
-    // A master start: -N with no remote command.
-    `case " $* " in *" -N "*) printf '%b' ${q(connectStderr)} >&2; exit ${connectExit} ;; esac`,
+    checkKilled ? killSelf : ':',
+    // Quiet: with the control directory absent — the normal state for every
+    // operation except `connect` — this simply does not happen, and its
+    // complaint must not reach the stderr under assertion. Never in `master`
+    // mode, where the -N branch below owns the socket's whole lifecycle.
+    socket && !master ? '[ -n "$cp" ] && [ -d "$(dirname "$cp")" ] && : > "$cp"' : ':',
+    ...(master ? [
+      `if [ "$verb" = check ]; then`
+        + ` if [ -e ${q(marker)} ]; then printf 'Master running (pid=4242)\\n' >&2; exit 0; fi; ${cold}; fi`,
+      `if [ "$verb" = exit ]; then`
+        + ` if [ -e ${q(marker)} ]; then rm -f ${q(marker)} "$cp";`
+        + ` printf 'Exit request sent.\\n' >&2; exit 0; fi; ${cold}; fi`,
+      // THE MEASURED DEFECT, reproduced: a ControlMaster=yes over an EXISTING
+      // ControlPath does not fail. ssh says so, disables multiplexing, and
+      // EXITS 0 — owning no socket.
+      `case " $* " in *" -N "*)`
+        + ` if [ -e "$cp" ]; then`
+        // CRLF, because that is what ssh writes (measured with `od -c` against
+        // the fixture: the line ends `…multiplexing \r \n`). An LF here would
+        // let the suite prove only the easy case — the guard is line-anchored,
+        // and a future rewrite to a whole-string anchor would break on the real
+        // bytes while staying green against a convenient LF.
+        + ` printf 'ControlSocket %s already exists, disabling multiplexing\\r\\n' "$cp" >&2; exit 0; fi;`
+        + ` printf '%b' ${q(connectStderr)} >&2;`
+        + ` [ ${connectExit} -ne 0 ] && exit ${connectExit};`
+        + ` : > "$cp"; : > ${q(marker)}; exit 0 ;; esac`,
+    ] : [
+      ans
+        ? `if [ "$verb" = check ]; then cat ${q(ans.files.out)}; cat ${q(ans.files.err)} >&2;`
+          + ` exit "$(cat ${q(ans.files.code)})"; fi`
+        : `if [ "$verb" = check ]; then printf '%b' ${q(checkStdout)}; printf '%b' ${q(checkStderr)} >&2; exit ${checkExit}; fi`,
+      `if [ "$verb" = exit ]; then printf '%b' ${q(exitStdout)}; printf '%b' ${q(exitStderr)} >&2; exit ${exitExit}; fi`,
+      // A master start: -N with no remote command.
+      `case " $* " in *" -N "*) printf '%b' ${q(connectStderr)} >&2; exit ${connectExit} ;; esac`,
+    ]),
     `printf '%b' ${q(execStdout)}; printf '%b' ${q(execStderr)} >&2; exit ${execExit}`,
   ].join('\n'));
   await fs.chmod(bin, 0o755);
   return {
     cli: [bin],
     dir,
+    // Only meaningful in `master` mode: the file that stands for a LIVE master,
+    // so a test can assert on liveness without reading the ControlPath.
+    marker,
     setAnswer: ans ? ans.set : null,
     async argv() {
       try { return (await fs.readFile(argvLog, 'utf8')).split('\n').filter(Boolean); }

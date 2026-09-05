@@ -616,7 +616,7 @@ design's load-bearing detail, and it was forced by measurement:
 | `reachability` | `-o ControlMaster=no -O check` | yes |
 | `reap` | `-o ControlMaster=no` | yes |
 | `disconnect` | `-o ControlMaster=no -O exit` | yes |
-| `connect` | `-o ControlMaster=yes -N -f` | yes, and it is the **only** one that creates the control directory |
+| `connect` | `-o ControlMaster=no -O check`, then `-o ControlMaster=yes -N -f` **only if that says no**, then `-O check` again | yes, and it is the **only** one that creates the control directory |
 
 `ControlMaster=no` is not "don't multiplex": it means **use a master if one
 exists, never create one**. Measured, it multiplexes onto a live master at zero
@@ -628,6 +628,54 @@ that directory — so `auto` would make a first `exec` against a fresh remote
 fail. `no` makes the pure path total: it multiplexes when it can and connects
 normally when it cannot.
 
+**`connect` is IDEMPOTENT, and the pre-check is the only way it can be.** A
+`ControlMaster=yes` over a **live** ControlPath does not fail: ssh prints
+`ControlSocket … already exists, disabling multiplexing`, connects normally and
+**exits 0**, so the far side authenticates again and the backgrounded `ssh -N`
+owns no socket — while the proving `-O check` inspects the *original* master and
+reports success. Since nothing after the spawn can undo it, `connect` asks first
+and returns without spawning anything when a master already answers. Pressing
+Connect on a connected remote therefore costs one 5 s-bounded `-O check` and no
+authentication.
+
+**A pre-check that did not COMPLETE is not a "no".** Every non-zero exit
+licenses the reclaim below, so a check killed before it answered — which is
+exactly how its own 5 s bound arrives, as a group SIGKILL — must be told apart
+from one that answered "no master". `runSsh` collapses a signal death to
+`code: 1` for its other callers, where reading it as their ordinary negative is
+the safe choice; `connect` is the one caller that reads the `signal` and
+refuses, leaving the ControlPath untouched.
+
+What the proving check asks changed with it: not "does *a* master answer at this
+path" — that is what let a degraded call launder the original's health — but
+"did **this call** put one there", as two facts. ssh did not announce the
+degrade, and a socket exists now that did not exist a moment ago. The residual
+bound is a **concurrent `connect` from another process** binding between the
+unlink and the spawn; nothing in `-O check`'s output identifies a master's
+owner, so the loser is caught only by ssh's degrade **wording** — good enough
+for stock ssh, and what the fixture measures, but not a proof: rewrite that
+stderr and the loser reports an unearned success. The orphan it leaves is
+**not** bounded by `ControlPersist`, which governs an idle *master*; a degraded
+survivor is an ordinary client and lives until its connection drops. Its
+lifetime is unmeasured. No in-process lock is taken — connect state lives in the
+socket, and a lock would not cover two processes anyway.
+
+**A stale ControlPath is RECLAIMED, not refused.** ssh unlinks its socket on
+`-O exit` but not when the master dies, so a SIGKILL or a reboot leaves the file
+behind. `connect` unlinks it and opens fresh, and that is the **only** path out:
+`disconnect` reads every cold shape as "already disconnected" and clearing stray
+files is explicitly not its job. Refusing would leave the remote permanently
+unconnectable with no in-product remedy. It is safe because the path is ours and
+nothing else's — inside the 0700 directory `ensureControlDir` has just created
+or refused — and because the pre-check has just proved nothing is listening.
+Three deliberate consequences: **any** non-zero `-O check` counts as "no master"
+(the same reading `reachability` gives the same command, so the two cannot
+disagree); a check that could not **run at all** is a throw, never a reclaim,
+because unlinking then could orphan a healthy master; and a directory at the
+ControlPath fails `unlink` with `EISDIR` and is reported with its errno. It also
+makes failure self-healing — a `connect` that dies after the spawn leaves a
+socket the next one reclaims.
+
 The consequence, stated rather than hidden: **an `exec` never creates the
 master.** Without a `connect` every command pays its own authentication and
 still works. That is the degradation the transport is designed around, and both
@@ -638,7 +686,10 @@ at 5 s, mirroring docker's "a daemon query, never a round trip INTO the target,
 because this runs on every card render". Its `fingerprint` is
 `ssh:<identity-hash>:<socket ino>:<socket ctimeMs>` — the recipe already locked
 in `.wiki/gotchas/baseline-probe-two-tier.md`, and a new master means a new
-socket means a new inode, which is exactly what makes `needsProbe` re-probe. It
+socket means a new inode, which is exactly what makes `needsProbe` re-probe —
+qualified by the idempotence above: a connect that **reused** a master moves no
+inode, so the re-probe after it is correctly a cache hit rather than a repeat of
+work whose answer cannot have changed. It
 is `null` on every non-connected answer, including "`-O check` said yes but the
 socket cannot be stat-ed": a fingerprint keyed on nothing would cache a verdict
 we cannot justify. `detail` names the ControlPath verbatim, which is what makes

@@ -289,7 +289,7 @@ inherit branch the assignments are ours, but `<command…>[0]` is the frame's ow
 | `-o BatchMode=yes` | always. Nothing may wait on a human — for a passphrase or a host key |
 | `-o ConnectTimeout=5` | always. With `BatchMode`, this is what makes an unreachable host answer in seconds rather than hang past cc's deadline |
 | `-o ControlPath=<path>` | provider-computed, never configurable — formula in `docs/architecture.md` |
-| `-o ControlMaster` | **`no` on every operation**; `yes` only in `connect`. `no` means "use a master if one exists, never create one", so the exec path needs no directory and `spawnPlan` stays pure. **`-M` is never emitted**: doubled with `-o ControlMaster=yes` it means `ask`, which `BatchMode` cannot answer (measured) |
+| `-o ControlMaster` | **`no` on every operation**; `yes` only in `connect`, and only after its own `no` pre-check found no master. `no` means "use a master if one exists, never create one", so the exec path needs no directory and `spawnPlan` stays pure. **`-M` is never emitted**: doubled with `-o ControlMaster=yes` it means `ask`, which `BatchMode` cannot answer (measured) |
 | `-o ControlPersist=600` | finite, so a master orphaned by a crashed launcher reaps itself |
 | `StrictHostKeyChecking` / `UserKnownHostsFile` | **never set** — that is the policy, not an omission. See below |
 | `--chdir=<cwd>` | the frame's `cwd`, verbatim, **including `/`**. Replaces docker's `-w`, which has no ssh equivalent; a bad cwd then fails inside `env` with a wording we classify |
@@ -298,6 +298,26 @@ inherit branch the assignments are ours, but `<command…>[0]` is the frame's ow
 | `<command…>` | `argv` form: the argv verbatim. `shell` form: `/bin/bash -lc <shell>` — the same interpreter the baseline probe requires |
 | stdin | nothing in argv. `stdin:'ignore'` already gives ssh a closed stdin, and `'pipe'` is how `writeFile`'s payload arrives and EOF propagates |
 | `detached` | never. The remote command is not an OS descendant of the client, so a group kill does not reach it |
+
+**`connect` is four steps, in this order, and it is idempotent.** Steps 1, 3 and
+4 each spawn ssh — **three spawns**, in two invocation shapes (`-O check` twice,
+`-N -f` once); steps 2 and 4 each also do one filesystem operation.
+
+| # | step | on what it finds |
+|---|---|---|
+| 1 | ssh `-o ControlMaster=no -O check -- <dest>` | **exit 0** → return `{controlPath, detail}` at once; nothing is spawned and nothing authenticates. **Did not complete** — spawn failed, no exit status, or **killed by a signal before answering** (which is how its own 5 s bound arrives) → throw naming `CODE_SYSTEM_SSH`, touching nothing. **Any other non-zero** → no master; continue |
+| 2 | `unlink(<ControlPath>)` | `ENOENT` is fine. Any other errno is a throw naming the path, and it does not continue. A socket whose master is dead is **reclaimed**, because `disconnect` never clears one |
+| 3 | ssh `-o ControlMaster=yes -N -f -- <dest>` | non-zero → throw. **Exit 0 is not sufficient**: a whole stderr LINE reading `ControlSocket <p> already exists, disabling multiplexing` is a throw, because ssh degrades to an unmultiplexed connection and exits 0, leaving a background `ssh -N` that owns no socket. The line is CRLF-terminated (measured); the match is line-anchored, which is CRLF-safe in JS |
+| 4 | `lstat`, then step 1's invocation again | no file, or a check that answered non-zero or did not answer → throw. Together with step 2 leaving the path absent on every route that reaches step 3, this proves the master **this call** opened, not merely that one answers |
+
+Step 1's non-zero reading is deliberately the same one `reachability` gives the
+same command — the wording is never consulted — so the probe and the connect
+path cannot disagree about one master. The **did-not-complete** case is where
+they part: `reachability` reads it as "not connected" (a card must always
+answer), while `connect` refuses, because a non-answer there would license
+step 2's unlink against a master that may well be alive.
+
+
 
 **No config value ever becomes an `-o`.** Every `-o` value is a provider-owned
 constant or the provider-computed ControlPath.

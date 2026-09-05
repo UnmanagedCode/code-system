@@ -45,8 +45,11 @@ import { KIND_META as SSH_META, createSshTransport } from './ssh.mjs';
  *
  *   For `ssh` they open and close the ControlMaster: `connect` is the one
  *   operation that BINDS the control socket (and so the only one allowed the
- *   I/O that builds its directory), `disconnect` is `ssh -O exit` and is
- *   IDEMPOTENT. They govern the MULTIPLEXED MASTER ONLY, never authorization:
+ *   I/O that builds its directory), `disconnect` is `ssh -O exit`. BOTH ARE
+ *   IDEMPOTENT — "already open" and "already closed" are each the requested
+ *   state, and for `connect` that costs a pre-check because ssh's own
+ *   `ControlMaster=yes` over a live socket degrades and exits 0 rather than
+ *   failing. They govern the MULTIPLEXED MASTER ONLY, never authorization:
  *   an `exec` after a `disconnect` still succeeds, unmultiplexed. That measured
  *   fact is exactly WHY the gate is a separate mechanism rather than something
  *   derivable from the socket — see .wiki/gotchas/gate-versus-probe.md.

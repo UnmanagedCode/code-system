@@ -27,8 +27,8 @@ import { makeRunner } from '../src/launcher/run.mjs';
 import { SCHEMA } from '../src/store.mjs';
 import { Launcher, tempStore, writeRecord } from './helpers.mjs';
 import {
-  authCount, inTarget, markerCount, resolveSshGate, run, settle, skipUnlessSsh, tempDir,
-  withSshTarget, writeSshConfig,
+  authCount, controlPathProcs, inTarget, markerCount, resolveSshGate, run, settle, skipUnlessSsh,
+  tempDir, withSshTarget, writeSshConfig,
 } from './sshFixture.mjs';
 
 function sshRecord(remoteId, host, over = {}) {
@@ -183,6 +183,93 @@ live('after connect(), five commands cost ONE authentication (control: five with
   }
   assert.equal(await authCount(g.cli, target.name), afterConnect + 5,
     'the discriminator works: unmultiplexed commands DO each authenticate');
+});
+
+// PINS IDEMPOTENCE ON THE ONLY TWO HONEST DISCRIMINATORS, both measured
+// against a real sshd rather than inferred: sshd's own authentication count,
+// and the host's own process table. "Connect resolved" is exactly what the
+// defect also looked like — it reported success while re-authenticating and
+// leaking a background `ssh -N` that owned no socket.
+//
+// THE AUTH COUNT IS READ AS A DELTA, never as an absolute: the fixture's own
+// readiness poll has already authenticated, so a literal would be an
+// unestablished claim about how many connections preceded this line.
+live('a second connect() re-authenticates nothing, opens no second master, and leaks no orphan', async (t, g) => {
+  const target = await withSshTarget(t, g);
+  const store = await storeFor(t, target);
+  const cp = controlPathFor(target.config);
+  const tr = target.transport();
+
+  const before = await authCount(g.cli, target.name);
+  await tr.connect(target.config);
+  const afterFirst = await authCount(g.cli, target.name);
+  assert.equal(afterFirst - before, 1, 'the first connect authenticates exactly once');
+  // THE PRODUCT'S OWN FINGERPRINT (`ssh:<hash>:<ino>:<ctimeMs>`), not the raw
+  // inode: this filesystem hands a just-freed inode straight back, so `ino`
+  // alone can be equal across a genuine replacement. The ctime cannot.
+  const fp = (await tr.reachability(target.config)).fingerprint;
+  assert.ok(fp, 'a connected remote must carry a fingerprint');
+  const one = await controlPathProcs(cp);
+  assert.equal(one.count, 1, `exactly one master must own the socket: ${one.cmdlines.join(' | ')}`);
+
+  await tr.connect(target.config);
+
+  assert.equal(await authCount(g.cli, target.name) - afterFirst, 0,
+    'a second connect against a live master must not authenticate again');
+  const procs = await controlPathProcs(cp);
+  assert.equal(procs.count, 1,
+    `an orphaned ssh -N survived the second connect: ${procs.cmdlines.join(' | ')}`);
+  assert.equal((await tr.reachability(target.config)).fingerprint, fp,
+    'and it is the SAME socket, untouched — so the post-connect re-probe is a cache hit');
+
+  // The reused master is really USABLE, not merely present — and using it still
+  // costs nothing.
+  const l = launcherFor(t, store, target.sshEnv);
+  await l.hello();
+  l.send({ type: 'exec', id: 'r1', remoteId: 'alpha', cwd: '/tmp', argv: ['printf', 'ok'] });
+  const exit = await l.waitFor(f => f.type === 'exit' && f.id === 'r1');
+  assert.equal(exit.code, 0, textOf(l.frames, 'r1', 'stderr'));
+  assert.equal(textOf(l.frames, 'r1'), 'ok');
+  assert.equal(await authCount(g.cli, target.name), afterFirst,
+    'and an exec over the reused master costs no authentication either');
+});
+
+// PINS THE STALE-SOCKET RULING against the thing that actually produces one: a
+// master killed out of band runs no cleanup, so ssh's socket file outlives it.
+// `disconnect` will not clear it (every cold shape is "already disconnected"),
+// so if `connect` refused, the remote would be permanently unconnectable with
+// no in-product remedy. It reclaims instead — one new authentication, a NEW
+// inode, one master.
+//
+// Asserted through the SHIPPED probe rather than a hand-rolled `ssh -O check`,
+// so this measures the product's own eyes; and through `settle`, the project's
+// bounded poll, never a sleep.
+live('a master killed out of band leaves a stale socket, and connect reclaims it', async (t, g) => {
+  const target = await withSshTarget(t, g);
+  const cp = controlPathFor(target.config);
+  const tr = target.transport();
+
+  await tr.connect(target.config);
+  const fp = (await tr.reachability(target.config)).fingerprint;
+  const procs = await controlPathProcs(cp);
+  assert.equal(procs.count, 1, `one master to kill: ${procs.cmdlines.join(' | ')}`);
+  process.kill(procs.pids[0], 'SIGKILL');
+
+  assert.equal(await settle(async () => (await tr.reachability(target.config)).connected === false),
+    true, 'the master must really be gone before the reclaim means anything');
+  await fs.stat(cp);   // MUST still exist: this is the stale case, not the cold one
+  const authBefore = await authCount(g.cli, target.name);
+
+  await tr.connect(target.config);
+
+  assert.equal(await authCount(g.cli, target.name) - authBefore, 1,
+    'the reclaim opens a real master: exactly one new authentication');
+  const back = await tr.reachability(target.config);
+  assert.equal(back.connected, true);
+  // Again the FINGERPRINT rather than the bare inode — see the test above.
+  assert.notEqual(back.fingerprint, fp, 'the dead socket was replaced, not reused');
+  const after = await controlPathProcs(cp);
+  assert.equal(after.count, 1, `and exactly one master owns the new one: ${after.cmdlines.join(' | ')}`);
 });
 
 /** Three live `sleep <marker>` execs plus a barrier proving they were spawned. */

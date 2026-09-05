@@ -148,17 +148,26 @@ reference-provider arm that produced the superseded 120 s table was not re-run
 (the constant is cc-side and provider-independent). Nothing in this repo ever
 stated the 120 s figure, so there was nothing here to correct.
 
-## 6. `connect` is not idempotent — card 2026-0013
+## 6. What the rig caught in `connect`, and what it is now
 
 Three redirected `Bash` calls over ssh cost **zero** authentications (measured as
 a delta out of the sshd's log), which is `ControlMaster=no` reusing the master
 exactly as [ssh-controlmaster-transport.md](ssh-controlmaster-transport.md)
-describes. `connect` is the opposite: it spawns a master **unconditionally**
-(`src/launcher/kinds/ssh.mjs:552`), so on an already-connected remote it
-authenticates again, leaks a background `ssh -N` that owns no socket, and
-**reports success** — its `-O check` inspects the *original* master's healthy
-socket. Several orphans were observed live at once. Filed as **card 2026-0013**;
-do not patch it here.
+describes. `connect` was the opposite: it spawned a master **unconditionally**,
+so on an already-connected remote it authenticated again, leaked a background
+`ssh -N` that owned no socket, and **reported success** — its `-O check`
+inspected the *original* master's healthy socket. Several orphans were observed
+live at once.
+
+**Card 2026-0013 fixed it and `connect` is now idempotent**: it asks `-O check`
+first and returns without spawning when a master already answers, reclaims a
+ControlPath whose master is dead, and after a spawn requires proof that *this
+call* opened the master. The measurements — the degrade's exit 0 and its orphan,
+and the dead-master cold shape — live on the ssh page (§9, §12), not here, and
+this repo's own live suite re-measures both (`tests/ssh-live.test.mjs`). The
+enduring rig lesson is the one above it: **a delta out of the sshd log is the
+only honest discriminator**; the absolute count on a re-used container is not
+reproducible.
 
 ## 7. Re-measuring this
 
