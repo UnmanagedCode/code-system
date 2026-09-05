@@ -517,12 +517,18 @@ export class Session {
       return;
     }
     const m = await this.#source.mirrorFor(remote?.remoteId ?? null);
-    this.#write({
-      type: 'remoteDescriptor',
-      id,
-      ...(m.mirrorRoot ? { mirrorRoot: m.mirrorRoot } : {}),
-      ...(m.exclude && m.exclude.length > 0 ? { exclude: m.exclude } : {}),
-    });
+    const frame = { type: 'remoteDescriptor', id };
+    // ABSENT vs FALSY, and the distinction is load-bearing. A stored root of
+    // `""` or `0` is an INVALID claim, not an absent one, and swallowing it here
+    // would turn cc's MIRROR_ADVERTISEMENT_INVALID into a silently different
+    // session. Only `null`/`undefined` mean "nothing advertised".
+    if (m.mirrorRoot != null) frame.mirrorRoot = m.mirrorRoot;
+    // An EMPTY LIST really is the same as none — §2.1's "advertise nothing" —
+    // so it is omitted. Anything else present goes on the wire for cc to judge.
+    if (m.exclude != null && !(Array.isArray(m.exclude) && m.exclude.length === 0)) {
+      frame.exclude = m.exclude;
+    }
+    this.#write(frame);
   }
 
   // ── shutdown: protocol MUST 3 ──────────────────────────────────────

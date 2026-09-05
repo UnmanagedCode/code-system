@@ -37,17 +37,26 @@ rule so the operator hears it in the form.
 
 **4. The two project-relative refusals fire AT SPAWN, not at project
 resolution.** `MIRROR_ROOT_EXCLUDES_PROJECT` and `MIRROR_EXCLUDE_COVERS_PROJECT`
-are **501**s from `resolveMirrorScope`; a bad advertisement breaks worker sessions
-and nothing else, because git, status, diff, worktrees and every `project_*` tool
-run at `systemPath` over `exec`/`readFile` and never touch the mirror. A shape
-refusal is different: `MIRROR_ADVERTISEMENT_INVALID` is a **502** — the far side
-answered, and answered badly.
+are **501**s from `resolveMirrorScope`. cc's own comment at
+`$CC_CHECKOUT/src/systems/mirror.ts:149-154` states the blast radius — *"a bad
+advertisement breaks worker sessions and nothing else, since git, status, diff,
+worktrees and every `project_*` tool run at `systemPath` over `exec`/`readFile`
+and never touch the mirror"* — and that is cc's claim about cc's own tools, not
+one anything in this repo verifies. A shape refusal is different:
+`MIRROR_ADVERTISEMENT_INVALID` is a **502** — the far side answered, and answered
+badly.
 
 **5. Containment is `path.posix.relative`, NEVER a string prefix.** `/app-backup`
-is not inside `/app`. This decides the exclude test, the map and the validation
-alike (`withinPosix`, `mirror.ts`), and `src/mirror.mjs` writes the POSIX twin of
-`withinRoot` rather than reusing the platform-path one — the mirror lives in the
-**far side's** path space, whatever the backend runs on.
+is not inside `/app`, and `/app` is not inside `/a`. On cc's side one predicate
+(`withinPosix`, `mirror.ts:49-54`) serves its exclude test and its validation
+alike. **We share no code with it**: `src/mirror.mjs:61-64` has its own
+`coversRoot`, because the mirror lives in the **far side's** path space whatever
+the backend runs on, so the platform-path `withinRoot`
+(`src/launcher/remotes.mjs:27-30`) is the wrong tool.
+
+**Its argument order is the REVERSE of cc's.** `withinPosix(inner, outer)` asks
+"is inner under outer"; `coversRoot(entry, root)` asks "does entry contain root".
+Do not assume parity when reading one against the other.
 
 ## Ours, and where the line is
 

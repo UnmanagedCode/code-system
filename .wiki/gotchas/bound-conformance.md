@@ -22,14 +22,25 @@ out-of-loop). A bound `docker` run:
 | skip | **4** — exactly the `IS_REFERENCE_PROVIDER` set in [host-kind-and-conformance.md](host-kind-and-conformance.md) |
 
 > **The harness has since moved, and the gate currently FAILS on that alone.**
-> Measured 2026-09-05 against `code-conductor_worktree_systems`: the battery
-> reports **55** rows, not 51, and four rows fail unlisted — `detach ends the
-> operation and kills nothing` and `a redirected background job outlives its
-> command`, in both capability configurations. **Pre-existing and unrelated to
-> any code-system change**: `npm run conformance` (`host`) fails the same three
-> `detach`/background rows, and the numbers below are identical at
-> `0e3c81c` and after card 2026-0017. Re-read the manifest against the current
-> suite; do not edit the counts to match.
+> Measured 2026-09-05 against `code-conductor_worktree_systems` (card 2026-0018).
+> The battery now reports **55** rows, not the 51 the manifest was written
+> against, and two NEW tests — `detach ends the operation and kills nothing;
+> close kills as far as it reaches` and `a redirected background job outlives its
+> command, in both capability configurations` — are unlisted failures. `detach`
+> appears nowhere in `src/`.
+>
+> **The two runs fail different counts of the same two tests, and the difference
+> is not a discrepancy:**
+>
+> | Run | Unlisted failures | Which |
+> |---|---|---|
+> | `npm run conformance:docker` | **4** | both tests × both capability configurations |
+> | `npm run conformance` (`host`) | **3** | the same, except `[processGroupSignal:false] a redirected background job …`, which **passes** on `host` |
+>
+> **Pre-existing and unrelated to any code-system change**: both runs are
+> outcome-identical at `0e3c81c` and after card 2026-0017 — 48/3/4 for `host`,
+> 37/14/4 of 55 for the bound docker run, row for row. Re-read the manifest
+> against the current suite; do not edit the counts below to match.
 
 **"32 rows exercise the transport" means 32 rows REACH IT AND PASS**, and the
 definition matters: of the 37 passes, **5 exercise no provider of ours**

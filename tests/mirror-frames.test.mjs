@@ -105,3 +105,40 @@ test('a mirror changes nothing about the argv an exec runs', async (t) => {
   assert.equal(argv.some(a => a.includes('/proc')), false,
     'and neither does an exclude entry');
 });
+
+// PINS: A HAND-EDITED RECORD IS FORWARDED, NEVER LAUNDERED. Only the backend
+// writes `mirror`, but the store is a directory of JSON files an operator can
+// edit. Coercing a bad shape to the empty advertisement here would turn cc's
+// MIRROR_ADVERTISEMENT_INVALID (502) into a silently DIFFERENT, working session
+// on the project root — the one failure mode a validator at the front door
+// cannot catch, because it never saw this value.
+test('an invalid stored mirror reaches cc verbatim, for cc to refuse', async (t) => {
+  const { l } = await launcher(t, [
+    dockerRecord('wrong-types', { mirror: { root: 123, exclude: 'not-an-array' } }),
+    dockerRecord('empty-root', { mirror: { root: '', exclude: ['/proc'] } }),
+  ]);
+
+  l.send({ type: 'describeRemote', id: 'd1', remoteId: 'wrong-types' });
+  const d1 = await l.waitFor(f => f.type === 'remoteDescriptor' && f.id === 'd1');
+  assert.deepEqual(d1, { type: 'remoteDescriptor', id: 'd1', mirrorRoot: 123, exclude: 'not-an-array' },
+    'the stored values, unconverted — cc owns the verdict on them');
+
+  // A FALSY-BUT-PRESENT root is the sharp case: it is an INVALID claim, not an
+  // absent one, and an emit that spread on truthiness would swallow it into the
+  // legal empty descriptor.
+  l.send({ type: 'describeRemote', id: 'd2', remoteId: 'empty-root' });
+  const d2 = await l.waitFor(f => f.type === 'remoteDescriptor' && f.id === 'd2');
+  assert.equal(d2.mirrorRoot, '', 'an empty root is on the wire, not dropped');
+  assert.deepEqual(d2.exclude, ['/proc']);
+});
+
+// PINS THE OTHER SIDE OF THAT LINE: an empty exclude LIST really is the same as
+// none (§2.1's "advertise nothing"), so it is omitted rather than sent as `[]`.
+// Without this, loosening the emit to `!= null` would silently start putting an
+// empty array on every unmirrored remote's descriptor.
+test('an empty exclude list is omitted, not sent as []', async (t) => {
+  const { l } = await launcher(t, [dockerRecord('bare', { mirror: { root: '/srv', exclude: [] } })]);
+  l.send({ type: 'describeRemote', id: 'd1', remoteId: 'bare' });
+  const d = await l.waitFor(f => f.type === 'remoteDescriptor' && f.id === 'd1');
+  assert.deepEqual(d, { type: 'remoteDescriptor', id: 'd1', mirrorRoot: '/srv' });
+});

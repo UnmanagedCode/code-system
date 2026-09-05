@@ -32,10 +32,13 @@ function el(tag, attrs = {}, ...children) {
 const state = {
   remotes: [],
   kinds: [],
-  // Served by the backend from src/mirror.mjs, so the Advanced group's prefill
-  // has ONE source. The fallback only has to keep a render before the first
-  // fetch from throwing.
-  mirrorDefaults: { root: '/', exclude: [] },
+  // Served by the backend from src/mirror.mjs. `null` until that answer lands,
+  // and DELIBERATELY WITHOUT A LOCAL FALLBACK: a second copy of the default
+  // exclude list here is exactly the drift the single source exists to prevent,
+  // and a half-populated one would offer the operator a root with no excludes
+  // while the form's own copy promises the target's pseudo-filesystems. The
+  // Advanced group is simply not rendered until the defaults arrive.
+  mirrorDefaults: null,
   registration: null,
   route: { view: 'list' },
   draft: null,      // the open form's field values, or null
@@ -244,8 +247,12 @@ function formFor(mode) {
   // that has not opted in, and `<details>` is closed unless `open` is set. An
   // already-mirrored remote opens it, so an operator editing one sees what is
   // stored without hunting for it.
+  //
+  // ABSENT ENTIRELY until GET /api/remotes has served `mirrorDefaults` — see
+  // `mirrorDraft`. Offering the group with no defaults would mean inventing
+  // them here, which is the one thing the single source forbids.
   const m = draft.mirror;
-  fields.push(el('details', { class: 'advanced', open: m.on },
+  if (m) fields.push(el('details', { class: 'advanced', open: m.on },
     el('summary', {}, 'Advanced'),
     el('div', { class: 'field check' },
       el('input', {
@@ -299,9 +306,20 @@ function formFor(mode) {
 // them rather than an empty form.
 function mirrorDraft(remote) {
   const d = state.mirrorDefaults;
+  // No defaults yet ⇒ no group to draft for. `mirrorPayload(null)` is `null`, so
+  // a form submitted in this state sends the same "advertise nothing" a
+  // stored-null remote already has.
+  if (!d) return null;
   const m = remote?.mirror;
   if (m && typeof m === 'object') {
-    return { on: true, root: String(m.root ?? ''), exclude: (m.exclude ?? []).join('\n') };
+    // GUARDED LIKE `mirrorSummary`: only the backend writes this field, but a
+    // hand-edited record can hold anything, and `"x".join` is a TypeError that
+    // would blank the whole card list rather than one form.
+    return {
+      on: true,
+      root: String(m.root ?? ''),
+      exclude: Array.isArray(m.exclude) ? m.exclude.join('\n') : '',
+    };
   }
   return { on: false, root: String(d.root ?? '/'), exclude: (d.exclude ?? []).join('\n') };
 }

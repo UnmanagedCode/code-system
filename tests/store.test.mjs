@@ -264,3 +264,70 @@ test('a schema-1 record whose remoteId does not match its filename is quarantine
     assert.deepEqual(await fs.readdir(remotesDir()), [], 'and nothing was written under another name');
   });
 });
+
+// ── the pass must not take the backend down with one record ──────────
+//
+// server.mjs awaits migrate() BEFORE listen, and the backend IS the operator's
+// repair tool: a throw here means no UI and no API for every OTHER remote, and
+// no way to fix the one that caused it.
+
+// PINS THE UPGRADE WRITE'S GUARD, and — the sharper half — that a record we
+// could not rewrite is LEFT ALONE rather than quarantined. It is still at
+// schema 1, which readRemote refuses with a quarantine reason, so an unguarded
+// fall-through would move aside a record the next boot upgrades cleanly.
+test('an upgrade that cannot be written is logged, and the record is left for the next boot', async (t) => {
+  if (process.getuid?.() === 0) {
+    t.skip('root ignores the read-only store directory this test needs');
+    return;
+  }
+  await withStore(t, async () => {
+    await fs.mkdir(remotesDir(), { recursive: true });
+    const file = path.join(remotesDir(), 'legacy.json');
+    const before = JSON.stringify(schema1('legacy'), null, 2);
+    await fs.writeFile(file, before);
+    // Readable and listable, not writable: readFile and readdir still work, so
+    // the pass gets all the way to the write and fails only there.
+    await fs.chmod(remotesDir(), 0o500);
+
+    const lines = [];
+    let r;
+    // Restored INSIDE the body, not in a `t.after`: withStore's own cleanup hook
+    // registered first and would `rm -rf` an unwritable directory before ours
+    // ran.
+    try { r = await migrate({ log: m => lines.push(m) }); }
+    finally { await fs.chmod(remotesDir(), 0o700); }
+
+    assert.deepEqual(r.upgraded, [], 'nothing claims to have been upgraded');
+    assert.deepEqual(r.quarantined, [], 'and NOTHING was moved aside');
+    assert.ok(lines.some(l => /could not upgrade remote 'legacy'/.test(l)),
+      `the failure is logged, naming the record: ${JSON.stringify(lines)}`);
+    assert.equal(await fs.readFile(file, 'utf8'), before, 'the record is byte-identical');
+  });
+});
+
+// PINS THE QUARANTINE MOVE'S GUARD, and that the loop CONTINUES past it: the
+// failing record sorts first, and the schema-1 record after it is still
+// upgraded in the same run.
+test('a quarantine move that fails is logged, and the rest of the store is still processed', async (t) => {
+  await withStore(t, async () => {
+    await fs.mkdir(remotesDir(), { recursive: true });
+    await fs.writeFile(path.join(remotesDir(), 'aaa-junk.json'), '{not json');
+    await fs.writeFile(path.join(remotesDir(), 'zzz-legacy.json'),
+      JSON.stringify(schema1('zzz-legacy'), null, 2));
+    // A regular FILE where the quarantine directory belongs, so mkdir refuses.
+    // Deterministic, and it does not depend on who is running the suite.
+    await fs.mkdir(path.dirname(quarantineDir()), { recursive: true });
+    await fs.writeFile(quarantineDir(), 'not a directory');
+
+    const lines = [];
+    const r = await migrate({ log: m => lines.push(m) });
+
+    assert.deepEqual(r.quarantined, [], 'the move did not happen, and is not claimed');
+    assert.ok(lines.some(l => /could not quarantine remote 'aaa-junk'/.test(l)),
+      `the failure is logged, naming the record: ${JSON.stringify(lines)}`);
+    assert.deepEqual(await fs.readFile(path.join(remotesDir(), 'aaa-junk.json'), 'utf8'), '{not json',
+      'and the record stays where it is — still refused by name at every read');
+    assert.deepEqual(r.upgraded, ['zzz-legacy'],
+      'the record AFTER the failure was still processed: one bad file is not a dead pass');
+  });
+});

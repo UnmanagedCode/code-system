@@ -134,7 +134,11 @@ const REGISTRATION = { state: 'ok', rows: [{ id: 'docker', state: 'ok', message:
 
 // `reply` lets a test script one non-GET route's answer — which is how the
 // action handlers, not just the render path, get put under test.
-function installFetch({ remotes = REMOTES, registration = REGISTRATION, reply = null } = {}) {
+// `mirrorDefaults` is overridable — including to `null` — because "the backend
+// has not served them yet" is a real state the form has to render in.
+function installFetch({
+  remotes = REMOTES, registration = REGISTRATION, reply = null, mirrorDefaults = MIRROR_DEFAULTS,
+} = {}) {
   const calls = [];
   Object.defineProperty(globalThis, 'fetch', {
     configurable: true,
@@ -147,7 +151,8 @@ function installFetch({ remotes = REMOTES, registration = REGISTRATION, reply = 
       });
       const scripted = reply?.(path, init.method ?? 'GET');
       if (scripted) return { ok: scripted.ok !== false, status: scripted.status ?? 200, json: async () => scripted.body ?? {} };
-      const body = path === 'api/remotes' ? { remotes, kinds: KINDS, mirrorDefaults: MIRROR_DEFAULTS }
+      const body = path === 'api/remotes'
+        ? { remotes, kinds: KINDS, ...(mirrorDefaults ? { mirrorDefaults } : {}) }
         : path === 'api/registration' ? registration
           : {};
       return { ok: true, status: 200, json: async () => body };
@@ -541,4 +546,45 @@ test('Create posts the mirror: null when unticked, the typed advertisement when 
   const on = await posted(true);
   assert.deepEqual(on.mirror, { root: '/srv/app', exclude: ['/proc', '/dev'] },
     'the typed root, and the lines as entries — the trailing newline is not one');
+});
+
+// PINS ITEM 3's GUARD: only the backend writes `mirror`, but the store is a
+// directory of JSON files, and a hand-edited `exclude` that is a STRING would
+// make `.join` a TypeError inside `render()` — blanking the entire card list,
+// not just this form. The form degrades to an empty exclude box instead.
+test('a hand-edited mirror does not crash the edit form', async () => {
+  const broken = REMOTES.map(r => (r.remoteId === 'off-up'
+    ? { ...r, mirror: { root: '/srv', exclude: 'not-an-array' } }
+    : r));
+  const { cards } = await mount({ remotes: broken });
+  assert.equal(cards().length, broken.length, 'every card still rendered');
+
+  cardFor(cards(), 'off-up').all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
+  const edited = cardFor(cards(), 'off-up');
+  assert.equal(inputById(edited, 'f-mirror-root').attrs.value, '/srv', 'the usable half survives');
+  assert.equal(textareaOf(edited).text, '', 'and the unusable half is empty, not a thrown render');
+});
+
+// PINS ITEM 9: the defaults have ONE source, the backend. Before that answer
+// lands there is nothing truthful to prefill — offering root `/` with an empty
+// exclude list would contradict the form's own copy — so the group is absent
+// rather than wrong, and a form submitted in that state advertises nothing.
+test('with no served defaults the Advanced group is absent, and Create still posts mirror:null', async () => {
+  const { byId, cards, calls } = await mount({ remotes: [], mirrorDefaults: null });
+  byId.get('add').click();
+  const tile = cards().at(-1);
+
+  assert.equal(detailsOf(tile), undefined, 'no group at all');
+  assert.equal(inputById(tile, 'f-mirror-on'), undefined);
+  assert.deepEqual(tile.all(e => e.tagName === 'input').map(i => i.attrs.id), ['f-id', 'f-label', 'f-container'],
+    'and the connection fields are untouched');
+
+  for (const fn of inputById(tile, 'f-id').handlers.input ?? []) fn({ target: { value: 'app' } });
+  tile.all(e => e.tagName === 'button' && e.text === 'Create')[0].click();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+
+  const body = calls.find(c => c.method === 'POST' && c.path === 'api/remotes')?.body;
+  assert.notEqual(body, undefined, 'the POST really happened');
+  assert.equal(body.mirror, null, 'and it advertises nothing, explicitly');
 });

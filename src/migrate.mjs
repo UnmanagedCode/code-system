@@ -22,6 +22,12 @@
 // schema is left untouched — so running the pass twice is a no-op without a
 // marker file to keep in sync.
 //
+// NOTHING IN THIS PASS MAY THROW. server.mjs awaits it BEFORE `listen`, and the
+// backend is the operator's only repair tool — so one record's failure (a full
+// disk, a read-only mount, an unrenameable file) is logged and skipped, never
+// allowed to take the UI and the API down for every other remote. Both the
+// upgrade write and the quarantine move are guarded individually.
+//
 // SCHEMA 1 → 2 (card 2026-0017) added `mirror`, the per-remote mirror
 // advertisement, as a top-level field beside `enabled` (src/store.mjs). A
 // schema-1 record advertised nothing, so the upgrade writes `mirror: null`,
@@ -44,25 +50,42 @@ import { SCHEMA, isValidRemoteId, readRemote, writeRemote } from './store.mjs';
 // problem and destroying it would not help.
 const QUARANTINE_REASONS = new Set(['malformed', 'schema']);
 
-// Rewrite a schema-1 record as schema 2, or answer false and leave it for the
-// quarantine branch. NEVER THROWS: this runs at backend boot, and a single
-// corrupt file must not stop the server from starting.
-async function upgradeToSchema2(id) {
+// Rewrite a schema-1 record as schema 2.
+//
+// NEVER THROWS, AND THAT IS NOT A NICETY: this runs at backend boot, before
+// `listen`, and the backend IS the operator's repair tool. One unreadable file,
+// one full disk or one read-only mount must not take the whole UI and API down
+// for every other remote.
+//
+// Three outcomes, because they need three different responses:
+//   'upgraded' — rewritten at schema 2
+//   'skip'     — not ours to rewrite; the quarantine branch decides
+//   'failed'   — we could not write it. The record is UNTOUCHED and still at
+//                schema 1, so the caller must NOT let it fall through to the
+//                quarantine branch: a transient disk error would move aside a
+//                record that is perfectly upgradable on the next boot.
+async function upgradeToSchema2(id, log) {
   let raw;
   try { raw = JSON.parse(await fs.readFile(path.join(remotesDir(), `${id}.json`), 'utf8')); }
-  catch { return false; }  // absent or malformed — the quarantine branch's business
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  catch { return 'skip'; }  // absent or malformed — the quarantine branch's business
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 'skip';
   // EXACT VERSION, which is what makes the pass idempotent with no marker: a
   // record already at 2 falls straight through, and one from the future is
   // quarantined below rather than guessed at.
-  if (raw.schema !== 1) return false;
+  if (raw.schema !== 1) return 'skip';
   // A record whose id does not match its filename is not one we can rewrite —
   // writeRemote addresses the file BY the record's remoteId, so rewriting it
   // would write the wrong file (or throw at boot on an unaddressable id). Let
   // readRemote refuse it and the quarantine branch move it aside.
-  if (raw.remoteId !== id || !isValidRemoteId(id)) return false;
-  await writeRemote({ ...raw, schema: 2, mirror: null });
-  return true;
+  if (raw.remoteId !== id || !isValidRemoteId(id)) return 'skip';
+  try {
+    await writeRemote({ ...raw, schema: 2, mirror: null });
+  } catch (e) {
+    log(`migrate: could not upgrade remote '${id}' schema 1 → 2 (${e?.message ?? e})`
+      + ' — left untouched for the next backend start');
+    return 'failed';
+  }
+  return 'upgraded';
 }
 
 export async function migrate({ log = () => {} } = {}) {
@@ -79,7 +102,13 @@ export async function migrate({ log = () => {} } = {}) {
     result.scanned++;
 
     // BEFORE readRemote, for the ordering reason at the top of this file.
-    if (await upgradeToSchema2(id)) {
+    const upgrade = await upgradeToSchema2(id, log);
+    // An upgrade we could not WRITE leaves a schema-1 record on disk, which
+    // readRemote refuses with reason 'schema' — a quarantine reason. Skipping
+    // the rest of this iteration is what keeps a full disk from moving aside a
+    // record the next boot would upgrade cleanly.
+    if (upgrade === 'failed') continue;
+    if (upgrade === 'upgraded') {
       result.upgraded.push(id);
       log(`migrate: upgraded remote '${id}' schema 1 → 2`);
     }
@@ -90,10 +119,21 @@ export async function migrate({ log = () => {} } = {}) {
 
     // NEVER DESTROY WHAT CANNOT BE RECONSTRUCTED — move it aside. The stamp
     // keeps a second quarantine of the same id from overwriting the first.
-    await fs.mkdir(quarantineDir(), { recursive: true });
+    //
+    // GUARDED for the same boot-time reason as the upgrade write: an
+    // unrenameable file, or a quarantine directory that cannot be created, is
+    // logged and skipped. The record stays where it is and is refused by name
+    // at every read, which is the state it was already in.
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const to = path.join(quarantineDir(), `${id}.${stamp}.json`);
-    await fs.rename(path.join(remotesDir(), name), to);
+    try {
+      await fs.mkdir(quarantineDir(), { recursive: true });
+      await fs.rename(path.join(remotesDir(), name), to);
+    } catch (e) {
+      log(`migrate: could not quarantine remote '${id}' (${e?.message ?? e})`
+        + ' — left in place, and still refused by name at every read');
+      continue;
+    }
     result.quarantined.push({ remoteId: id, reason: r.reason, movedTo: to, message: r.message });
     log(`migrate: quarantined remote '${id}' (${r.reason}) → ${to}`);
   }

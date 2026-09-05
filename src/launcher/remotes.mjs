@@ -159,8 +159,16 @@ export class StoreRemoteSource {
     const r = await readRemote(remoteId);
     if (!r.ok || r.record?.kind !== this.#kind) return { mirrorRoot: null, exclude: [] };
     const m = r.record.mirror;
-    if (!m || typeof m !== 'object') return { mirrorRoot: null, exclude: [] };
-    return { mirrorRoot: m.root ?? null, exclude: Array.isArray(m.exclude) ? m.exclude : [] };
+    // `null` IS THE ONLY SHAPE WE ANSWER FOR — it is what the backend writes for
+    // a remote that opted out. Everything else is forwarded as it was stored.
+    if (m === null || m === undefined) return { mirrorRoot: null, exclude: [] };
+    // NO COERCION, AND THE OMISSION IS THE POINT. Defaulting a hand-edited
+    // `{root: 123, exclude: "x"}` to the empty advertisement would launder an
+    // INVALID claim into a VALID one: cc would take the NO_ADVERTISEMENT path
+    // and silently run a different, working session instead of refusing with
+    // MIRROR_ADVERTISEMENT_INVALID. Same posture as `config` — the store's front
+    // door validates, this passes through.
+    return { mirrorRoot: m.root, exclude: m.exclude };
   }
 }
 

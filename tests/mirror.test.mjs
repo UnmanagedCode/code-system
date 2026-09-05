@@ -102,14 +102,21 @@ test('exclude must be an array, and absent or null means none', () => {
 // display — a 400 arrives as one banner sentence — so the index is the only way
 // an operator finds the offending line in a list of sixty-four.
 test('a bad exclude entry is refused, and the error names its index and value', () => {
-  for (const [i, bad] of [42, '', 'proc', '/a/../b', '/proc/', null].entries()) {
-    const exclude = ['/dev', '/sys'];
-    exclude.splice(1, 0, bad);
+  // The bad entry sits at index 3, NOT 0 or 1: an implementation that checked
+  // only the first entry, or a message that hardcoded `exclude[1]`, would both
+  // survive a test that always used the same low index.
+  for (const [i, bad] of [42, '', '   ', '\t\n', 'proc', '/a/../b', '/proc/', null, {}].entries()) {
+    const exclude = ['/dev', '/sys', '/tmp/x', bad, '/var/tmp'];
     const v = validateMirror({ root: '/', exclude });
     assert.equal(v.ok, false, `entry ${JSON.stringify(bad)} must be refused (case ${i})`);
-    assert.match(v.error, /exclude\[1\]/, 'the index is named');
+    assert.match(v.error, /exclude\[3\]/, `the index is named, and it is the offender's: ${v.error}`);
     assert.ok(v.error.includes(JSON.stringify(bad)), `the value is quoted: ${v.error}`);
   }
+  // A WHITESPACE-ONLY entry specifically. It is not caught by the normal-form
+  // rule — `'   '` is simply not absolute — but neither is it caught by any
+  // length check, so the blank test is its own reason to exist.
+  assert.equal(validateMirror({ root: '/', exclude: ['   '] }).ok, false);
+  assert.equal(validateMirror({ root: '/', exclude: ['\u00a0'] }).ok, false, 'including exotic blanks');
 });
 
 test('the exclude count bound is cc\'s constant', () => {
@@ -132,18 +139,36 @@ test('the exclude count bound is cc\'s constant', () => {
 // CONTAINMENT IS path.posix.relative, NEVER A STRING PREFIX: `/app-backup` is
 // not inside `/app`, and a prefix test would refuse a legitimate exclude.
 test('an exclude covering the mirror root is refused; one outside it, or a prefix-sharing sibling, is not', () => {
-  const covering = validateMirror({ root: '/app', exclude: ['/app'] });
-  assert.equal(covering.ok, false, 'equal to the root');
-  assert.match(covering.error, /covers the mirror root/);
-  assert.equal(validateMirror({ root: '/app', exclude: ['/'] }).ok, false, 'an ancestor of the root');
-  assert.equal(validateMirror({ root: '/app/sub', exclude: ['/app'] }).ok, false, 'a deeper ancestor');
-  assert.equal(validateMirror({ root: '/', exclude: ['/'] }).ok, false, '/ under root /');
+  // REFUSED — the entry is the root, or an ancestor of it. Each one is placed
+  // at index 2, not 0, so an implementation that tested only `exclude[0]` fails
+  // here; and each refusal must NAME THE RULE, not merely be falsy.
+  for (const [root, entry] of [['/app', '/app'], ['/app', '/'], ['/app/sub', '/app'],
+    ['/app/sub/deep', '/app'], ['/', '/']]) {
+    const v = validateMirror({ root, exclude: ['/proc', '/dev', entry] });
+    assert.equal(v.ok, false, `exclude ${entry} covers root ${root}`);
+    assert.match(v.error, /covers the mirror root/, `and says which rule: ${v.error}`);
+    assert.ok(v.error.includes(JSON.stringify(entry)) && v.error.includes(JSON.stringify(root)),
+      `naming both paths: ${v.error}`);
+  }
 
-  // INERT, NOT AN ERROR — cc's own word for it. A provider that mirrors /app and
-  // also lists /proc is sane configuration.
+  // ACCEPTED. These are the rows that discriminate `path.posix.relative` from a
+  // string-prefix test — replace containment with
+  // `root === entry || root.startsWith(entry)` and every one of them turns into
+  // a refusal:
+  //
+  //   /a          under root /app        →  '/app'.startsWith('/a') is TRUE
+  //   /app-backup under root /app        →  merely prefix-SHARING, cc's own example
+  //   /ap         under root /app        →  the one-character version of the same
+  for (const [root, entry] of [['/app', '/a'], ['/app', '/ap'], ['/app', '/app-backup'],
+    ['/app/sub', '/app/su'], ['/srv/app', '/srv/appdata']]) {
+    assert.equal(validateMirror({ root, exclude: ['/proc', entry] }).ok, true,
+      `exclude ${entry} does NOT cover root ${root} — containment is path arithmetic, not a prefix`);
+  }
+
+  // INERT, NOT AN ERROR — cc's own word for an exclude outside the root
+  // entirely. A provider that mirrors /app and also lists /proc is sane
+  // configuration.
   assert.equal(validateMirror({ root: '/app', exclude: ['/proc'] }).ok, true);
-  // Merely prefix-SHARING, so not covering. A string-prefix test fails here.
-  assert.equal(validateMirror({ root: '/app', exclude: ['/app-backup'] }).ok, true);
   // Strictly INSIDE the root is the ordinary case and stays legal.
   assert.equal(validateMirror({ root: '/', exclude: ['/proc'] }).ok, true);
   assert.equal(validateMirror({ root: '/app', exclude: ['/app/node_modules'] }).ok, true);

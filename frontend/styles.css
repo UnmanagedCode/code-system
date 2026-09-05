@@ -105,7 +105,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .badge.base-ok { color: var(--accent); border-color: rgba(108,194,74,0.45); }
 .badge.base-unsupported { color: var(--danger); border-color: rgba(227,90,90,0.4); }
 .badge.base-unknown { color: var(--muted); }
-.badge.mirror { color: #f0c674; border-color: rgba(240,198,116,0.4); }
+.badge.mirror { color: var(--amber); border-color: var(--border); }
 .detail { color: var(--muted); font-size: 12px; margin-top: 4px; word-break: break-word; }
 
 /* The hand-off contract, made visible: this exact string goes into a cc
