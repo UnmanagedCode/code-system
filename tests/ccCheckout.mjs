@@ -27,6 +27,18 @@ export const REPO_ROOT = path.dirname(HERE);
 export const SUITE_REL = path.join('tests', 'systems-protocol-conformance.test.mjs');
 export const RUNNER_REL = path.join('tests', 'run.mjs');
 
+// cc's PER-FILE hang guard, mirrored so a bound run can print its own margin
+// against it. It lives in the CHECKOUT (`tests/hangGuardConfig.mjs`), so this
+// copy is DRIFT-CHECKED against cc's, by the gated half of
+// tests/protocol-constants.test.mjs — the mechanism this project already uses
+// for every mirrored constant. An undrift-checked copy would silently measure
+// the margin against the wrong number the day cc moved it.
+//
+// WE NEVER RAISE IT. `CC_TEST_FILE_KILL_MS` is deliberately never set by either
+// runner: raising a guard pre-emptively is how a slow run becomes invisible.
+// Measuring the margin and printing it is how it stays visible.
+export const CC_FILE_KILL_MS = 90_000;
+
 /**
  * The checkout, or a CLEAN SKIP (exit 0) naming the variable. Gating this way —
  * skipping, not failing — is what lets `npm test` need nothing but Node.
@@ -93,6 +105,13 @@ export function spawnSuite(checkout, env, { stdio }) {
 // like a green one. `parseSpecReport` therefore also reads the reporter's OWN
 // tally, and `checkTally` compares the two — so a format change reds the gate
 // instead of silently emptying the result.
+//
+// BE PRECISE ABOUT WHAT THAT CROSS-CHECK CATCHES: a parse that lost rows the
+// reporter still counted, i.e. a corrupt or empty parse. It CANNOT catch
+// consistent shrinkage — a row vanishing from the suite moves the tally and the
+// parse together, and both stay self-consistent. The absolute-total pin in
+// tests/boundConformanceExpectations.mjs is what catches that, and it is a
+// separate guard for exactly that reason.
 
 const ANSI = new RegExp('\\u001b\\[[0-9;]*m', 'g');
 
@@ -133,7 +152,9 @@ export function parseSpecReport(text) {
 }
 
 /**
- * The parse's self-check against the reporter's own arithmetic.
+ * The parse's self-check against the reporter's own arithmetic. Catches a parse
+ * that DISAGREES with the reporter; see the note above for what it does not
+ * catch, and which guard does.
  * @returns {string[]} empty when they agree
  */
 export function checkTally({ tests, tally }) {

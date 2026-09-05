@@ -197,7 +197,18 @@ export async function proveIdentity({ cli, scratchDir, container, log }) {
  * @returns {Promise<{selfId:string, hostPath:string, destination:string}>}
  */
 export async function resolveHostPath({ cli, containerPath, log }) {
-  const mountinfo = await fs.readFile('/proc/self/mountinfo', 'utf8');
+  // NAMED like every other failure in here. A raw ENOENT/EACCES escaping from
+  // this one read would be the only unnamed refusal on the identity path, and
+  // the least self-explanatory: it means /proc is absent or unreadable, not that
+  // some fixture path is missing.
+  let mountinfo;
+  try { mountinfo = await fs.readFile('/proc/self/mountinfo', 'utf8'); }
+  catch (e) {
+    throw new IdentityError('self container id',
+      `/proc/self/mountinfo could not be read (${e?.code ?? e?.message ?? e}) — without it there is`
+      + ' no way to learn this container\'s own id, and so no way to resolve a `-v` source the daemon'
+      + ' would agree with.');
+  }
   const selfId = parseSelfContainerId(mountinfo);
   if (!selfId) {
     throw new IdentityError('self container id',

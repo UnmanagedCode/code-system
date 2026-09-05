@@ -1,4 +1,4 @@
-# The bound conformance run: what it measures, and what it structurally cannot
+# The bound conformance run: what it measures, and what it does not
 
 **What:** `npm run conformance:docker` (`tests/conformance-docker.mjs`) runs cc's
 conformance battery with `CC_CONFORMANCE_REMOTE_ID` bound to a real container
@@ -6,8 +6,8 @@ served by the **shipped `docker` kind**. `npm run conformance` runs the same
 battery on `host`; that it carries every other kind is a *seam* argument
 (`protocol.mjs`, `session.mjs` and `fileops.mjs` are kind-agnostic and
 `spawnPlan` is pure). This run **measures the per-kind residue** instead of
-generalising to it. Design in `docs/architecture.md` → "The consequence for a
-bound conformance run"; every number below was measured on **2026-09-05**,
+generalising to it. Design in `docs/architecture.md` → "The bound conformance
+run"; every number below was measured on **2026-09-05**,
 against cc `8b7b10bf`, daemon `dell-work` server 29.7.2, `sudo -n docker`.
 
 ## The outcome, and the coverage it buys
@@ -21,12 +21,15 @@ out-of-loop). A bound `docker` run:
 | fail | **10** — 2 capability, 6 flag, 2 a real defect (below) |
 | skip | **4** — exactly the `IS_REFERENCE_PROVIDER` set in [host-kind-and-conformance.md](host-kind-and-conformance.md) |
 
-Of the 37 passes, **5 exercise no provider of ours** (`parseFindLines …`, `an
-unrecognised field on a remoteDescriptor …` — which drives cc's own
-`mirrorFixtureProvider.mjs` — and the three pure `CC_CONFORMANCE_REMOTE_ID` /
-capability-assertion rows). So **32 rows exercise the shipped `docker`
-transport**, where before this gate the number was zero. `host` exercises 42 by
-the same subtraction.
+**"32 rows exercise the transport" means 32 rows REACH IT AND PASS**, and the
+definition matters: of the 37 passes, **5 exercise no provider of ours**
+(`parseFindLines …`, `an unrecognised field on a remoteDescriptor …` — which
+drives cc's own `mirrorFixtureProvider.mjs` — and the three pure
+`CC_CONFORMANCE_REMOTE_ID` / capability-assertion rows), leaving 37 − 5 = **32**.
+Two further rows REACH the transport and fail (the defect below), so **34 reach
+it at all** — which is the figure card 2026-0014's plan predicted, against a
+different definition. Before this gate either number was zero. `host` reaches and
+passes 42 by the same subtraction.
 
 Wall clock **~17 s**, against cc's 90 000 ms per-file hang guard and its 60 s
 per-test `--test-timeout` — a **5.3x** margin, printed on every run.
@@ -130,8 +133,28 @@ namespace, so the pid at `:166` is a real pid here. Measured end to end: a
 `sleep 120` started inside reported pid `4102254`; host-side
 `/proc/4102254/cmdline` read `sleep 120`, `process.kill(pid, 0)` said alive, and
 `process.kill(pid,'SIGKILL')` killed it (`ESRCH` after). So `:178` becomes honest
-and `:186` kills the process it names. The runner uses it, and falls back with a
-**loud** warning naming the hazard if the daemon refuses it.
+and `:186` kills the process it names.
+
+**Unshared is REFUSED, not warned about.** If the daemon rejects
+`--pid=container:`, the runner aborts naming the hazard;
+`CODE_SYSTEM_ALLOW_UNSHARED_PID=1` is the only way to take that run. "The low
+pids on this box happen to be unoccupied" is luck, and a warning followed by the
+full battery is accepting luck as a guard.
+
+**The runner also PRINTS the pid, on both branches**, because it is the one
+diagnostic our side can contribute: `watchFarSidePids` polls the scratch tree for
+the `grandchild.pid` the far side writes and snapshots `/proc/<pid>/cmdline` at
+that moment. Both outcomes measured, on the same box, minutes apart:
+
+```
+shared    far-side pid 280657 — this namespace saw sleep 30   (the same process)
+unshared  far-side pid 113    — this namespace saw <no /proc/113: ENOENT>
+          far-side pid 538    — this namespace saw <no /proc/538: ENOENT>
+```
+
+That is the whole hazard in three lines: shared, the kill lands on the
+grandchild; unshared, cc SIGKILLed pids `113` and `538` **in this container**,
+and it was only luck that nothing was there.
 
 **The residual, and why it is safe.** A shared PID namespace means the fixture
 container's `/proc` also lists *this* container's processes — measured directly:
@@ -188,17 +211,25 @@ The two `exec NEVER rejects — a command that cannot start is a spawnError, not
 throw` rows fail, in **both** configurations. This is **not** structural; it is
 **card 2026-0016**, and `host` cannot reach it.
 
-Measured: `docker exec` of a missing binary writes the whole **151-byte OCI
-diagnostic to STDOUT**, ending `\r\n`, with **stderr empty** and exit **127**.
+Measured 2026-09-05, daemon 29.7.2: `docker exec` of a missing binary writes its
+whole **OCI diagnostic to STDOUT**, with **stderr empty** and exit **127**.
 `src/launcher/session.mjs` streams that stdout to cc as `stdout` frames as it
 arrives — it cannot yet know the command never started — and only on `close` does
-`classifyFailure` recognise the shape and emit the `error` frame with a trimmed
-message. cc's `ExecOutputCollector.result` then fills *"whichever buffers are
-still empty"*, its comment adding *"in practice all of them, since the error fires
-before any data"*. `stderr` **is** empty, so `r.stderr === r.spawnError` passes;
-`output` already holds the 151 streamed bytes, so `r.output === r.spawnError`
-fails. A command that never ran is reported to cc as having produced output —
-and that output is the **transport's** diagnostic, not the command's.
+`classifyFailure` recognise the shape and emit the `error` frame carrying
+`first(stdout)`, which **trims**. cc's `ExecOutputCollector.result` then fills
+*"whichever buffers are still empty"*, its comment adding *"in practice all of
+them, since the error fires before any data"*. `stderr` **is** empty, so
+`r.stderr === r.spawnError` passes; `output` already holds the streamed bytes, so
+`r.output === r.spawnError` fails. A command that never ran is reported to cc as
+having produced output — and that output is the **transport's** diagnostic, not
+the command's.
+
+**Be precise about what breaks it: `raw !== trimmed`, not a size or a line
+ending.** The diagnostic's length is a function of the argv it quotes (in that
+run, the suite's 33-character fixture binary name), and its trailing bytes were
+CRLF on that daemon — but a bare `\n` fails the assertion identically, and every
+canned OCI sample in `tests/dockerkind.test.mjs` ends `\n`. Neither figure is a
+property of the failure, and neither should be quoted as one.
 
 `host`'s spawn error fires before any data, exactly as cc's collector assumes,
 which is why the seam argument could never have surfaced this.

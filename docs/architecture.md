@@ -297,13 +297,33 @@ not, while the workspace bind is. Both halves of that pair are measured and
 cross-checked (`docker inspect .Mounts` against `/proc/self/mountinfo`), never
 literals. `--pid=container:<self>` — cc's suite records a grandchild's pid from a
 command the **far side** ran and then SIGKILLs that number in **its own**
-namespace; sharing the namespace is what makes those the same pid.
+namespace; sharing the namespace is what makes those the same pid. **A daemon
+that refuses it aborts the run**, because an unoccupied low pid range is luck and
+not a guard; `CODE_SYSTEM_ALLOW_UNSHARED_PID=1` is the deliberate override. The
+runner prints the observed far-side pid and what this namespace called it either
+way, so a killed-something-else event is attributable.
 
 **The manifest is one table doing both jobs.** Anything not listed must PASS;
 anything listed must produce exactly its listed outcome, verbatim skip reason
 included; and a listed row that starts passing is **red**, because a manifest
 that only catches regressions has stopped discriminating. Every entry carries a
-mandatory `cause`, and the module throws at import without one.
+mandatory `cause` that must **cite** a file or a spec section, and the module
+throws at import without one — a length floor alone is gameable, which would make
+"a bare 'expected to fail' cannot be added" untrue.
+
+**Three independent guards, catching three different things.** `compareOutcomes`
+is per-row; `checkTally` cross-checks the parse against the reporter's own
+arithmetic, catching a corrupt or empty parse; and `checkTotal` pins the
+battery's **absolute size**. The third is not redundant: the first two are both
+relative to what the run reported, so a row VANISHING from cc's suite moves the
+parse and the tally together and is invisible to both — the gate would simply
+cover one row less and stay green. `checkTotal` is red in both directions,
+because a vanished row and a new row are the same event.
+
+**Interruption is handled, `kill -9` is not.** SIGINT/SIGTERM/SIGHUP tear down
+and re-raise; a `kill -9` of the runner leaks the container and the scratch, and
+the sweep is `docker ps -a --filter name=code-system-test-boundconf` plus
+`rm -rf <repo>/.conformance-tmp`.
 
 **The two structural non-coverages, with their causes.**
 
@@ -326,21 +346,28 @@ presupposes `--remote`, and this run passes none. It clears the harness's
 bound-run precondition only because `StoreRemoteSource.hasRemotes()` is constant
 `true` — the constant is the reason it is legitimate.
 
-**`ssh` does not inherit the result, and needs its own card.** The bound run's
-whole value is the per-kind residue, and the two residues differ in exactly the
-axis the battery stresses hardest: `docker`'s `spawnPlan` hands the far side an
-**argv vector**, `ssh`'s hands it a **single shell string the far side's login
-shell re-parses**. The battery's `a file with spaces`, `two\nlines`, `hello —
-héllo` and multi-chunk base64 payloads are therefore a quoting test for `ssh` and
-a no-op for `docker`.
+**`ssh` does not inherit the result, and needs its own card** — the two kinds'
+residues differ in exactly the axis the battery stresses hardest. The argument is
+in `.wiki/gotchas/bound-conformance.md` → "`ssh` does NOT inherit this result".
 
-**The seam still carries the rest**, and is why one bound kind is enough:
-`protocol.mjs`, `session.mjs` and `fileops.mjs` are kind-agnostic and `spawnPlan`
-is pure, so **`host` passing the core suite proves the core for every kind.** The
-per-kind residue is argv construction, `reap` and `classifyFailure` — covered for
-`docker` by unit tests on the pure `spawnPlan`, `tests/docker-live.test.mjs`
-against a real container, and now the bound run; and for `ssh` by
-`tests/sshkind.test.mjs` plus `tests/ssh-live.test.mjs` against a real sshd.
+**What the seam carries, and what it does not.** `protocol.mjs`, `session.mjs`
+and `fileops.mjs` are kind-agnostic and `spawnPlan` is pure, so **`host` passing
+the core suite proves the core's LOGIC for every kind.** The per-kind residue is
+argv construction, `reap` and `classifyFailure` — covered for `docker` by unit
+tests on the pure `spawnPlan`, `tests/docker-live.test.mjs` against a real
+container, and now the bound run; and for `ssh` by `tests/sshkind.test.mjs` plus
+`tests/ssh-live.test.mjs` against a real sshd.
+
+**It does not carry the core's ASSUMPTIONS ABOUT WHEN A TRANSPORT MAY SPEAK, and
+the bound run proved that with a real defect.** Card 2026-0016's hole is inside
+the supposedly kind-agnostic `session.mjs` — it streams a child's stdout before
+the exit code lets `classifyFailure` see it — but it is TRIGGERED by a per-kind
+property the seam does not describe: where a wrapper CLI puts its own
+diagnostic. `host` cannot reach it, and not by luck: node raises `ENOENT` inside
+the spawn itself, so a `host` exec that never starts emits zero stream frames and
+lands exactly in the "the error fires before any data" case cc's collector
+assumes. Read the seam as covering logic, not as covering every interaction
+between kind-agnostic code and a kind's own timing.
 
 **Run cc's suite against a CLONE of the pin, never against a live cc worktree.**
 Both conformance runners run cc's own test runner with `cwd: <checkout>`
@@ -490,20 +517,36 @@ really required — because that drift would fail only in a browser.
 
 ### The environment seams
 
-Every variable this plugin reads, in one place. All are **operator-set**: cc
-spawns the launcher with the *orchestrator's* environment, and the backend reads
-the same names in-process, so one function serves both surfaces.
+Every variable this plugin reads, in one place. **The list is a swept one** — a
+row added without re-sweeping is how the claim above stops being true, and it
+already did once (`CONDUCTOR_URL` and `PORT` were missing when `TMPDIR` was
+added). Re-derive it, don't extend it:
+
+```sh
+grep -rn 'process\.env' src/ server.mjs frontend/     # direct reads
+grep -rn 'export const .*_ENV = ' src/                # names held in constants
+```
+
+Two of these are **conductor-set** (`CONDUCTOR_URL`, `PORT`) and the rest are
+**operator-set**: cc spawns the launcher with the *orchestrator's* environment,
+and the backend reads the same names in-process, so one function serves both
+surfaces. Separately, and not a named read: `execEnv`'s `base` defaults to
+`process.env`, which is the REPLACE branch's baseline — see "`exec` env across a
+boundary" in the wiki.
 
 | Variable | Read by | Effect |
 |---|---|---|
 | `CODE_SYSTEM_STORE` | `src/paths.mjs` | store root; else `<homedir>/.code-system`. Test isolation |
+| `CONDUCTOR_URL` | `src/registration.mjs` → `register`, `src/api.mjs` → `projectsNaming` | cc's base URL. **Unset is a normal state, not a failure**: registration reports `skipped` and `projectsNaming` answers `[]`, because standalone-runnable is a plugin-compliance requirement |
+| `PORT` | `server.mjs` | the backend's listen port, conductor-allocated. Default `4310`, for the same standalone-runnable reason |
 | `CODE_SYSTEM_DOCKER` | `kinds/docker.mjs` → `dockerCliArgv` | the **whole docker invocation** as a JSON array, e.g. `["sudo","-n","docker"]`. Default `["docker"]` — no `sudo` in the shipped default. Malformed → throws → launcher exit 2 before any frame |
 | `CODE_SYSTEM_SSH` | `kinds/ssh.mjs` → `sshCliArgv` | the **whole ssh invocation** as a JSON array, e.g. `["ssh","-F","/path/ssh_config"]`. Default `["ssh"]` — the operator's own `~/.ssh/config` and agent. Malformed → throws → launcher exit 2 before any frame |
 | `CODE_SYSTEM_ALLOW_HOST_KIND` | `kinds/host.mjs` | permits `--kind host` at all |
 | `CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED` | `kinds/host.mjs` | permits `--kind host` with no `--remote` fence. **No shipped path sets it** |
 | `CODE_SYSTEM_FAKE_TRANSPORT` | `main.mjs` | module path for `--kind fake`. Tests only |
 | `CC_CHECKOUT` | `tests/ccCheckout.mjs` | gates both conformance runs |
-| `TMPDIR` | `kinds/ssh.mjs` → `controlPathFor`, via `os.tmpdir()` | the ControlPath's parent directory; refused rather than truncated past the 100-byte ceiling. Also **set** by `tests/conformance-docker.mjs`, to redirect cc's own fixture roots |
+| `CODE_SYSTEM_ALLOW_UNSHARED_PID` | `tests/conformance-docker.mjs` | `=1` permits the bound run when the daemon refuses `--pid=container:`. **Refused by default**: cc's suite SIGKILLs a far-side pid in this namespace, and an unoccupied low pid range is luck, not a guard |
+| `TMPDIR` | `kinds/ssh.mjs` → `controlDir`, via `os.tmpdir()` | the ControlPath's parent directory; `controlPathFor` refuses rather than truncates past the ceiling. Also **set** by `tests/conformance-docker.mjs`, to redirect cc's own fixture roots |
 
 **Why the docker and ssh CLIs are env vars rather than store fields or launch
 flags.** One argument, and it covers both.
@@ -868,8 +911,7 @@ global.
     live suite that silently skips everything while `npm test` stays green is
     indistinguishable from one that passes.
   - **The image is built in-tree with NO build context** (`docker build -`, the
-    Dockerfile on stdin), because this container's filesystem is not the
-    daemon's. It is `debian:13-slim`, not Alpine: busybox fails our tooling
+    Dockerfile on stdin). It is `debian:13-slim`, not Alpine: busybox fails our tooling
     baseline in four capabilities, which would gate `fileops` off and make the
     live suite vacuous — so one test asserts the image *passes* the baseline.
   - **A throwaway keypair per target, and the operator's agent is walled off.**
@@ -926,8 +968,22 @@ naming the invocation explicitly, and a writable `<repo>/.conformance-tmp`
 inside a host bind. It skips cleanly and loudly without the first two, and it is
 **never part of `npm test`**. It seeds its own store and remote and removes both.
 
-**What it proves:** 32 of 51 rows against the shipped `docker` transport, under
-the battery's own fixtures. **What it structurally cannot:** the two capability
-rows and the six flag rows above, whose causes are in the section that names
-them. Both halves are enforced by `tests/boundConformanceExpectations.mjs` —
-anything not listed there must pass, and a listed row that starts passing is red.
+**What it proves:** of the 51 rows, **32 reach the shipped `docker` transport and
+pass** under the battery's own fixtures. (37 pass in total; 5 of those exercise no
+provider of ours. Two further rows reach the transport and FAIL — see the third
+bucket below — so 34 reach it at all.)
+
+**The 14 rows that do not pass, in three buckets:**
+
+1. **4 skips**, the `IS_REFERENCE_PROVIDER` set every third-party run skips.
+2. **8 structural failures** — the two capability rows and the six flag rows
+   above, whose causes are in the section that names them. These are the price of
+   decisions this tree has locked.
+3. **2 DEFECT failures**, and they are not a structural limit: both
+   `exec NEVER rejects — a command that cannot start is a spawnError, not a
+   throw` rows, which the bound run FOUND (card 2026-0016) and `host` cannot
+   reach. They go away when that card lands.
+
+All three are enforced by `tests/boundConformanceExpectations.mjs` — anything not
+listed there must pass, a listed row that starts passing is red, and the run's
+total is pinned absolutely so a row vanishing from the suite is red too.

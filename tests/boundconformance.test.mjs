@@ -18,15 +18,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkTally, parseSpecReport } from './ccCheckout.mjs';
 import {
-  EXPECTED, MIN_CAUSE_CHARS, compareOutcomes, validateExpectations,
+  EXPECTED, EXPECTED_TOTAL, MIN_CAUSE_CHARS, checkTotal, compareOutcomes, validateExpectations,
 } from './boundConformanceExpectations.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(HERE, 'fixtures', 'specReport.txt');
 
-const ok = (over = {}) => ({
-  name: 'a row', outcome: 'fail', cause: 'x'.repeat(MIN_CAUSE_CHARS), ...over,
-});
+// A VALID cause: long enough AND citing something. Both halves are required, and
+// the tests below drive each one alone.
+const GOOD_CAUSE = 'src/launcher/main.mjs refuses the flag before any frame, so the row never handshakes';
+const ok = (over = {}) => ({ name: 'a row', outcome: 'fail', cause: GOOD_CAUSE, ...over });
 
 // ── The manifest's structural guard ──────────────────────────────────
 
@@ -41,15 +42,38 @@ test('the shipped manifest validates, and every entry carries a real cause', () 
     'the manifest is ONE table for both jobs — a run that lost either kind would not exercise it');
 });
 
-// PINS: a bare "expected to fail" CANNOT be added. This is the whole reason the
-// cause field is validated rather than merely conventional — an entry with no
-// stated cause is how a real regression gets absorbed into the manifest.
-test('an entry with a missing, empty or token cause is refused', () => {
-  for (const bad of [undefined, '', '   ', 'expected to fail', 'x'.repeat(MIN_CAUSE_CHARS - 1)]) {
+// PINS THE LENGTH HALF of the cause guard: absent, blank or too short.
+test('an entry with a missing, empty or too-short cause is refused', () => {
+  for (const bad of [undefined, '', '   ', 'expected to fail', 'main.mjs:84 refuses it']) {
     assert.throws(() => validateExpectations([ok({ cause: bad })]), /cause/,
       `cause ${JSON.stringify(bad)} must be refused`);
   }
   assert.doesNotThrow(() => validateExpectations([ok()]));
+});
+
+// PINS THE CITATION HALF, which is what makes "a bare 'expected to fail' cannot
+// be added" TRUE rather than merely intended. A length floor alone is gameable:
+// each string below clears MIN_CAUSE_CHARS and says nothing, and before the
+// citation rule every one of them was accepted.
+test('a long cause that cites nothing is refused, however long', () => {
+  const gameable = [
+    'x'.repeat(MIN_CAUSE_CHARS),
+    'a row '.repeat(12),
+    'Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod.',
+    'expected to fail, for reasons that are long but name no code and no clause',
+  ];
+  for (const cause of gameable) {
+    assert.ok(cause.trim().length >= MIN_CAUSE_CHARS, 'the probe must clear the length floor first');
+    assert.throws(() => validateExpectations([ok({ cause })]), /must CITE/,
+      `a cause citing nothing must be refused: ${JSON.stringify(cause.slice(0, 24))}…`);
+  }
+  // Either form of citation is enough: a source file, or a spec section.
+  assert.doesNotThrow(() => validateExpectations([ok({
+    cause: 'kinds/docker.mjs hardcodes the value, and there is no flag that changes it at all',
+  })]));
+  assert.doesNotThrow(() => validateExpectations([ok({
+    cause: 'systems-protocol.md \u00a710 relaxes one axis only, so a truthful false has no way through',
+  })]));
 });
 
 // PINS: a skip entry must pin the VERBATIM reason string. Without this the
@@ -145,6 +169,43 @@ test('a listed skip that fails (or the reverse) is red', () => {
   assert.deepEqual(problems.map(p => p.kind), ['outcome-changed', 'outcome-changed']);
 });
 
+// ── The absolute-total pin ───────────────────────────────────────────
+
+// PINS THE ONE GUARD THAT IS NOT RELATIVE TO THE RUN. `compareOutcomes` walks
+// observed union listed and `checkTally` compares two numbers that shrink
+// together, so a row VANISHING from cc's suite is invisible to both — the run
+// simply covers one row less and stays green. Red in both directions, because a
+// vanished row and a new row are the same event: the harness moved.
+test('a battery that grew or shrank is red, in both directions', () => {
+  assert.deepEqual(checkTotal({ tests: EXPECTED_TOTAL }), []);
+  for (const n of [EXPECTED_TOTAL - 1, EXPECTED_TOTAL + 1, 0]) {
+    const problems = checkTotal({ tests: n });
+    assert.equal(problems.length, 1, `${n} tests must be red`);
+    assert.match(problems[0], new RegExp(`reported ${n} tests, not the ${EXPECTED_TOTAL}`));
+    assert.match(problems[0], /added or REMOVED/);
+  }
+  assert.match(checkTotal({})[0], /no `tests <n>` summary diagnostic/,
+    'and a run that stopped printing its size is its own alarm');
+});
+
+// PINS THE ATTACK ITSELF, against the real captured run: delete one UNLISTED
+// PASSING row and decrement the tally to match — exactly what the reporter
+// prints when a row disappears — and the two relative guards stay silent while
+// the absolute one reds. Written this way round so it fails if `checkTotal` is
+// ever folded into either of them and loses its independence.
+test('a row silently vanishing from the suite is caught by the total, and only by it', async () => {
+  const raw = await fs.readFile(FIXTURE, 'utf8');
+  const victim = 'parseFindLines refuses a malformed entry rather than skipping it';
+  const shrunk = raw.split('\n').filter(l => !l.includes(victim)).join('\n')
+    .replace('\u2139 tests 51', '\u2139 tests 50')
+    .replace('\u2139 pass 37', '\u2139 pass 36');
+  const report = parseSpecReport(shrunk);
+  assert.equal(report.tests.has(victim), false, 'the row really is gone from the parse');
+  assert.deepEqual(checkTally(report), [], 'the parse/tally cross-check cannot see consistent shrinkage');
+  assert.deepEqual(compareOutcomes(report.tests), [], 'nor can the manifest comparison');
+  assert.equal(checkTotal(report.tally).length, 1, 'the absolute total is what catches it');
+});
+
 // ── The parse of cc's reporter output ────────────────────────────────
 
 // PINS the parse against REAL captured output of a bound run: the counts, the
@@ -156,7 +217,8 @@ test('the parser reads a real captured bound run, and the manifest matches it', 
   const text = await fs.readFile(FIXTURE, 'utf8');
   const report = parseSpecReport(text);
   assert.deepEqual(checkTally(report), [], 'the parse must agree with the reporter\'s own tally');
-  assert.equal(report.tally.tests, 51);
+  assert.equal(report.tally.tests, EXPECTED_TOTAL);
+  assert.deepEqual(checkTotal(report.tally), []);
   assert.equal(report.tests.size, 51, 'the failing-tests recap repeats every failing line and must not double count');
   assert.equal(
     report.tests.get('every code in the taxonomy is produced by a real failure somewhere in this suite')?.reason,

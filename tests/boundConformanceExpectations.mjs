@@ -20,7 +20,27 @@
 
 export const MIN_CAUSE_CHARS = 60;
 
+// THE BATTERY'S OWN SIZE at the pin: 17 in-loop rows x 2 `CAPABILITY_CONFIGS`,
+// plus 17 out-of-loop. Pinned ABSOLUTELY rather than derived from the run,
+// because every other guard here is RELATIVE — `compareOutcomes` walks observed
+// union listed, and the parse/tally cross-check compares two numbers that shrink
+// together. Measured: delete one unlisted PASSING row and decrement the tally to
+// match — which is exactly what the reporter prints when a row disappears — and
+// without this both of those return empty while the gate covers one row less.
+//
+// RED IN BOTH DIRECTIONS. A vanished row and a new row are the same event: the
+// harness moved, and this manifest was written against a battery that no longer
+// exists. Re-read it against the current suite rather than editing the number.
+export const EXPECTED_TOTAL = 51;
+
 const OUTCOMES = new Set(['skip', 'fail']);
+
+// A `cause` must CITE, not merely be long. Either a source file (ours or cc's,
+// with or without a line) or a spec section. A length floor alone is gameable —
+// `'x'.repeat(60)` and sixty characters of lorem both clear it — which would
+// make this module's whole promise, that a bare "expected to fail" cannot be
+// added, false.
+const CITATION_RE = /[\w./-]+\.(?:mjs|ts)(?::\d+)?|\u00a7\s*\d+/;
 
 // The two reasons a third-party run skips, verbatim from cc's suite at the pin.
 // Spelled once each: three of the four skips share the first string, and two
@@ -54,14 +74,16 @@ export const EXPECTED = [
     outcome: 'skip',
     reason: 'asserts the unset default',
     cause: 'the row asserts what an UNSET CC_CONFORMANCE_REMOTE_ID does, which a bound run has'
-      + ' deliberately changed; cc skips it for any third-party provider.',
+      + ' deliberately changed; systems-protocol-conformance.test.mjs skips it on'
+      + ' IS_REFERENCE_PROVIDER for any third-party provider.',
   },
   {
     name: 'every code in the taxonomy is produced by a real failure somewhere in this suite',
     outcome: 'skip',
     reason: 'counts producers across rows a third-party run skips',
     cause: 'the taxonomy census is filled by the rows that RAN, so it is short by exactly the'
-      + ' cc-side rows above whatever the provider does; cc skips it for a third-party run.',
+      + ' cc-side rows above whatever the provider does; systems-protocol-conformance.test.mjs skips'
+      + ' it on IS_REFERENCE_PROVIDER for a third-party run.',
   },
 
   // ── processGroupSignal: a genuine FAILURE, and there is no skip path ──
@@ -97,15 +119,23 @@ export const EXPECTED = [
   // `host` cannot reach it, because a `host` spawn error fires before any data
   // and cc's collector comment assumes exactly that.
   //
-  // MEASURED (2026-09-05, `docker exec` of a missing binary, node:24-slim): the
-  // docker CLI writes its whole 151-byte OCI diagnostic to STDOUT, ending
-  // `\r\n`, with stderr empty and exit 127. src/launcher/session.mjs streams
-  // that stdout to cc as `stdout` frames — it cannot yet know the command never
-  // started — and only then does `classifyFailure` recognise the shape and emit
-  // the `error` frame. cc's ExecOutputCollector.result fills "whichever buffers
-  // are still empty": `stderr` is empty so it gets the spawnError (the row's
+  // MEASURED (2026-09-05, `docker exec` of a missing binary, node:24-slim,
+  // daemon 29.7.2): the docker CLI writes its whole OCI diagnostic to STDOUT,
+  // with stderr empty and exit 127. src/launcher/session.mjs streams that stdout
+  // to cc as `stdout` frames — it cannot yet know the command never started —
+  // and only then does `classifyFailure` recognise the shape and emit the
+  // `error` frame carrying `first(stdout)`, which TRIMS. cc's
+  // ExecOutputCollector.result fills "whichever buffers are still empty":
+  // `stderr` is empty so it gets the spawnError (the row's
   // `r.stderr === r.spawnError` passes), but `output` already holds the streamed
-  // 151 bytes, so `r.output === r.spawnError` fails on the untrimmed CRLF text.
+  // bytes, so `r.output === r.spawnError` fails.
+  //
+  // WHAT BREAKS THE ROW IS raw != trimmed, NOT the size or the line ending. The
+  // diagnostic's length is a function of the argv it quotes (here the suite's
+  // 33-character fixture binary name), and the trailing bytes were CRLF on that
+  // daemon — but a bare `\n` would fail this assertion identically, and the
+  // canned samples in tests/dockerkind.test.mjs all end `\n`. Do not restate
+  // either as a property of the failure.
   //
   // WHY IT IS LISTED RATHER THAN FIXED HERE: the only fix is to stop streaming
   // the docker CLI's stdout until the exit code can classify it, which trades
@@ -118,8 +148,9 @@ export const EXPECTED = [
     cause: 'a DEFECT (card 2026-0016), not a forced outcome: src/launcher/session.mjs streams the'
       + ' docker CLI\'s own OCI diagnostic to cc as the command\'s stdout before classifyFailure can'
       + ' recognise it (src/launcher/kinds/docker.mjs), so cc\'s ExecOutputCollector.result leaves'
-      + ' `output` holding that text instead of the spawnError. Measured: the diagnostic is on STDOUT,'
-      + ' 151 bytes ending CRLF, stderr empty, exit 127. Delete this entry when card 2026-0016 lands.',
+      + ' `output` holding the raw text where the error frame carries the trimmed one. Measured'
+      + ' 2026-09-05 on daemon 29.7.2: the diagnostic is on STDOUT, stderr empty, exit 127.'
+      + ' Delete this entry when card 2026-0016 lands.',
   })),
 
   // ── --remote / --mirror / --exclude: structurally unreachable ─────
@@ -177,11 +208,37 @@ export function validateExpectations(list) {
         + ' code or contract clause that FORCES this outcome. A bare "expected to fail" is exactly'
         + ' what this manifest exists to stop.');
     }
+    if (!CITATION_RE.test(e.cause)) {
+      throw new Error(`${at}: the \`cause\` must CITE its reason — a source file (\`foo.mjs\` or`
+        + ' `foo.mjs:12`) or a spec section (`\u00a710`). Length alone is gameable, and a cause that'
+        + ' cites nothing cannot be re-checked against the code when the harness moves.');
+    }
   }
   return list;
 }
 
 validateExpectations(EXPECTED);
+
+/**
+ * THE ABSOLUTE-TOTAL CHECK. Every other guard in this file is relative to what
+ * the run reported, so a row that DISAPPEARS from the suite is invisible to all
+ * of them. This is the one that is not.
+ * @param {Record<string,number>} tally the run summary's own diagnostics
+ * @returns {string[]} empty when the battery is the size this manifest was written against
+ */
+export function checkTotal(tally, expectedTotal = EXPECTED_TOTAL) {
+  const got = tally?.tests;
+  if (got === undefined) {
+    return ['the run printed no `tests <n>` summary diagnostic, so its size could not be checked'
+      + ` against the expected ${expectedTotal} — the reporter format changed`];
+  }
+  if (got !== expectedTotal) {
+    return [`the battery reported ${got} tests, not the ${expectedTotal} this manifest was written`
+      + ' against — the harness moved. A row was added or REMOVED; re-read the manifest against the'
+      + ' current suite (and the pin) rather than editing the number.'];
+  }
+  return [];
+}
 
 /**
  * The comparison, in both directions.

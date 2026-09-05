@@ -4,14 +4,23 @@
 machine. It is never auto-registered. **KEPT — decided with evidence at cc
 `8b7b10bf`** — for two reasons, each load-bearing on its own:
 
-1. **It is the only far side that reaches the TEST PROCESS'S OWN filesystem.**
-   cc's suite "builds its fixtures with node's own `fs` and then asks the
-   provider about them" (`systems-protocol.md` §10). `CC_CONFORMANCE_REMOTE_ID`
-   fixes *addressing*, not *filesystem identity*, so binding a docker target
-   does **not** substitute. The same requirement makes `host` the far side for
-   `tests/fileops.test.mjs` (the only real-shell proof the generated read/write
-   scripts are right) and `tests/baseline.test.mjs` (the only proof
-   `PROBE_SCRIPT` is valid POSIX sh).
+1. **It is the only far side inside `npm test` that reaches the TEST PROCESS'S
+   OWN filesystem.** cc's suite "builds its fixtures with node's own `fs` and then
+   asks the provider about them" (`systems-protocol.md` §10), and
+   `CC_CONFORMANCE_REMOTE_ID` fixes *addressing*, not *filesystem identity*. The
+   same requirement makes `host` the far side for `tests/fileops.test.mjs` (the
+   only real-shell proof the generated read/write scripts are right) and
+   `tests/baseline.test.mjs` (the only proof `PROBE_SCRIPT` is valid POSIX sh) —
+   **and those must stay docker-free**, which is what keeps this reason
+   load-bearing.
+
+   **NARROWED BY CARD 2026-0014, not withdrawn.** This page used to say a bound
+   docker target does *not* substitute for filesystem identity at all. It can:
+   `npm run conformance:docker` obtains it with a host bind plus `TMPDIR`
+   ([bound-conformance.md](bound-conformance.md), and `:90` below). What it costs
+   is a daemon, a clone of the pin and a writable bound scratch — so it is a
+   separate `npm run`, never `npm test`, and the sentence above is about
+   `npm test`. Reason 2 is untouched either way.
 2. **`npm run conformance` drives the battery through the SHIPPED LAUNCHER**
    (`tests/conformance.mjs` → `[node, src/launcher/main.mjs, --kind, host]`), so
    it exercises arg parsing, kind dispatch, the frame loop, routing and
@@ -158,7 +167,15 @@ that is what proves the other team's tree was not disturbed. Note
   same treatment.
 - What makes this acceptable is the seam: the codec, the frame loop and fileops
   are kind-agnostic and `spawnPlan` is pure, so **`host` passing the core suite
-  proves the core for every kind.** The per-kind residue is argv construction,
-  `reap` and the optional `classifyFailure` — for `docker`, covered by
-  `tests/dockerkind.test.mjs` (pure) and `tests/docker-live.test.mjs` (a real
-  container, self-skipping).
+  proves the core's LOGIC for every kind.** The per-kind residue is argv
+  construction, `reap` and the optional `classifyFailure` — for `docker`, covered
+  by `tests/dockerkind.test.mjs` (pure), `tests/docker-live.test.mjs` (a real
+  container, self-skipping) **and the bound run**
+  ([bound-conformance.md](bound-conformance.md)).
+  **The seam does NOT carry the core's assumptions about WHEN a transport may
+  speak**, and the bound run found a real defect in that gap (card 2026-0016):
+  `session.mjs` streams a child's stdout before the exit code lets
+  `classifyFailure` see it, and whether that matters depends on where a wrapper
+  CLI puts its own diagnostic — a per-kind property. `host` cannot reach it,
+  structurally: node raises `ENOENT` inside the spawn, so a `host` exec that never
+  started emits no stream frames at all.
