@@ -102,3 +102,7 @@ See [`.wiki/decisions/architecture-shape.md`](.wiki/decisions/architecture-shape
 - **A mirror change is not live.** A card's **Advanced** group sets how much of the target a worker can see; cc asks for it once per provider connection, so an edit reaches an already-running session only after the System reconnects. See [`.wiki/gotchas/mirror-advertisement.md`](.wiki/gotchas/mirror-advertisement.md) and [`docs/features.md`](docs/features.md).
 
 - **Plugin must live on the `local` system (`PLUGIN_BACKEND_LOCAL_ONLY`).** The plugin backend itself is not relocatable to a remote System.
+
+## License
+
+This project is licensed under the GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later). Copyright (c) 2026 UnmanagedCode. See [LICENSE](LICENSE) for details.
