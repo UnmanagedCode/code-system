@@ -390,14 +390,27 @@ note). It is also unnecessary — a bound run needs no such lie.
 **Two standing obligations for any kind, both now discharged by both
 transports:**
 
-1. **Every config field that becomes an argv operand must reject a leading `-`**
-   (`src/launcher/kinds/config.mjs`). `container`, `host` and `user` do, and both
-   `spawnPlan`s really do place their operand after a `--`. A leading dash turns
-   an operand into an option — `container: "-v /:/host"` is argument injection
-   against `docker`, and `host: "-oProxyCommand=…"` against `ssh` — and the
-   refusal belongs in `validateConfig`, not in `spawnPlan`, so a bad value never
-   reaches the store. **`ssh` needs a second terminator as well**, for GNU
-   `env`'s option section; see `docs/protocol.md`.
+1. **Every config field that becomes an argv OPERAND must reject a leading `-`**
+   (`operand()` in `src/launcher/kinds/config.mjs`). `docker`'s `container` and
+   `ssh`'s `host` and `user` do, and both `spawnPlan`s really do place their
+   operand after a `--`. A leading dash turns an operand into an option —
+   `container: "-v /:/host"` is argument injection against `docker`, and
+   `host: "-oProxyCommand=…"` against `ssh` — and the refusal belongs in
+   `validateConfig`, not in `spawnPlan`, so a bad value never reaches the store.
+   **`ssh` needs a second terminator as well**, for GNU `env`'s option section;
+   see `docs/protocol.md`.
+
+   **A field that becomes a FLAG'S ARGUMENT is the other case, and must not use
+   `operand()`** — `docker`'s `user` (the card's **Run as** → `docker exec -u
+   <value>`) is the one today, and is a different field from `ssh`'s `user`. A
+   flag consumes the next argv element whatever it begins with, so `operand()`'s
+   refusal would tell the operator two untrue things about their field. Such a
+   field is still validated — by the kind, to that field's own shape
+   (`IDENTITY_RE`), which refuses a leading `-` among much else — and `spawnPlan`
+   emits the flag and its value as **two** argv elements, left of the `--`. The
+   rule a kind author needs is therefore: decide which of the two a new field is,
+   and take the matching treatment; `docs/protocol.md` → *Config values that
+   become argv* is the full statement.
 2. **`exclusive`'s remaining gap is a check-then-act race on a target shell that
    ignores `noclobber`** — not a routine truncation, because the script's
    `[ -e ]` pre-check is a plain `test` no shell can ignore. Scoped, measured

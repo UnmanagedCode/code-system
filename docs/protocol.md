@@ -654,28 +654,49 @@ the launcher's gate entirely, so a disabled remote is never probed.
 
 ### Config values that become argv
 
-A kind's `validateConfig` owns the shape of its `config`, and **every field that
-ends up as an argv operand must reject a leading `-`** — `container`, `host`,
-`user` today (`src/launcher/kinds/config.mjs`, shared by both kinds). A value
-like `container: "-v /:/host"` or `host: "-oProxyCommand=..."` is read by the
+A kind's `validateConfig` owns the shape of its `config`. A config value that
+reaches argv is one of **two** things, and the obligation differs:
+
+| The value becomes | Fields today | What the kind owes it |
+|---|---|---|
+| an argv **operand** | `docker`'s `container`, `ssh`'s `host` and `ssh`'s `user` | **Reject a leading `-`**, via `operand()` in `src/launcher/kinds/config.mjs`, and place it after a `--` in `spawnPlan` |
+| a **flag's argument** | `docker`'s `user` (the card's **Run as** → `docker exec -u <value>`) | **Do not use `operand()`.** Validate the value's own shape in the kind, and emit the flag and its value as **two** argv elements |
+
+**Operands: why a leading `-` is refused.** A value like
+`container: "-v /:/host"` or `host: "-oProxyCommand=..."` is read by the
 far-side binary as an **option**, not an operand, turning a stored remote into
 argument injection against `docker` or `ssh`.
 
-**This is refused at the store's front door, not defended against in
-`spawnPlan`** — `docker`'s `spawnPlan` builds argv from `container` and `ssh`'s
-from `host`/`user`, and the rule had to hold before either existed. A validator
-that accepts an
-option-shaped value is a latent hole even while `spawnPlan` throws. Any new
-config field a kind adds gets the same treatment.
+**Flag arguments: why the same rule would be wrong.** A flag consumes the next
+argv element whatever it begins with — measured: `docker exec -u -rm` answers
+`unable to find user -rm`, i.e. `-rm` was the identity, never an option. So
+`operand()`'s refusal text ("it becomes a command-line operand, and a leading
+dash makes it an option instead") is **false of such a field**, and an operator
+following it hunts for an option that is not there. The value is still
+constrained — `docker`'s `IDENTITY_RE` refuses a leading `-` among much else —
+but by the kind, in that field's own terms. **Two argv elements, never joined**,
+is what keeps the value positional.
+
+**Either way the check belongs at the store's front door, not in `spawnPlan`** —
+`docker`'s `spawnPlan` interpolates `container` and `user`, `ssh`'s `host` and
+`user`, and the rule had to hold before any of them existed. A validator that
+accepts a value of the wrong shape is a latent hole even while `spawnPlan`
+throws. Any new config field a kind adds gets whichever of the two treatments
+matches how it reaches argv.
 
 (It is not a general escaping scheme, and it is precise about where a shell is
 in play. For `host` and `docker` nothing validated here reaches a shell at all —
 the core spawns argv directly and `fileops.mjs` quotes what it interpolates. For
 `ssh` the remote command **is** tokenized by the target's login shell, which is
 why `kinds/ssh.mjs` quotes every token it interpolates and hands ssh one argv
-element. Either way this rule is about the **argv/option boundary**: a leading
-`-` in a stored `host`/`user` is an option to the *local* ssh client, before any
-remote shell exists.)
+element. Either way the operand rule is about the **argv/option boundary**: a
+leading `-` in a stored `host`/`user` is an option to the *local* ssh client,
+before any remote shell exists.)
+
+**Two config fields are named `user`.** `ssh`'s is part of the destination
+(`ssh <user>@<host>`) and is an operand; `docker`'s is the identity commands run
+as (`docker exec -u <value>`) and is a flag argument. They are unrelated, and
+this document names the kind whenever it means one of them.
 
 ### `remoteId`
 
