@@ -80,7 +80,8 @@ downstream of the answer changes.
 
 **A mirror edit is not live.** cc re-asks only on a new connection generation, so
 a change reaches an already-running session after the System reconnects. The
-card's Advanced group says so.
+mirror fields in the card's Advanced group say so (the group's other member,
+docker's `user`, is a config field and takes effect on the next operation).
 
 **Validated at the store's front door, never here.** `src/mirror.mjs`
 (`validateMirror`, bounded by `MIRROR_EXCLUDE_MAX` / `MIRROR_PATH_MAX` from
@@ -254,7 +255,7 @@ real container, by `tests/docker-live.test.mjs` L7.
 ## `docker` — what goes on the wire
 
 ```
-<docker-cli> exec [-i] -w <cwd> [-e CC_REMOTE=<id> -e CC_EXEC_TOKEN=<tok>]
+<docker-cli> exec [-i] -w <cwd> [-u <user>] [-e CC_REMOTE=<id> -e CC_EXEC_TOKEN=<tok>]
             -- <container> [env -i -- NAME=VALUE…] <command…>
 ```
 
@@ -273,6 +274,7 @@ argv token (measured).
 | subcommand | `exec` only. `reachability` uses `inspect`. **Nothing else, ever** — attach-only is enforced in code (`ALLOWED_SUBCOMMANDS`), never `start`/`stop`/`run`/`rm` |
 | `-i` | iff the frame's `stdin` is `pipe`. This is how `writeFile`'s base64 payload reaches the container, and EOF propagates through it |
 | `-w <cwd>` | the frame's `cwd`, verbatim, **including `/`** — the plan leaves the host client's own `cwd` unset |
+| `-u <user>` | the remote's `config.user` (the card's **Run as**), verbatim. **Absent entirely when unset** — no flag, which is the container's default user. Emitted for BOTH env branches, and left of `env -i`. `reap` carries the same flag (it kills by uid ownership); `inspect` never does |
 | `--` | always, so the container name is unambiguously an operand |
 | `<command…>` | `argv` form: the argv verbatim. `shell` form: `/bin/bash -lc <shell>` — **absolute**, so it resolves under `env -i` regardless of the frame's PATH, and it is the same interpreter the baseline probe requires |
 | `env` absent (`null`) | no `env -i`: the container keeps its own PATH/HOME/toolchain. The two plumbing variables ride as `-e` flags |
@@ -293,6 +295,7 @@ refusal is on **stderr** with exit 1, but a command that never started is on
 |---|---|---|---|
 | 1 | stderr | `Error response from daemon: No such container: <name>` | `ENOREMOTE` |
 | 1 | stderr | `Error response from daemon: container <64-hex> is not running` | `ENOREMOTE`, saying the provider is attach-only |
+| 1 | stderr | `Error response from daemon: unable to find user <u>` / `unable to find group <g>` (the configured **Run as** identity) | `EUNKNOWN` naming the container, the identity and the card's Run-as field — **never `ENOREMOTE`**: the container is fine |
 | 1 | stderr | `permission denied while trying to connect…` / `Cannot connect to the Docker daemon…` | `EUNKNOWN` naming `CODE_SYSTEM_DOCKER` — **never `ENOREMOTE`**: our access failing is not the remote being absent |
 | 127 | **stdout** | `OCI runtime exec failed: exec failed: unable to start container process: …` (missing binary, or a `-w` that does not exist) | `ENOENT` — §5's "a command that never started is an `error` frame, not an `exit` frame" |
 | **128** | **stdout** | `OCI runtime exec failed: exec failed: Cwd must be an absolute path` (a non-absolute `-w`) | `ENOENT`, same reason. Note the different exit code, and that this message lacks the `unable to start container process: ` segment the other two share |
@@ -625,10 +628,10 @@ only and re-derived at every start.
 | `GET /api/health` | any response counts as alive |
 | `GET /api/registration` | `{state, rows:[{id,state,httpStatus,message}], checkedAt}` — `blocked`/`unreachable` messages are rendered verbatim |
 | `POST /api/registration/retry` | the only retry; user-driven |
-| `GET /api/kinds` | `{kinds:[{kind,label,configFields}], mirrorDefaults:{root,exclude}}` — the card UI's form definition, per registered kind, plus the Advanced group's prefill from `src/mirror.mjs`'s `DEFAULT_MIRROR`. `GET /api/health` keeps a **plain** kind-name list: a liveness probe has no use for descriptors or defaults |
+| `GET /api/kinds` | `{kinds:[{kind,label,configFields}], mirrorDefaults:{root,exclude}}` — the card UI's form definition, per registered kind, plus the Advanced group's prefill from `src/mirror.mjs`'s `DEFAULT_MIRROR`. A `configFields` entry may carry **`advanced: true`** (docker's `user`): render it in the card's Advanced group instead of the connection block. It is otherwise an ordinary config field — same validator, same store, same reset-on-change. `GET /api/health` keeps a **plain** kind-name list: a liveness probe has no use for descriptors or defaults |
 | `GET /api/remotes` | every stored remote, each with a live `reachability`, a `baseline` and its `mirror`; an unreadable record appears as `{remoteId, broken:{reason,message}}` rather than being hidden. Its `kinds` field is the **descriptor array**, the same shape `GET /api/kinds` serves, and it carries the same `mirrorDefaults` |
 | `POST /api/remotes` | create — validates the `remoteId` charset, delegates `config` to the kind, and validates `mirror` with `src/mirror.mjs` (**400**, message quoting the offending value and an exclude entry's index). An absent `mirror` stores `null`. Created **`enabled: false`**. 400 / 409 |
-| `PATCH /api/remotes/:id` | edit everything **except** `remoteId`; a changed `config` resets `baseline` to `unknown` **and `enabled` to `false`**; a label-only edit preserves both. **A `mirror` change resets neither** — it names the same target — and an omitted `mirror` preserves the stored one. An invalid `mirror` is a 400 and writes nothing |
+| `PATCH /api/remotes/:id` | edit everything **except** `remoteId`; a changed `config` resets `baseline` to `unknown` **and `enabled` to `false`**; a label-only edit preserves both. **A `mirror` change resets neither** — it names the same target — and an omitted `mirror` preserves the stored one. An invalid `mirror` is a 400 and writes nothing. The Advanced group is **not** uniformly reset-free: an Advanced-rendered *config* field (docker `user`) is a config change and resets both |
 | `POST /api/remotes/:id/connect` | 200 `{remote}` — the kind's `connect` **first**, then the gate. 404 absent / 409 unreadable / **502** `{error, remote}` on a transport refusal |
 | `POST /api/remotes/:id/disconnect` | 200 `{remote, warning?}` — the gate **first**, then the kind's `disconnect`. 404 / 409 as above |
 | `DELETE /api/remotes/:id` | delete, **warning** when any cc project still names this `remoteId` |
@@ -651,28 +654,53 @@ the launcher's gate entirely, so a disabled remote is never probed.
 
 ### Config values that become argv
 
-A kind's `validateConfig` owns the shape of its `config`, and **every field that
-ends up as an argv operand must reject a leading `-`** — `container`, `host`,
-`user` today (`src/launcher/kinds/config.mjs`, shared by both kinds). A value
-like `container: "-v /:/host"` or `host: "-oProxyCommand=..."` is read by the
+A kind's `validateConfig` owns the shape of its `config`. A config value that
+reaches argv is one of **two** things, and the obligation differs:
+
+| The value becomes | Fields today | What the kind owes it |
+|---|---|---|
+| an argv **operand** | `docker`'s `container`, `ssh`'s `host` and `ssh`'s `user` | **Reject a leading `-`**, via `operand()` in `src/launcher/kinds/config.mjs`, and place it after a `--` in `spawnPlan` |
+| a **flag's argument** | `docker`'s `user` (the card's **Run as** → `docker exec -u <value>`) | **Do not use `operand()`.** Validate the value's own shape in the kind, and emit the flag and its value as **two** argv elements |
+
+**Operands: why a leading `-` is refused.** A value like
+`container: "-v /:/host"` or `host: "-oProxyCommand=..."` is read by the
 far-side binary as an **option**, not an operand, turning a stored remote into
 argument injection against `docker` or `ssh`.
 
-**This is refused at the store's front door, not defended against in
-`spawnPlan`** — `docker`'s `spawnPlan` builds argv from `container` and `ssh`'s
-from `host`/`user`, and the rule had to hold before either existed. A validator
-that accepts an
-option-shaped value is a latent hole even while `spawnPlan` throws. Any new
-config field a kind adds gets the same treatment.
+**Flag arguments: why the same rule would be wrong.** A flag consumes the next
+argv element whatever it begins with — measured: `docker exec -u -rm` answers
+`unable to find user -rm`, i.e. `-rm` was the identity, never an option. So
+`operand()`'s refusal text ("it becomes a command-line operand, and a leading
+dash makes it an option instead") is **false of such a field**, and an operator
+following it hunts for an option that is not there. The value is still
+constrained — `docker`'s `IDENTITY_RE` refuses a leading `-` among much else —
+but by the kind, in that field's own terms.
+
+**Emit the flag and its value as two argv elements.** A house convention
+matching the `-w` and `-e` pairs, **not** a defence: measured, docker parses the
+joined form identically — `-unode` runs as uid 1000, and `-u-rm` means the
+identity `-rm`, exactly as `-u -rm` does.
+
+**Either way the check belongs at the store's front door, not in `spawnPlan`** —
+`docker`'s `spawnPlan` interpolates `container` and `user`, `ssh`'s `host` and
+`user`, and the rule had to hold before any of them existed. A validator that
+accepts a value of the wrong shape is a latent hole even while `spawnPlan`
+throws. Any new config field a kind adds gets whichever of the two treatments
+matches how it reaches argv.
 
 (It is not a general escaping scheme, and it is precise about where a shell is
 in play. For `host` and `docker` nothing validated here reaches a shell at all —
 the core spawns argv directly and `fileops.mjs` quotes what it interpolates. For
 `ssh` the remote command **is** tokenized by the target's login shell, which is
 why `kinds/ssh.mjs` quotes every token it interpolates and hands ssh one argv
-element. Either way this rule is about the **argv/option boundary**: a leading
-`-` in a stored `host`/`user` is an option to the *local* ssh client, before any
-remote shell exists.)
+element. Either way the operand rule is about the **argv/option boundary**: a
+leading `-` in a stored `host`/`user` is an option to the *local* ssh client,
+before any remote shell exists.)
+
+**Two config fields are named `user`.** `ssh`'s is part of the destination
+(`ssh <user>@<host>`) and is an operand; `docker`'s is the identity commands run
+as (`docker exec -u <value>`) and is a flag argument. They are unrelated, and
+this document names the kind whenever it means one of them.
 
 ### `remoteId`
 

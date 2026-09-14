@@ -114,3 +114,25 @@ test('every descriptor\'s fields are exactly what its validateConfig accepts', (
     }
   }
 });
+
+// PINS THAT `advanced` CHANGES RENDERING ONLY. It is a hint to the card form
+// about WHERE to draw a field, not a second, weaker class of field: an advanced
+// field is validated, stored and reset-on-change exactly like a connection one.
+// A mutant that let the descriptor carry a flagged field the validator does not
+// accept would ship a form whose Advanced group cannot be saved.
+test('an advanced config field is still a real config field', () => {
+  const flagged = kindDescriptors().flatMap(d => d.configFields
+    .filter(f => f.advanced === true).map(f => ({ kind: d.kind, field: f })));
+  assert.ok(flagged.length > 0, 'this test needs at least one advanced field to be about');
+
+  for (const { kind, field } of flagged) {
+    assert.equal(field.advanced, true);
+    const validate = createTransport(kind).validateConfig.bind(createTransport(kind));
+    const full = Object.fromEntries(
+      kindDescriptors().find(d => d.kind === kind).configFields.map(f => [f.name, SAMPLE[f.name]]));
+    const v = validate(full);
+    assert.equal(v.ok, true, `${kind}.${field.name}: ${v.error}`);
+    assert.equal(v.config[field.name], SAMPLE[field.name],
+      `${kind}.${field.name}: an advanced field is stored like any other`);
+  }
+});

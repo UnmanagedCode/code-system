@@ -470,6 +470,14 @@ test('GET /kinds serves one descriptor per registered kind, with its form', asyn
     assert.ok(Array.isArray(k.configFields) && k.configFields.length > 0);
     for (const f of k.configFields) assert.ok(f.name && f.label);
   }
+  // THE `advanced` FLAG IS SERVED, and only on the fields that want it: it is
+  // the frontend's whole routing signal for the card's Advanced group, and a
+  // descriptor projection that dropped it would silently move a field back into
+  // the connection block where nothing in a browser-free test looks.
+  const docker = res.body.kinds.find(k => k.kind === 'docker');
+  const byName = Object.fromEntries(docker.configFields.map(f => [f.name, f]));
+  assert.equal(byName.user.advanced, true, 'docker `user` is rendered in Advanced');
+  assert.equal('advanced' in byName.container, false, 'and `container` is a connection field');
   // GET /health keeps its PLAIN kind list: the conductor's liveness probe has
   // no use for descriptors.
   assert.deepEqual((await call('GET', '/health')).body.kinds, ['docker', 'ssh']);
@@ -557,6 +565,83 @@ test('adding or dropping an optional config field is a config change', async (t)
   await call('POST', '/remotes/box/connect');
   await call('PATCH', '/remotes/box', { config: { host: 'box', user: 'root' } });
   assert.equal((await stored(store, 'box')).enabled, false, 'adding `user` is too');
+});
+
+// ── the docker identity, backend side ────────────────────────────────
+//
+// `config.user` is KIND-OWNED CONFIG rendered in the card's Advanced group, not
+// operator policy beside it like `mirror`. That placement is what these rows are
+// about: it goes through the same one validator, and — unlike a mirror change —
+// it DOES reset the gate.
+
+// PINS the reset, and why it is required rather than merely cautious:
+// `reachability`'s fingerprint is image + StartedAt and cannot vary with the
+// identity, so `needsProbe` would never fire on an identity change. This reset
+// is the ONLY thing that re-probes the tooling baseline as the new user — and
+// that verdict genuinely is uid-dependent (`[ -x /bin/bash ]`, `find`, `stat`).
+test('changing the identity resets the gate and the baseline, like any other config change', async (t) => {
+  const stub = await stubDockerCli(t, { stdout: 'true img 2026-09-01T00:00:00Z\n', execStdout: GNU_OUT });
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_DOCKER: JSON.stringify(stub.cli) });
+  await call('POST', '/remotes', { remoteId: 'box', kind: 'docker', config: { container: 'app' } });
+  await call('POST', '/remotes/box/connect');
+  assert.equal((await stored(store, 'box')).enabled, true);
+  assert.equal((await stored(store, 'box')).baseline.state, 'ok');
+
+  const changed = await call('PATCH', '/remotes/box', { config: { container: 'app', user: 'node' } });
+  assert.equal(changed.status, 200);
+  assert.deepEqual(changed.body.remote.config, { container: 'app', user: 'node' }, 'the identity landed');
+  assert.equal(changed.body.remote.enabled, false, 'adding an identity switches the remote off');
+  assert.equal(changed.body.remote.baseline.state, 'unknown', 'and drops the verdict probed as the old user');
+  assert.equal((await stored(store, 'box')).enabled, false);
+
+  // And so does CHANGING one, not only adding the first.
+  await call('POST', '/remotes/box/connect');
+  assert.equal((await stored(store, 'box')).enabled, true);
+  await call('PATCH', '/remotes/box', { config: { container: 'app', user: '1000:1000' } });
+  assert.equal((await stored(store, 'box')).enabled, false, 'a different identity is a different user');
+  assert.equal((await stored(store, 'box')).baseline.state, 'unknown');
+});
+
+// PINS the other arm, which is what makes the first discriminating: the edit
+// form has NO dirty-tracking and PATCHes `config` on every save, so an identity
+// re-sent unchanged must not switch the remote off on an ordinary rename.
+test('re-sending the same identity preserves the gate', async (t) => {
+  const stub = await stubDockerCli(t, { stdout: 'true img 2026-09-01T00:00:00Z\n', execStdout: GNU_OUT });
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_DOCKER: JSON.stringify(stub.cli) });
+  await call('POST', '/remotes', {
+    remoteId: 'box', kind: 'docker', config: { container: 'app', user: 'node' },
+  });
+  await call('POST', '/remotes/box/connect');
+  assert.equal((await stored(store, 'box')).enabled, true);
+
+  const same = await call('PATCH', '/remotes/box', {
+    label: 'Renamed', config: { user: 'node', container: 'app' },
+  });
+  assert.equal(same.body.remote.label, 'Renamed', 'the rename landed');
+  assert.equal(same.body.remote.enabled, true, 'and the gate did NOT move — key order is not a change');
+  assert.equal(same.body.remote.baseline.state, 'ok');
+});
+
+// PINS that the store's front door is the only validator of the identity, on
+// BOTH write routes, and that a refusal writes nothing — the operator sees a 400
+// in the card's banner rather than a remote whose every operation fails later.
+test('a malformed identity is refused 400 on POST and PATCH, and writes nothing', async (t) => {
+  const { call, store } = await withApi(t);
+
+  const rejected = await call('POST', '/remotes', {
+    remoteId: 'bad', kind: 'docker', config: { container: 'app', user: 'no such' },
+  });
+  assert.equal(rejected.status, 400);
+  assert.match(rejected.body.error, /user/, 'the message names the field');
+  assert.equal((await call('GET', '/remotes')).body.remotes.length, 0, 'and nothing was written');
+
+  await call('POST', '/remotes', { remoteId: 'box', kind: 'docker', config: { container: 'app', user: 'node' } });
+  const before = await stored(store, 'box');
+  for (const user of ['no such', '$(id)', '-rm']) {
+    const res = await call('PATCH', '/remotes/box', { label: 'x', config: { container: 'app', user } });
+    assert.equal(res.status, 400, JSON.stringify(user));
+  }
+  assert.deepEqual(await stored(store, 'box'), before, 'the stored record is untouched, label included');
 });
 
 // ── the mirror advertisement, backend side ───────────────────────────

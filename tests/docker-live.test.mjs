@@ -446,6 +446,64 @@ live('readFile/writeFile work over docker exec, with every code cc branches on',
   assert.deepEqual(bytesOf(l.frames, 'r5'), body.subarray(6, 10));
 });
 
+// ── L9b: the remote's configured identity, for real ──────────────────
+
+// PINS THE WHOLE POINT OF `config.user` against a real daemon, on BOTH paths
+// that matter — and the second is the one nothing else proves: a derived file
+// operation has no docker-specific code at all, it rides the same `spawnPlan`
+// through run.mjs, so the OWNER of a written file is the only evidence that the
+// identity really governs the file path and not just `exec`.
+//
+// Measured on Docker 29.7.2: a uid with no passwd entry (`-u 9999:9999`)
+// SUCCEEDS, so there is nothing cheap to pre-validate — a rejected identity can
+// only be caught per operation, and it must arrive as a NAMED refusal pointing
+// at the card's field rather than as a bogus command exit.
+live('a configured identity governs exec AND the derived file operations', async (t, d) => {
+  const box = await withContainer(t, d.cli);
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  await writeRecord(store.dir, dockerRecord('alpha', box, { config: { container: box, user: 'node' } }));
+  await writeRecord(store.dir, dockerRecord('ghost', box, { config: { container: box, user: 'nosuchuser' } }));
+
+  const l = launcherFor(t, store, d.cli);
+  await l.hello();
+
+  // 1. THE EXEC runs as the configured identity — the container's own answer,
+  //    not ours. node:24-slim's `node` user is uid 1000; the image default is 0.
+  l.send({ type: 'exec', id: 'who', remoteId: 'alpha', cwd: '/tmp', argv: ['/usr/bin/id', '-u'] });
+  const who = await l.waitFor(f => f.type === 'exit' && f.id === 'who');
+  assert.equal(who.code, 0, `stderr=${textOf(l.frames, 'who', 'stderr')}`);
+  assert.equal(textOf(l.frames, 'who').trim(), '1000',
+    'the exec ran as the card\'s identity, not as the image default (0)');
+
+  // 2. THE FILE OPERATION rides the same path, proved by who OWNS the file.
+  l.send({ type: 'writeFile', id: 'w', remoteId: 'alpha', path: '/tmp/owned.txt' });
+  l.send({ type: 'data', id: 'w', seq: 0, dataB64: Buffer.from('mine\n').toString('base64') });
+  l.send({ type: 'end', id: 'w' });
+  const wrote = await l.waitFor(f => (f.type === 'writeFileResult' || f.type === 'error') && f.id === 'w');
+  assert.equal(wrote.type, 'writeFileResult', JSON.stringify(wrote));
+
+  l.send({ type: 'exec', id: 'own', remoteId: 'alpha', cwd: '/tmp', argv: ['/usr/bin/stat', '-c', '%u', '/tmp/owned.txt'] });
+  const own = await l.waitFor(f => f.type === 'exit' && f.id === 'own');
+  assert.equal(own.code, 0, `stderr=${textOf(l.frames, 'own', 'stderr')}`);
+  assert.equal(textOf(l.frames, 'own').trim(), '1000',
+    'writeFile went through the same spawnPlan — a file-op path that ignored the identity would be root-owned');
+
+  // 3. AN IDENTITY THE CONTAINER REJECTS is a named refusal pointing at the
+  //    field, not an `exit` frame carrying docker's own exit 1.
+  l.send({ type: 'exec', id: 'bad', remoteId: 'ghost', cwd: '/tmp', argv: ['/usr/bin/id', '-u'] });
+  const err = await l.waitFor(f => (f.type === 'error' || f.type === 'exit') && f.id === 'bad');
+  assert.equal(err.type, 'error', JSON.stringify(err));
+  assert.equal(err.code, 'EUNKNOWN', 'never ENOREMOTE — the container is fine');
+  assert.match(err.message, /Run as/, 'and it names the field on the card that fixes it');
+  assert.match(err.message, new RegExp(box), 'and the configured container');
+  assert.match(err.message, /nosuchuser/, 'and the identity that was refused');
+
+  // ONE BROKEN REMOTE IS NOT A BROKEN CONNECTION.
+  l.send({ type: 'exec', id: 'still', remoteId: 'alpha', cwd: '/tmp', argv: ['/usr/bin/id', '-u'] });
+  assert.equal((await l.waitFor(f => f.type === 'exit' && f.id === 'still')).code, 0);
+});
+
 // ── L10: a real busybox target is refused BY NAME ────────────────────
 
 // PINS acceptance 7 against a live busybox, and the reason the probe asserts on
@@ -734,7 +792,7 @@ for (const item of ROSTER) {
 // The wrong implementation it catches is the silent one: anything that makes
 // `resolveDockerCli` answer null — a future edit dropping the `sudo -n docker`
 // fallback from `candidates()`, a probe that stops asking for the SERVER
-// version — turns all 17 tests into green skips while `npm test` stays clean,
+// version — turns every roster test into a green skip while `npm test` stays clean,
 // so a broken transport reads as a clean run.
 //
 // It also makes a skip-arm claim SELF-CERTIFYING: with this here, "the roster

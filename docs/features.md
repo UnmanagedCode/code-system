@@ -164,7 +164,17 @@ Three further differences the mode really has, stated rather than glossed:
 If you need a `cd`, exported variables or a background job to survive, put them
 in a single command, or in a profile file on the target.
 
-## What a worker can see: the mirror root (Advanced)
+## Advanced card settings
+
+Each card's **Advanced** group holds two kinds of setting, and they behave
+differently on save:
+
+| Member | Kind | Editing it |
+|---|---|---|
+| **Run as** (docker only) | a **connection config** field the kind validates and stores | **switches the remote off**, like any other config change |
+| **Mirror root** / **Excluded paths** | operator policy beside the config | leaves the gate and the baseline alone |
+
+### What a worker can see: the mirror root
 
 By default a worker on a docker or ssh remote sees **the project directory and
 nothing else**: code-conductor's session root images the project root, and that
@@ -181,9 +191,10 @@ root is the local image of.
 
 - **The group is collapsed unless the remote already advertises a mirror**, and
   a remote that has never opted in advertises nothing — exactly the behaviour
-  from before this existed. It is **absent entirely** until the card list's first
-  fetch returns, since the defaults it prefills from are served by the backend
-  and the form holds no copy of them.
+  from before this existed. **These three fields are absent entirely** until the
+  card list's first fetch returns, since the defaults they prefill from are
+  served by the backend and the form holds no copy of them — the Advanced group
+  itself still renders, carrying **Run as**.
 - **Paths must be absolute and already in normal form.** `/app/`, `/a/./b` and
   `/a/../b` are refused in the form, because code-conductor refuses to normalise
   a provider's claim about its own layout. An exclude covering the mirror root is
@@ -193,6 +204,44 @@ root is the local image of.
   reconnects.
 - **Editing it does not switch the remote off**, unlike editing a connection
   value — a mirror names the same target.
+
+### Who the actions run as: Run as (docker)
+
+**Run as** sets the identity every docker action on that remote runs as. It is
+passed to `docker exec -u <value>` and applies to **all four** docker paths: the
+`exec` itself, the derived `readFile`/`writeFile` (which ride the same `exec`),
+the tooling-baseline probe, and the kill relay — the relay especially, because it
+kills by uid ownership and would otherwise fail to reach a subtree owned by a
+different user. It is **not** passed to `docker inspect`, which never enters the
+container.
+
+| Value | Means |
+|---|---|
+| *(empty)* | the image's default user. **No flag is added at all** |
+| `node` | a user name in the container |
+| `1000` | a uid. **A uid with no `/etc/passwd` entry is accepted by docker and runs** |
+| `node:node`, `1000:1000` | a user (or uid) and a group (or gid) |
+
+- **Docker only.** An `ssh` remote's `User` is a connection field — part of the
+  destination — not this.
+- **The accepted shape** is `IDENTITY_RE` in `src/launcher/kinds/docker.mjs`: it
+  must begin with a letter, digit or `_`, and may then carry letters, digits,
+  `.`, `_`, `-` and one optional `:group`. **Surrounding whitespace is trimmed**,
+  so `" node"` is stored as `node`; an *interior* space, a leading `-`, an empty
+  group and anything else are a **400** in the card — which is only moving the
+  daemon's own refusal earlier, since it refuses those too.
+- **The refusal text is this field's own**, not the shared "it becomes a
+  command-line operand" wording the connection fields get: the identity is `-u`'s
+  argument, which docker consumes whatever it begins with.
+- **Editing it switches the remote off**, unlike the mirror fields beside it.
+  This is required, not cautious: the reachability fingerprint is image +
+  `StartedAt` and cannot see the identity, so this reset is the only thing that
+  re-probes the tooling baseline **as the new user** — and that verdict is
+  uid-dependent.
+- **An identity the container rejects fails per operation**, not at Connect.
+  There is nothing cheap to pre-check (a uid with no passwd entry succeeds), so
+  the refusal is an `EUNKNOWN` error frame whose message names the container, the
+  identity, and the **Run as** field under Advanced.
 
 ## Operator settings
 
@@ -204,6 +253,12 @@ be an HTTP-writable executable on cc's host.
 code-conductor consumes for path arithmetic on its own side** — never argv, never
 a shell string, and it reaches no far-side command line
 (`tests/mirror-frames.test.mjs`).
+
+**Nor is Run as.** It *does* become argv — `docker exec -u <value>` — which is
+exactly why it is validated down to a plain identity shape (a name or uid,
+optionally `:group`) before it is stored. It can never be an *invocation* the way
+`CODE_SYSTEM_DOCKER` is: it is the single argument of a single flag, and the
+identity shape is what the store's front door enforces.
 
 | Variable | For |
 |---|---|

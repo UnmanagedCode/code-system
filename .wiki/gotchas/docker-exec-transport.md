@@ -1,7 +1,8 @@
 # What `docker exec` actually does (measured)
 
 All of this was measured against **Docker Engine 29.7.2** on 2026-09-04, against
-a `node:24-slim` container and `busybox:1.38.0`. None of it can be re-derived
+a `node:24-slim` container and `busybox:1.38.0` — except §7, measured against the
+same engine and image on **2026-09-14**. None of it can be re-derived
 from our code, and three of the facts contradict a reasonable assumption.
 
 ## 1. A `docker exec` child does not die with its host client
@@ -155,6 +156,47 @@ test asserting only mode and success passes; only a content round-trip catches i
 - **A `which docker` gate is wrong here**, for the same reason: unprivileged
   `docker version` still prints its whole Client block to **stdout** and exits 1.
   Ask for the **server** version.
+
+## 7. `-u` and the identity a remote acts as
+
+`docker exec -u <value>` is what the card's **Run as** field
+(`config.user`, docker only) becomes. Measured 2026-09-14:
+
+| `-u` value | Result |
+|---|---|
+| `node`, `1000`, `node:node` | exit 0, runs as uid 1000 |
+| `9999:9999` | **exit 0** — a uid with **no `/etc/passwd` entry is accepted** and runs |
+| `nosuchuser` | exit **1**, stdout **empty**, stderr `Error response from daemon: unable to find user nosuchuser: no matching entries in passwd file` |
+| `root:nosuchgroup` | exit **1**, stdout empty, stderr `Error response from daemon: unable to find group nosuchgroup: no matching entries in group file` |
+| `no such` (a space) | the same daemon refusal — the form's shape rule only moves that refusal earlier |
+
+**Two non-obvious consequences.**
+
+- **There is nothing cheap to pre-validate.** Because `-u 9999:9999` succeeds, a
+  connect-time probe could only catch the missing-passwd-entry case — which the
+  per-operation refusal already names verbatim. Combined with
+  `tests/kindmeta.test.mjs`'s "docker connect invokes docker **zero** times"
+  (the attach-only decision in its strongest form) and `reachability` being a
+  daemon query that never enters the container, the identity is checked **per
+  operation** and nowhere else.
+- **The reap script run as an unprivileged user is NOT blind.** Measured:
+  `docker exec -u node … <reapscript>` answers `CCREAP ok 0 1`, not
+  `CCREAP blind` — a process can always read its own `/proc/<pid>/environ`, so
+  the `readable` count is never 0. It *does* leak
+  `cannot open /proc/1/environ: Permission denied` lines on **stderr**, which
+  `reap` ignores because it reads stdout. So `reap` can and must carry `-u`: it
+  kills by uid ownership, and relaying as the image default would silently fail
+  to kill a subtree owned by the configured user.
+
+**A joined short flag parses identically.** `-unode` runs as uid 1000, and
+`-u-rm` means the identity `-rm`, exactly as the separated `-u -rm` does. So
+emitting `['-u', value]` as two argv elements is a convention (it matches the
+`-w`/`-e` pairs and keeps the value assertable on its own) — it is **not** what
+makes a leading-dash value inert, and a leading dash is refused by the kind's
+`IDENTITY_RE`, not by the argv shape.
+
+`docker inspect` deliberately gets **no** `-u`: it never enters the container and
+has no such flag. See `src/launcher/kinds/docker.mjs` for all three sites.
 
 See also: [exec-env-across-a-boundary.md](exec-env-across-a-boundary.md),
 [kill-relay.md](kill-relay.md),

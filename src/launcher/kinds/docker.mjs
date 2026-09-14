@@ -54,11 +54,36 @@ export const KIND_META = {
       placeholder: 'my-app',
       hint: 'The container name or id, as `docker ps` shows it. It must already be running — code-system never starts one.',
     },
+    {
+      name: 'user',
+      label: 'Run as',
+      required: false,
+      // THE ONLY RENDERING FLAG in a descriptor field, and it changes rendering
+      // ONLY: this is an ordinary config field the kind validates and the store
+      // keeps, so changing it resets the gate like any other config change.
+      // frontend/app.js routes a flagged field into the card's Advanced group.
+      advanced: true,
+      placeholder: 'node, 1000, or 1000:1000',
+      hint: 'The identity every docker action on this remote runs as, passed to `docker exec -u`.'
+        + ' A name, a uid, or either with a `:group`. Leave empty to use the image\'s default user.',
+    },
   ],
 };
 
 // THE SHIPPED DEFAULT HARDCODES NO `sudo`. Pinned by tests/dockerkind.test.mjs.
 const DEFAULT_CLI = ['docker'];
+
+// What `docker exec -u` accepts: a name or uid, optionally `:group`.
+// Deliberately a WHITELIST rather than a metacharacter blacklist — every real
+// POSIX user/group name and every uid fits, and the value becomes one argv
+// element, so the rule is about keeping it a plausible identity rather than
+// about escaping. `_` leads because `_apt` and friends are real Debian system
+// accounts.
+//
+// Measured: `docker exec -u 'no such'` is refused by the daemon anyway (exit 1,
+// `unable to find user`), so this only moves that refusal into the operator's
+// form, where it is a 400 they can see rather than a failed operation later.
+const IDENTITY_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]*(:[A-Za-z0-9_][A-Za-z0-9._-]*)?$/;
 
 /**
  * @returns {string[]} the whole docker invocation, e.g. ['docker'] or ['sudo','-n','docker']
@@ -210,7 +235,25 @@ export function createDockerTransport({ cli } = {}) {
       // leading `-` would make it an option — see kinds/config.mjs.
       const container = operand(o.container, 'container');
       if (!container.ok) return { ok: false, error: `docker config: ${container.error}` };
-      return { ok: true, config: { container: container.value } };
+      // DELIBERATELY NOT THROUGH `operand`, unlike `container` above. This value
+      // is `-u`'s ARGUMENT, not an argv operand: docker consumes the next argv
+      // element whatever it begins with, so config.mjs's shared refusal would
+      // tell the operator two things that are untrue of this field. A leading
+      // `-` is still refused — IDENTITY_RE refuses it — in docker's own terms.
+      const user = typeof o.user === 'string' ? o.user.trim() : '';
+      if (user !== '' && !IDENTITY_RE.test(user)) {
+        return {
+          ok: false,
+          error: `docker config: 'user' ${JSON.stringify(user)} is not a docker identity`
+            + ' — it must be a user name or uid, optionally followed by \':group\' or \':gid\','
+            + ' beginning with a letter, digit or underscore and containing no spaces'
+            + ' (e.g. node, 1000, node:node, 1000:1000)',
+        };
+      }
+      // AN EMPTY IDENTITY IS DROPPED, never stored as ''. `sameConfig` compares
+      // the canonical shapes, so a phantom `user: ''` reads as a changed config
+      // and switches the remote off on every save.
+      return { ok: true, config: { container: container.value, ...(user ? { user } : {}) } };
     },
 
     // PURE. No I/O and no spawning — the core spawns what this returns, which is
@@ -233,6 +276,13 @@ export function createDockerTransport({ cli } = {}) {
       // passed straight through — every cc derivation carries it as a
       // placeholder, so fencing it would refuse them all (§7).
       args.push('-w', req.cwd);
+      // THE REMOTE'S CONFIGURED IDENTITY, applied to every exec this provider
+      // issues — the frame's own exec, the derived file operations (which ride
+      // this same spawnPlan through run.mjs) and the baseline probe. Placed
+      // before the env branch so it governs the `env -i` REPLACE form too.
+      // Absent ⇒ NO FLAG AT ALL, which is the container's default user.
+      const user = String(config?.user ?? '');
+      if (user) args.push('-u', user);
 
       if (req.env === null) {
         // INHERIT: the container keeps its own PATH/HOME/toolchain, which is
@@ -279,6 +329,10 @@ export function createDockerTransport({ cli } = {}) {
 
     // TIER 1 of the two-tier baseline probe: a daemon query, never a round trip
     // INTO the target, because this runs on every card render.
+    //
+    // DELIBERATELY NO `-u`. `config.user` is the identity commands run AS inside
+    // the container; this never enters the container at all, and `-u` is not a
+    // flag of `docker inspect`. Adding it here would refuse every card render.
     async reachability(config) {
       const container = String(config?.container ?? '');
       const res = await runDocker(
@@ -338,8 +392,16 @@ export function createDockerTransport({ cli } = {}) {
     async reap(config, handle) {
       const container = String(config?.container ?? '');
       if (!container || !handle?.token) return;
+      // THE SAME IDENTITY THE EXEC RAN AS. The relay `kill -9`s by uid
+      // ownership, so running it as the image default would silently fail to
+      // kill a subtree owned by a different user — the exact MUST-3 leak the
+      // relay exists to prevent. Measured: the scan is not blinded by running
+      // unprivileged (`CCREAP ok 0 1`), because a process can always read its
+      // own /proc/<pid>/environ.
+      const user = String(config?.user ?? '');
       const res = await runDocker(
-        argv0, ['exec', '--', container, '/bin/sh', '-c', buildReapScript(handle.token)],
+        argv0,
+        ['exec', ...(user ? ['-u', user] : []), '--', container, '/bin/sh', '-c', buildReapScript(handle.token)],
         { timeoutMs: REAP_TIMEOUT_MS });
 
       // A REAP THAT COULD NOT RUN MUST NOT READ AS A REAP THAT FOUND NOTHING.
@@ -377,6 +439,7 @@ export function createDockerTransport({ cli } = {}) {
     // protocol error turns every failing `git` into a dead remote.
     classifyFailure(config, { code, stdout = '', stderr = '' }) {
       const container = String(config?.container ?? '');
+      const user = String(config?.user ?? '');
 
       // Rows that arrive on STDERR with exit 1, and with docker's stdout
       // untouched. A command would have to exit 1, print NOTHING at all, and
@@ -397,6 +460,28 @@ export function createDockerTransport({ cli } = {}) {
               code: 'ENOREMOTE',
               message: `container '${container}' exists but is not running —`
                 + ' this provider is ATTACH-ONLY: code-system never starts a container',
+              stderr: first(stderr),
+            };
+          }
+          // A REJECTED IDENTITY. Measured: exit 1, empty stdout, and one of
+          //   Error response from daemon: unable to find user <u>: no matching entries in passwd file
+          //   Error response from daemon: unable to find group <g>: no matching entries in group file
+          //
+          // NOT ENOREMOTE — the container is fine, and cc's assertRemoteKnown
+          // reads ENOREMOTE as "this provider does not serve this remote",
+          // which sends the operator to recreate a healthy container instead of
+          // to the card's Run-as field. EUNKNOWN is the catch-all surfaced
+          // verbatim, the same code the daemon-unreachable row below uses.
+          //
+          // NO BARE fs-errno TOKEN in the message — cc re-parses the text and a
+          // stray ENOENT/EACCES downgrades an administrative refusal
+          // (.wiki/gotchas/refusal-message-errno-tokens.md).
+          if (stderr.includes('unable to find user') || stderr.includes('unable to find group')) {
+            return {
+              code: 'EUNKNOWN',
+              message: `container '${container}' rejected the identity '${user}' configured for this remote`
+                + ' — set Run as, under Advanced on the remote\'s card, to a user that exists in the'
+                + ' container (or to a numeric uid[:gid])',
               stderr: first(stderr),
             };
           }

@@ -37,7 +37,9 @@ const state = {
   // exclude list here is exactly the drift the single source exists to prevent,
   // and a half-populated one would offer the operator a root with no excludes
   // while the form's own copy promises the target's pseudo-filesystems. The
-  // Advanced group is simply not rendered until the defaults arrive.
+  // MIRROR FIELDS are simply not rendered until the defaults arrive; the
+  // Advanced group around them still is, for the kind's own advanced config
+  // fields, which prefill from the record rather than from these.
   mirrorDefaults: null,
   registration: null,
   route: { view: 'list' },
@@ -216,15 +218,22 @@ function formFor(mode) {
     }),
   ));
 
+  // ONE BUILDER for every config field, wherever it is rendered: a field flagged
+  // `advanced` in the kind's descriptor goes into the <details> below instead of
+  // the connection block, and nothing else about it differs — same draft key,
+  // same wire shape, same validator.
+  const configField = f => el('div', { class: 'field' },
+    el('label', { for: `f-${f.name}` }, `${f.label}${f.required ? '' : ' (optional)'}`),
+    el('input', {
+      id: `f-${f.name}`, value: draft.config[f.name] ?? '', placeholder: f.placeholder ?? '',
+      oninput: e => { draft.config[f.name] = e.target.value; },
+    }),
+    f.hint ? el('span', { class: 'hint' }, f.hint) : null,
+  );
+
+  const advancedFields = (desc?.configFields ?? []).filter(f => f.advanced === true);
   for (const f of desc?.configFields ?? []) {
-    fields.push(el('div', { class: 'field' },
-      el('label', { for: `f-${f.name}` }, `${f.label}${f.required ? '' : ' (optional)'}`),
-      el('input', {
-        id: `f-${f.name}`, value: draft.config[f.name] ?? '', placeholder: f.placeholder ?? '',
-        oninput: e => { draft.config[f.name] = e.target.value; },
-      }),
-      f.hint ? el('span', { class: 'hint' }, f.hint) : null,
-    ));
+    if (f.advanced !== true) fields.push(configField(f));
   }
 
   // A CHANGED CONFIG VALUE SWITCHES THE REMOTE OFF, and the form says so rather
@@ -233,28 +242,35 @@ function formFor(mode) {
   // always PATCHes its config, and `sameConfig` in src/api.mjs is what decides.
   // So this sentence must not promise more than that comparison delivers.
   //
-  // SCOPED TO THE CONNECTION FIELDS. The Advanced group below is outside
-  // `sameConfig` on the backend precisely because a mirror change names the same
-  // target, so the sentence must not claim it too.
+  // SCOPED TO THE CONFIG FIELDS, WHEREVER THEY RENDER. The Advanced group is not
+  // uniformly reset-free: its mirror half is outside `sameConfig` because a
+  // mirror change names the same target, but an advanced CONFIG field (Run as)
+  // is inside it — and must be, because reachability's fingerprint cannot see
+  // the identity, so this reset is the only thing that re-probes the tooling
+  // baseline as the new user.
   if (mode === 'edit') {
     fields.push(el('div', { class: 'note' },
-      'Changing a connection value above switches this remote off: a different config may point'
-      + ' at a different target entirely. Saving with every value unchanged — including editing'
-      + ' only the label, or only the Advanced settings below — does not.'));
+      'Changing a connection value — including Run as — switches this remote off: a different'
+      + ' config may point at a different target, or run as a different user. Saving with every'
+      + ' value unchanged, or editing only the label or the mirror settings below, does not.'));
   }
 
-  // THE MIRROR ADVERTISEMENT, collapsed by default: it is off for every remote
+  // THE ADVANCED GROUP, collapsed by default: the mirror is off for every remote
   // that has not opted in, and `<details>` is closed unless `open` is set. An
   // already-mirrored remote opens it, so an operator editing one sees what is
   // stored without hunting for it.
   //
-  // ABSENT ENTIRELY until GET /api/remotes has served `mirrorDefaults` — see
-  // `mirrorDraft`. Offering the group with no defaults would mean inventing
-  // them here, which is the one thing the single source forbids.
+  // THE MIRROR HALF is absent entirely until GET /api/remotes has served
+  // `mirrorDefaults` — see `mirrorDraft`. Offering that form with no defaults
+  // would mean inventing them here, which is the one thing the single source
+  // forbids. THE GROUP ITSELF is not: an advanced config field comes from the
+  // kind's own descriptor and has nothing to prefill from, so it must not
+  // disappear while the defaults are in flight.
   const m = draft.mirror;
-  if (m) fields.push(el('details', { class: 'advanced', open: m.on },
+  if (m || advancedFields.length > 0) fields.push(el('details', { class: 'advanced', open: m?.on === true },
     el('summary', {}, 'Advanced'),
-    el('div', { class: 'field check' },
+    ...advancedFields.map(configField),
+    ...(m ? [el('div', { class: 'field check' },
       el('input', {
         id: 'f-mirror-on', type: 'checkbox', checked: m.on,
         // WRITTEN BEFORE render(), like the kind <select>: the re-render reads
@@ -285,9 +301,10 @@ function formFor(mode) {
         + ' are the target\'s pseudo-filesystems.'),
     ),
     el('span', { class: 'hint' },
-      'code-conductor asks for this once per provider connection, so a change here reaches an'
-      + ' already-running session only after the System reconnects. Changing it does not switch'
-      + ' this remote off.'),
+      'code-conductor asks for the mirror once per provider connection, so a change to these'
+      + ' three fields reaches an already-running session only after the System reconnects.'
+      + ' Changing them does not switch this remote off.'),
+    ] : []),
   ));
 
   return el('div', { class: 'form' },
