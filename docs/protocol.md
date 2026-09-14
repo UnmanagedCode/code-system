@@ -674,8 +674,12 @@ argv element whatever it begins with — measured: `docker exec -u -rm` answers
 dash makes it an option instead") is **false of such a field**, and an operator
 following it hunts for an option that is not there. The value is still
 constrained — `docker`'s `IDENTITY_RE` refuses a leading `-` among much else —
-but by the kind, in that field's own terms. **Two argv elements, never joined**,
-is what keeps the value positional.
+but by the kind, in that field's own terms.
+
+**Emit the flag and its value as two argv elements.** A house convention
+matching the `-w` and `-e` pairs, **not** a defence: measured, docker parses the
+joined form identically — `-unode` runs as uid 1000, and `-u-rm` means the
+identity `-rm`, exactly as `-u -rm` does.
 
 **Either way the check belongs at the store's front door, not in `spawnPlan`** —
 `docker`'s `spawnPlan` interpolates `container` and `user`, `ssh`'s `host` and

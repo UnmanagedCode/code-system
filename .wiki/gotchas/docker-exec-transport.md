@@ -188,6 +188,13 @@ test asserting only mode and success passes; only a content round-trip catches i
   kills by uid ownership, and relaying as the image default would silently fail
   to kill a subtree owned by the configured user.
 
+**A joined short flag parses identically.** `-unode` runs as uid 1000, and
+`-u-rm` means the identity `-rm`, exactly as the separated `-u -rm` does. So
+emitting `['-u', value]` as two argv elements is a convention (it matches the
+`-w`/`-e` pairs and keeps the value assertable on its own) — it is **not** what
+makes a leading-dash value inert, and a leading dash is refused by the kind's
+`IDENTITY_RE`, not by the argv shape.
+
 `docker inspect` deliberately gets **no** `-u`: it never enters the container and
 has no such flag. See `src/launcher/kinds/docker.mjs` for all three sites.
 

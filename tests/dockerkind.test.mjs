@@ -81,9 +81,12 @@ test("spawnPlan: cwd '/' is served verbatim, never fenced or rewritten", () => {
 const WITH_USER = { container: 'app', user: 'node' };
 
 // PINS: the identity reaches docker as a FLAG, left of the operand boundary, and
-// the container is still the first operand. A mutant pushing it after `--`, or
-// joining it onto its value (`-unode`), makes the identity the command docker
-// runs and shifts the container out of position.
+// the container is still the first operand. A mutant pushing `-u` right of `--`
+// makes the identity part of the command and shifts the container out of
+// position. Asserted on the PAIR, like the `-e` rows further down — docker
+// parses a joined `-unode` identically (measured), so reading flag and value as
+// two elements is what keeps a concatenated token from passing this row, not a
+// property of docker's parsing.
 test('spawnPlan: the configured identity becomes -u, before the -- operand boundary', () => {
   const p = plan({}, WITH_USER);
   assert.notEqual(runIndex(p.args, ['-u', 'node']), -1,
@@ -644,9 +647,10 @@ test('spawnPlan: every other interpolated value is structurally an operand', () 
   const p = plan({}, { container: 'app' });
   assert.ok(p.args.indexOf('app') > p.args.indexOf('--'));
 
-  // (a2) the identity is guarded the same way, and reaches docker as `-u`'s
-  //      VALUE — two argv elements, so a leading dash is consumed rather than
-  //      parsed. The validator refuses one anyway, which is the belt.
+  // (a2) the identity reaches docker as `-u`'s VALUE, which docker consumes
+  //      whatever it begins with — measured, `-u -rm` and `-u-rm` both mean the
+  //      identity `-rm`. So the VALIDATOR is what refuses an option-shaped one
+  //      here; the pair assertion only keeps a joined token from passing.
   assert.equal(createDockerTransport({ cli: ['docker'] }).validateConfig(
     { container: 'app', user: '-v /:/host' }).ok, false);
   const u = plan({}, { container: 'app', user: 'node' });
