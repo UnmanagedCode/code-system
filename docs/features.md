@@ -217,16 +217,22 @@ container.
 
 | Value | Means |
 |---|---|
-| *(empty)* | the image's default user — byte for byte the behaviour before this field existed; no flag is added |
+| *(empty)* | the image's default user. **No flag is added at all** |
 | `node` | a user name in the container |
 | `1000` | a uid. **A uid with no `/etc/passwd` entry is accepted by docker and runs** |
 | `node:node`, `1000:1000` | a user (or uid) and a group (or gid) |
 
 - **Docker only.** An `ssh` remote's `User` is a connection field — part of the
   destination — not this.
-- **The accepted shape** is a name or uid, optionally `:group`, with no spaces:
-  `IDENTITY_RE` in `src/launcher/kinds/docker.mjs`. Anything else is a **400** in
-  the card, which is only moving the daemon's own refusal earlier.
+- **The accepted shape** is `IDENTITY_RE` in `src/launcher/kinds/docker.mjs`: it
+  must begin with a letter, digit or `_`, and may then carry letters, digits,
+  `.`, `_`, `-` and one optional `:group`. **Surrounding whitespace is trimmed**,
+  so `" node"` is stored as `node`; an *interior* space, a leading `-`, an empty
+  group and anything else are a **400** in the card — which is only moving the
+  daemon's own refusal earlier, since it refuses those too.
+- **The refusal text is this field's own**, not the shared "it becomes a
+  command-line operand" wording the connection fields get: the identity is `-u`'s
+  argument, which docker consumes whatever it begins with.
 - **Editing it switches the remote off**, unlike the mirror fields beside it.
   This is required, not cautious: the reachability fingerprint is image +
   `StartedAt` and cannot see the identity, so this reset is the only thing that
@@ -251,8 +257,8 @@ a shell string, and it reaches no far-side command line
 **Nor is Run as.** It *does* become argv — `docker exec -u <value>` — which is
 exactly why it is validated down to a plain identity shape (a name or uid,
 optionally `:group`) before it is stored. It can never be an *invocation* the way
-`CODE_SYSTEM_DOCKER` is: it is one operand of one flag, and a leading `-` or a
-space is refused at the store's front door.
+`CODE_SYSTEM_DOCKER` is: it is the single argument of a single flag, and the
+identity shape is what the store's front door enforces.
 
 | Variable | For |
 |---|---|

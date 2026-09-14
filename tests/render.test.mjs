@@ -98,8 +98,9 @@ const KINDS = [
   { kind: 'ssh', label: 'SSH hosts', configFields: [{ name: 'host', label: 'Host', required: true, placeholder: 'my-box', hint: 'a Host alias' }, { name: 'user', label: 'User', required: false, placeholder: '', hint: 'optional' }] },
 ];
 
-// Served by the backend from src/mirror.mjs; the Advanced group prefills from
-// the GET /api/remotes body, never from a copy in the frontend.
+// Served by the backend from src/mirror.mjs; the Advanced group's MIRROR FIELDS
+// prefill from the GET /api/remotes body, never from a copy in the frontend. Its
+// advanced config fields come from the kind's descriptor and the record instead.
 const MIRROR_DEFAULTS = { root: '/', exclude: ['/proc', '/dev', '/sys'] };
 const STORED_MIRROR = { root: '/srv/app', exclude: ['/proc', '/srv/app/tmp'] };
 
@@ -117,9 +118,11 @@ const REMOTES = [
     config: { container: 'stopped' }, mirror: null, baseline: okBaseline,
     reachability: { connected: false, detail: "container 'stopped' exists but is not running", fingerprint: null },
   },
-  { // gate off, probe up — no alert, and the card still shows reality
+  { // gate off, probe up — no alert, and the card still shows reality. It also
+    // carries a stored `config.user`, so the EDIT path for an advanced config
+    // field has a record to be pre-filled from.
     remoteId: 'off-up', kind: 'docker', label: 'Disabled app', enabled: false,
-    config: { container: 'app2' }, mirror: null, baseline: unknownBaseline,
+    config: { container: 'app2', user: 'node' }, mirror: null, baseline: unknownBaseline,
     reachability: { connected: true, detail: "container 'app2' running (img) since T", fingerprint: 'f2' },
   },
   { // gate on, master DOWN — the ssh warn row
@@ -591,8 +594,10 @@ test('a hand-edited mirror does not crash the edit form', async () => {
 
 // PINS ITEM 9: the defaults have ONE source, the backend. Before that answer
 // lands there is nothing truthful to prefill — offering root `/` with an empty
-// exclude list would contradict the form's own copy — so the group is absent
-// rather than wrong, and a form submitted in that state advertises nothing.
+// exclude list would contradict the form's own copy — so the mirror fields are
+// absent rather than wrong, and a form submitted in that state advertises
+// nothing. The `<details>` around them still renders, for the kind's own
+// advanced config fields; its sibling row below pins that half.
 test('with no served defaults the mirror half is absent, and Create still posts mirror:null', async () => {
   const { byId, cards, calls } = await mount({ remotes: [], mirrorDefaults: null });
   byId.get('add').click();
@@ -680,11 +685,10 @@ test('Create posts the typed identity, and omits it entirely when left empty', a
   assert.deepEqual(empty.config, { container: 'ctr' }, 'an untouched field is omitted, not sent as \'\'');
 });
 
-// PINS: the operator is told the gate resets BEFORE they discover it. That
-// reset is the only user-visible cost of putting the identity in `config`, and
-// the note's previous wording promised the opposite for everything under
-// Advanced.
-test('the edit note names Run as, and no longer exempts the whole Advanced group', async () => {
+// PINS: the operator is told the gate resets BEFORE they discover it. That reset
+// is the only user-visible cost of putting the identity in `config`, and the
+// note is the only place the card says so.
+test('the edit note names Run as, and scopes its exemption to the mirror', async () => {
   const { cards } = await mount();
   cardFor(cards(), 'on-up').all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
   const note = cardFor(cards(), 'on-up').all(e => e.className === 'note')[0];
@@ -692,4 +696,56 @@ test('the edit note names Run as, and no longer exempts the whole Advanced group
   assert.notEqual(note, undefined, 'the edit form carries its note');
   assert.match(note.text, /Run as/, 'the identity is named as something that DOES switch the remote off');
   assert.match(note.text, /mirror settings/, 'and the exemption is scoped to the mirror');
+});
+
+// PINS THE EDIT PATH FOR AN ADVANCED CONFIG FIELD, END TO END — the one path the
+// Create rows above cannot reach. `controls()` builds the edit draft by spreading
+// the stored config and `formFor` reads each field's `value:` from it; a mutant
+// in either that skips a FLAGGED field renders an empty Run as over a remote that
+// has one, and Save then silently ERASES the identity *and* switches the remote
+// off, with no error anywhere. The backend's own "re-sending the same identity
+// preserves the gate" row PATCHes directly and never touches the form.
+test('Edit pre-fills a stored identity, and Save sends it back unchanged', async () => {
+  const { cards, calls } = await mount();
+  cardFor(cards(), 'off-up').all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
+  const edited = cardFor(cards(), 'off-up');
+
+  // 1. IT IS PRE-FILLED, and still in the Advanced group rather than beside
+  //    Container.
+  const field = inputById(edited, 'f-user');
+  assert.notEqual(field, undefined, 'the edit form renders Run as');
+  assert.equal(field.attrs.value, 'node', 'pre-filled from the stored record');
+  assert.notEqual(inputById(detailsOf(edited), 'f-user'), undefined, 'inside the <details>');
+  assert.equal(inputById(edited, 'f-container').attrs.value, 'app2', 'beside its connection field');
+
+  // 2. IT LEAVES AGAIN, on the PATCH body the form actually sends.
+  edited.all(e => e.tagName === 'button' && e.text === 'Save')[0].click();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+
+  const body = calls.find(c => c.method === 'PATCH' && c.path === 'api/remotes/off-up')?.body;
+  assert.notEqual(body, undefined, 'the PATCH really happened');
+  assert.deepEqual(body.config, { container: 'app2', user: 'node' },
+    'an untouched Save re-sends the stored identity — dropping it would erase it AND switch the remote off');
+});
+
+// PINS the other arm, which is what makes the row above discriminating: an EDIT
+// that really changes the identity carries the NEW value, so a draft wired to the
+// record instead of to the input would pass the prefill test and fail here.
+test('Edit sends the retyped identity, and can clear it', async () => {
+  const saved = async (value) => {
+    const { cards, calls } = await mount();
+    cardFor(cards(), 'off-up').all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
+    const edited = cardFor(cards(), 'off-up');
+    for (const fn of inputById(edited, 'f-user').handlers.input ?? []) fn({ target: { value } });
+    edited.all(e => e.tagName === 'button' && e.text === 'Save')[0].click();
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    return calls.find(c => c.method === 'PATCH' && c.path === 'api/remotes/off-up')?.body;
+  };
+
+  assert.deepEqual((await saved('1000:1000')).config, { container: 'app2', user: '1000:1000' },
+    'the retyped identity reaches the wire');
+  assert.deepEqual((await saved('')).config, { container: 'app2' },
+    'and clearing the field OMITS it, which is what the validator reads as "the image default"');
 });

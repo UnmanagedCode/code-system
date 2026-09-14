@@ -93,10 +93,10 @@ test('spawnPlan: the configured identity becomes -u, before the -- operand bound
   assert.deepEqual(p.args.slice(p.args.indexOf('--') + 1), ['app', 'git', 'status']);
 });
 
-// PINS THE BACK-COMPAT CLAIM: an unset identity is byte-identical to the
-// behaviour from before this field existed — no flag at all, not `-u ''` and not
-// `-u root`. A mutant defaulting the identity reds here, and would silently
-// change which user every existing remote's commands run as.
+// PINS THE BACK-COMPAT CLAIM: an unset identity emits no flag at all — not
+// `-u ''`, not `-u root`. A mutant defaulting the identity reds here, and would
+// silently change which user the commands of every remote with no identity
+// configured run as.
 test('spawnPlan: no configured identity means NO -u flag at all', () => {
   for (const config of [{ container: 'app' }, { container: 'app', user: '' }, { container: 'app', user: undefined }]) {
     const p = plan({}, config);
@@ -104,7 +104,7 @@ test('spawnPlan: no configured identity means NO -u flag at all', () => {
     assert.equal(p.args.some(a => a.startsWith('-u')), false, 'nor joined onto a value');
     assert.deepEqual(p.args, [
       'exec', '-w', '/w', '-e', 'CC_REMOTE=r1', '-e', 'CC_EXEC_TOKEN=tok', '--', 'app', 'git', 'status',
-    ], 'the whole argv is what it was before this field existed');
+    ], 'a remote with no identity carries nothing of this field in its argv');
   }
 });
 
@@ -263,6 +263,10 @@ test('validateConfig: identity forms docker accepts are accepted, and malformed 
     assert.equal(v.ok, true, `${JSON.stringify(user)} must be accepted: ${v.error}`);
     assert.equal(v.config.user, user, 'and stored verbatim');
   }
+  // Surrounding whitespace is NORMALISED AWAY, not refused — which is what
+  // docs/features.md promises an operator who pastes a value with a stray space.
+  assert.deepEqual(validate({ container: 'app', user: '  node  ' }).config,
+    { container: 'app', user: 'node' }, 'a padded identity is trimmed, not rejected');
   for (const user of ['no such', 'a;b', '$(id)', 'a:', ':b', 'a:b:c', '-rm', 'x\ny', 'a b:c', '.hidden']) {
     const v = validate({ container: 'app', user });
     assert.equal(v.ok, false, `${JSON.stringify(user)} must be refused`);
@@ -270,11 +274,40 @@ test('validateConfig: identity forms docker accepts are accepted, and malformed 
   }
 });
 
+// PINS THAT THE REFUSAL AN OPERATOR READS IS TRUE OF THE FIELD THEY TYPED IN.
+// `container` is an argv OPERAND, so config.mjs's shared message — "it becomes a
+// command-line operand, and a leading dash makes it an option instead" — is
+// accurate there. The identity is `-u`'s ARGUMENT: docker consumes the next argv
+// element whatever it begins with, so both halves of that sentence are false
+// here, and an operator following it looks for an option that is not there.
+//
+// The value stays refused either way; only the explanation is under test. A
+// mutant routing the identity back through `operand` reds on the first half —
+// and a mutant that "fixed" it by weakening config.mjs for everyone reds on the
+// second.
+test('validateConfig: a leading-dash identity is refused in docker\'s own terms, not as an operand', () => {
+  for (const user of ['-rm', '--privileged', '-u']) {
+    const v = validate({ container: 'app', user });
+    assert.equal(v.ok, false, `${JSON.stringify(user)} must still be refused`);
+    assert.doesNotMatch(v.error, /command-line operand/,
+      'the identity is -u\'s argument, not an operand');
+    assert.doesNotMatch(v.error, /makes it an option instead/,
+      'and docker does not read it as an option');
+    assert.match(v.error, /is not a docker identity/, 'it is refused for what it actually is');
+    assert.match(v.error, /letter, digit or underscore/, 'and says what would be accepted');
+  }
+  // THE SHARED RULE IS UNTOUCHED where it is accurate: `container` really is an
+  // operand, and `ssh`'s fields are interpolated the same way.
+  const c = validate({ container: '-v /:/host' });
+  assert.equal(c.ok, false);
+  assert.match(c.error, /command-line operand/, 'an operand field keeps the operand wording');
+});
+
 // PINS the one thing that keeps `sameConfig` (src/api.mjs) from seeing a phantom
 // change: an empty identity is DROPPED, not stored as ''. A mutant storing ''
-// switches every docker remote off on its first save after this field shipped,
-// because the stored `{container}` and the sent `{container, user:''}` canonicalise
-// differently.
+// makes the stored `{container}` and the form's `{container, user:''}`
+// canonicalise differently, so every docker remote with no identity set switches
+// off on its next save.
 test('validateConfig: an empty identity is dropped, not stored as \'\'', () => {
   for (const raw of [{ container: 'app' }, { container: 'app', user: '' }, { container: 'app', user: '   ' }]) {
     const v = validate(raw);
@@ -536,7 +569,7 @@ test('reap relays through the configured identity, and omits -u when there is no
   const without = await stubCli(t, { execStdout: 'CCREAP ok 1 4\n' });
   await createDockerTransport({ cli: without.cli }).reap(CONFIG, { token: 'tok', remoteId: 'r1' });
   const b = await without.argv();
-  assert.notEqual(runIndex(b, ['exec', '--', 'app']), -1, 'and is byte-identical to before without one');
+  assert.notEqual(runIndex(b, ['exec', '--', 'app']), -1, 'and a remote without one carries no flag');
   assert.equal(b.includes('-u'), false);
 });
 

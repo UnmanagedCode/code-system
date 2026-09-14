@@ -235,24 +235,25 @@ export function createDockerTransport({ cli } = {}) {
       // leading `-` would make it an option — see kinds/config.mjs.
       const container = operand(o.container, 'container');
       if (!container.ok) return { ok: false, error: `docker config: ${container.error}` };
-      // `operand` FIRST, for its trim and its leading-dash rule — `-u` takes its
-      // value as a separate argv element, but the stored value is one an
-      // operator reads back, and one rule for every config field is the point of
-      // kinds/config.mjs. The shape check below is docker's own.
-      const user = operand(o.user, 'user', { required: false });
-      if (!user.ok) return { ok: false, error: `docker config: ${user.error}` };
-      if (user.value !== '' && !IDENTITY_RE.test(user.value)) {
+      // DELIBERATELY NOT THROUGH `operand`, unlike `container` above. This value
+      // is `-u`'s ARGUMENT, not an argv operand: docker consumes the next argv
+      // element whatever it begins with, so config.mjs's shared refusal would
+      // tell the operator two things that are untrue of this field. A leading
+      // `-` is still refused — IDENTITY_RE refuses it — in docker's own terms.
+      const user = typeof o.user === 'string' ? o.user.trim() : '';
+      if (user !== '' && !IDENTITY_RE.test(user)) {
         return {
           ok: false,
-          error: `docker config: 'user' ${JSON.stringify(user.value)} is not a docker identity`
+          error: `docker config: 'user' ${JSON.stringify(user)} is not a docker identity`
             + ' — it must be a user name or uid, optionally followed by \':group\' or \':gid\','
-            + ' with no spaces (e.g. node, 1000, node:node, 1000:1000)',
+            + ' beginning with a letter, digit or underscore and containing no spaces'
+            + ' (e.g. node, 1000, node:node, 1000:1000)',
         };
       }
       // AN EMPTY IDENTITY IS DROPPED, never stored as ''. `sameConfig` compares
-      // the canonical shapes, so a phantom `user: ''` would switch the remote
-      // off on the first save after this field shipped.
-      return { ok: true, config: { container: container.value, ...(user.value ? { user: user.value } : {}) } };
+      // the canonical shapes, so a phantom `user: ''` reads as a changed config
+      // and switches the remote off on every save.
+      return { ok: true, config: { container: container.value, ...(user ? { user } : {}) } };
     },
 
     // PURE. No I/O and no spawning — the core spawns what this returns, which is
@@ -279,8 +280,7 @@ export function createDockerTransport({ cli } = {}) {
       // issues — the frame's own exec, the derived file operations (which ride
       // this same spawnPlan through run.mjs) and the baseline probe. Placed
       // before the env branch so it governs the `env -i` REPLACE form too.
-      // Absent ⇒ NO FLAG AT ALL, which is the container's default user and is
-      // byte for byte the behaviour from before this existed.
+      // Absent ⇒ NO FLAG AT ALL, which is the container's default user.
       const user = String(config?.user ?? '');
       if (user) args.push('-u', user);
 

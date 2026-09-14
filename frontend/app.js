@@ -37,7 +37,9 @@ const state = {
   // exclude list here is exactly the drift the single source exists to prevent,
   // and a half-populated one would offer the operator a root with no excludes
   // while the form's own copy promises the target's pseudo-filesystems. The
-  // Advanced group is simply not rendered until the defaults arrive.
+  // MIRROR FIELDS are simply not rendered until the defaults arrive; the
+  // Advanced group around them still is, for the kind's own advanced config
+  // fields, which prefill from the record rather than from these.
   mirrorDefaults: null,
   registration: null,
   route: { view: 'list' },
@@ -240,9 +242,9 @@ function formFor(mode) {
   // always PATCHes its config, and `sameConfig` in src/api.mjs is what decides.
   // So this sentence must not promise more than that comparison delivers.
   //
-  // SCOPED TO THE CONFIG FIELDS, WHEREVER THEY RENDER. The Advanced group is no
-  // longer uniformly reset-free: its mirror half is outside `sameConfig` because
-  // a mirror change names the same target, but an advanced CONFIG field (Run as)
+  // SCOPED TO THE CONFIG FIELDS, WHEREVER THEY RENDER. The Advanced group is not
+  // uniformly reset-free: its mirror half is outside `sameConfig` because a
+  // mirror change names the same target, but an advanced CONFIG field (Run as)
   // is inside it — and must be, because reachability's fingerprint cannot see
   // the identity, so this reset is the only thing that re-probes the tooling
   // baseline as the new user.
