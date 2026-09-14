@@ -498,13 +498,27 @@ once mounted under cc, and asserts `cardState.mjs` touches no browser global —
 the moment it does, the seam is gone.
 
 **The Advanced group** (`formFor`, `frontend/app.js`) is the first and only
-`<details>` in this UI: collapsed unless the remote already advertises a mirror,
-a checkbox gating a root `<input>` and an exclude `<textarea>`. The draft holds
-**form state** — `{on, root, exclude}` with `exclude` as raw newline-separated
-text — and `mirrorPayload` / `mirrorSummary` in `cardState.mjs` convert to the
-wire shape and to the card badge, for the same reason every other card decision
-lives there. The prefill comes from the `mirrorDefaults` on `GET /api/remotes`,
-so the frontend holds no second copy of the default list. There is no per-field
+`<details>` in this UI, and it holds **two kinds of member**:
+
+- an **advanced config field** — a `configFields` entry from the kind's own
+  descriptor flagged `advanced: true` (docker's `user`). `formFor` builds every
+  config field with one `configField(f)` helper and routes the flagged ones here
+  instead of into the connection block; nothing else about them differs. It is
+  validated and stored by the kind exactly like a connection field, which means
+  **changing it resets the gate and the baseline** (`sameConfig`, `src/api.mjs`).
+- the **mirror form** — top-level operator policy beside the config: a checkbox
+  gating a root `<input>` and an exclude `<textarea>`. The draft holds **form
+  state** — `{on, root, exclude}` with `exclude` as raw newline-separated text —
+  and `mirrorPayload` / `mirrorSummary` in `cardState.mjs` convert to the wire
+  shape and to the card badge, for the same reason every other card decision
+  lives there. **Changing it resets neither**: it names the same target.
+
+The mirror prefill comes from the `mirrorDefaults` on `GET /api/remotes`, so the
+frontend holds no second copy of the default list — and the **mirror half alone**
+is absent until that answer lands. The group itself is not: an advanced config
+field comes from the descriptor and has nothing to prefill from, so gating the
+whole `<details>` on the defaults would hide a stored value with no error
+anywhere (`tests/render.test.mjs`). There is no per-field
 error display: a 400 from the validator reaches the operator through the existing
 top-of-page banner, which is why `validateMirror`'s messages quote the offending
 value and an entry's index.
@@ -535,6 +549,13 @@ cc System row, so the name in cc and the name on a card cannot drift.
 `tests/kindmeta.test.mjs` pins `configFields` against what each kind's
 `validateConfig` actually accepts — same field names, and every `required` flag
 really required — because that drift would fail only in a browser.
+
+A field may carry **`advanced: true`**. It is a **rendering flag only** —
+`kindDescriptors()` passes `configFields` through by reference, the card form
+draws a flagged field inside its Advanced `<details>`, and the kind validates,
+stores and resets it exactly like any other config field.
+`tests/kindmeta.test.mjs` pins that last part, so the flag cannot become a
+second, weaker class of field.
 
 ### The environment seams
 

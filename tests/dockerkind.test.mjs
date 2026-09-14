@@ -76,6 +76,50 @@ test("spawnPlan: cwd '/' is served verbatim, never fenced or rewritten", () => {
   assert.equal(p.args[runIndex(p.args, ['-w']) + 1], '/');
 });
 
+// ── P1b: the configured identity (`config.user` → `docker exec -u`) ──
+
+const WITH_USER = { container: 'app', user: 'node' };
+
+// PINS: the identity reaches docker as a FLAG, left of the operand boundary, and
+// the container is still the first operand. A mutant pushing it after `--`, or
+// joining it onto its value (`-unode`), makes the identity the command docker
+// runs and shifts the container out of position.
+test('spawnPlan: the configured identity becomes -u, before the -- operand boundary', () => {
+  const p = plan({}, WITH_USER);
+  assert.notEqual(runIndex(p.args, ['-u', 'node']), -1,
+    `-u and its value must be two argv elements; got ${JSON.stringify(p.args)}`);
+  assert.ok(p.args.indexOf('-u') < p.args.indexOf('--'), 'it is an option of `docker exec`, not an operand');
+  assert.equal(p.args[p.args.indexOf('--') + 1], 'app', 'the container is still the first operand');
+  assert.deepEqual(p.args.slice(p.args.indexOf('--') + 1), ['app', 'git', 'status']);
+});
+
+// PINS THE BACK-COMPAT CLAIM: an unset identity is byte-identical to the
+// behaviour from before this field existed — no flag at all, not `-u ''` and not
+// `-u root`. A mutant defaulting the identity reds here, and would silently
+// change which user every existing remote's commands run as.
+test('spawnPlan: no configured identity means NO -u flag at all', () => {
+  for (const config of [{ container: 'app' }, { container: 'app', user: '' }, { container: 'app', user: undefined }]) {
+    const p = plan({}, config);
+    assert.equal(p.args.includes('-u'), false, JSON.stringify(config));
+    assert.equal(p.args.some(a => a.startsWith('-u')), false, 'nor joined onto a value');
+    assert.deepEqual(p.args, [
+      'exec', '-w', '/w', '-e', 'CC_REMOTE=r1', '-e', 'CC_EXEC_TOKEN=tok', '--', 'app', 'git', 'status',
+    ], 'the whole argv is what it was before this field existed');
+  }
+});
+
+// PINS that the identity is not accidentally scoped to the inherit branch. The
+// REPLACE branch is a separate arm of the same function, and a mutant pushing
+// `-u` inside `if (req.env === null)` leaves every cc-supplied-env exec running
+// as the image default while the inherit path obeys the card.
+test('spawnPlan: the identity applies to the env -i REPLACE branch too', () => {
+  const p = plan({ env: { PATH: '/p' } }, WITH_USER);
+  assert.notEqual(runIndex(p.args, ['-u', 'node']), -1);
+  assert.ok(p.args.indexOf('-u') < runIndex(p.args, ['env', '-i', '--']),
+    '-u is docker\'s flag and must stay left of the env replacement');
+  assert.ok(p.args.indexOf('-u') < p.args.indexOf('--'));
+});
+
 // ── P2: stdin ────────────────────────────────────────────────────────
 
 // PINS: `-i` iff the frame asked for a pipe. Measured, that is the difference
@@ -203,6 +247,43 @@ test('attach-only is ENFORCED, not remembered', () => {
   }
 });
 
+// ── P8b: validateConfig and the identity's shape ─────────────────────
+
+const validate = (raw) => createDockerTransport({ cli: ['docker'] }).validateConfig(raw);
+
+// PINS that the form's rule is exactly what docker will take, so a stored
+// identity never fails at exec time for a SHAPE reason — the operator sees a
+// 400 in the card, not a broken remote later. Measured: `-u 'no such'` is
+// refused by the daemon (exit 1, `unable to find user`), so this only moves the
+// refusal earlier; and `_apt`/`app.user`/`my-user` are real account names a
+// stricter rule would lock out.
+test('validateConfig: identity forms docker accepts are accepted, and malformed ones are refused by name', () => {
+  for (const user of ['node', '1000', 'node:node', '1000:1000', '_apt', 'app.user', 'my-user:my-group']) {
+    const v = validate({ container: 'app', user });
+    assert.equal(v.ok, true, `${JSON.stringify(user)} must be accepted: ${v.error}`);
+    assert.equal(v.config.user, user, 'and stored verbatim');
+  }
+  for (const user of ['no such', 'a;b', '$(id)', 'a:', ':b', 'a:b:c', '-rm', 'x\ny', 'a b:c', '.hidden']) {
+    const v = validate({ container: 'app', user });
+    assert.equal(v.ok, false, `${JSON.stringify(user)} must be refused`);
+    assert.match(v.error, /user/, 'and the message names the field that is wrong');
+  }
+});
+
+// PINS the one thing that keeps `sameConfig` (src/api.mjs) from seeing a phantom
+// change: an empty identity is DROPPED, not stored as ''. A mutant storing ''
+// switches every docker remote off on its first save after this field shipped,
+// because the stored `{container}` and the sent `{container, user:''}` canonicalise
+// differently.
+test('validateConfig: an empty identity is dropped, not stored as \'\'', () => {
+  for (const raw of [{ container: 'app' }, { container: 'app', user: '' }, { container: 'app', user: '   ' }]) {
+    const v = validate(raw);
+    assert.equal(v.ok, true);
+    assert.deepEqual(v.config, { container: 'app' }, JSON.stringify(raw));
+    assert.equal('user' in v.config, false, 'no phantom key for sameConfig to trip on');
+  }
+});
+
 // ── P9: classifyFailure ──────────────────────────────────────────────
 
 const classify = (res) => createDockerTransport({ cli: ['docker'] }).classifyFailure(CONFIG, res);
@@ -237,6 +318,35 @@ test('classifyFailure: our own access failing is NEVER ENOREMOTE', () => {
     assert.equal(v.code, 'EUNKNOWN', 'the remote is not absent — WE cannot reach the daemon');
     assert.notEqual(v.code, 'ENOREMOTE');
     assert.match(v.message, /CODE_SYSTEM_DOCKER/, 'and the message names the seam that fixes it');
+  }
+});
+
+// PINS that a misconfigured identity does not masquerade as a missing
+// container. ENOREMOTE is read by cc's assertRemoteKnown as "this provider does
+// not serve this remote", which would send the operator to recreate a container
+// that is perfectly healthy — instead of to the one field that is wrong.
+//
+// Both measured wordings, verbatim: the user form and the group form.
+test('classifyFailure: an identity the container rejects is EUNKNOWN naming the Run-as field, never ENOREMOTE', () => {
+  const withUser = (res) =>
+    createDockerTransport({ cli: ['docker'] }).classifyFailure({ container: 'app', user: 'nosuchuser' }, res);
+
+  for (const stderr of [
+    'Error response from daemon: unable to find user nosuchuser: no matching entries in passwd file\n',
+    'Error response from daemon: unable to find group nosuchgroup: no matching entries in group file\n',
+  ]) {
+    const v = withUser({ code: 1, stdout: '', stderr });
+    assert.equal(v.code, 'EUNKNOWN', stderr);
+    assert.notEqual(v.code, 'ENOREMOTE', 'the container is fine — the identity is not');
+    assert.match(v.message, /'app'/, 'the configured container');
+    assert.match(v.message, /'nosuchuser'/, 'and the configured identity');
+    assert.match(v.message, /Run as/, 'and the field on the card that fixes it');
+    assert.match(v.message, /Advanced/, 'and where to find it');
+    // cc RE-PARSES a refusal's message text, so a bare fs-errno token would
+    // silently downgrade this into "the command answered non-zero".
+    assert.doesNotMatch(v.message, /\b(ENOENT|EACCES|EEXIST|EISDIR|ENOTDIR|EPERM)\b/,
+      '.wiki/gotchas/refusal-message-errno-tokens.md');
+    assert.equal(v.stderr, stderr.trim(), 'docker\'s own first line is carried');
   }
 });
 
@@ -306,6 +416,16 @@ test('classifyFailure: a command cannot forge a transport verdict', () => {
   }), null);
   // A daemon response we have no row for stays the command's business.
   assert.equal(classify({ code: 1, stdout: '', stderr: 'Error response from daemon: something new' }), null);
+
+  // THE IDENTITY ROWS ARE INSIDE THE SAME GUARDS. A command that prints
+  // docker's identity wording itself must not be able to claim the remote's
+  // Run-as field is wrong.
+  const idErr = 'Error response from daemon: unable to find user nosuchuser: no matching entries in passwd file';
+  assert.equal(classify({ code: 1, stdout: 'some real output', stderr: idErr }), null,
+    'docker writes nothing to stdout on a daemon refusal');
+  assert.equal(classify({ code: 2, stdout: '', stderr: idErr }), null, 'and it is always exit 1');
+  assert.equal(classify({ code: 1, stdout: '', stderr: `warning: x\n${idErr}` }), null,
+    'the daemon prefix must OPEN stderr, not merely appear in it');
 });
 
 // ── P10: reachability ────────────────────────────────────────────────
@@ -376,8 +496,10 @@ test('reachability: every non-running answer has a NULL fingerprint', async (t) 
 test('neither reachability nor reap ever runs anything but exec/inspect', async (t) => {
   const stub = await stubCli(t, { stdout: 'true sha256:x 2026-01-01T00:00:00Z\n' });
   const tr = createDockerTransport({ cli: stub.cli });
-  await tr.reachability(CONFIG);
-  await tr.reap(CONFIG, { pid: 1, token: 'tok', remoteId: 'r1' });
+  // WITH AN IDENTITY CONFIGURED, so the guard covers the path that now builds a
+  // second flag as well.
+  await tr.reachability(WITH_USER);
+  await tr.reap(WITH_USER, { pid: 1, token: 'tok', remoteId: 'r1' });
   const argv = await stub.argv();
   const subcommands = argv.filter(a => ALLOWED_SUBCOMMANDS.includes(a) || ['start', 'stop', 'run', 'rm'].includes(a));
   assert.deepEqual([...new Set(subcommands)].sort(), ['exec', 'inspect']);
@@ -386,6 +508,36 @@ test('neither reachability nor reap ever runs anything but exec/inspect', async 
   // match and kill itself).
   assert.ok(argv.some(a => a.includes('CC_EXEC_TOKEN=tok')), 'the reap scans for this token');
   assert.equal(argv.includes('-e'), false, 'the reap exec must not carry the token in its own environment');
+
+  // AND THE IDENTITY DOES NOT LEAK INTO THE DAEMON QUERY. `docker inspect` never
+  // enters the container and has no `-u` flag at all: a mutant that "helpfully"
+  // passed the remote's identity here would refuse every card render.
+  const inspectOnly = await stubCli(t, { stdout: 'true sha256:x 2026-01-01T00:00:00Z\n' });
+  await createDockerTransport({ cli: inspectOnly.cli }).reachability(WITH_USER);
+  const iargv = await inspectOnly.argv();
+  assert.equal(iargv[0], 'inspect');
+  assert.equal(iargv.includes('-u'), false, `inspect must carry no -u: ${JSON.stringify(iargv)}`);
+  assert.equal(iargv.includes('node'), false, 'nor the identity in any other position');
+});
+
+// PINS THE MUST-3 LEAK the relay exists to prevent. The reap script `kill -9`s
+// by uid ownership, so it must run as the SAME identity the exec did; relaying
+// as the image default would silently fail to kill a subtree owned by a
+// different user and report a clean shutdown. Measured: an unprivileged reap is
+// NOT blind (`CCREAP ok 0 1`) — a process can always read its own environ — so
+// carrying `-u` costs the relay nothing.
+test('reap relays through the configured identity, and omits -u when there is none', async (t) => {
+  const withUser = await stubCli(t, { execStdout: 'CCREAP ok 1 4\n' });
+  await createDockerTransport({ cli: withUser.cli }).reap(WITH_USER, { token: 'tok', remoteId: 'r1' });
+  const a = await withUser.argv();
+  assert.notEqual(runIndex(a, ['exec', '-u', 'node', '--', 'app']), -1,
+    `the relay must run as the remote's identity; got ${JSON.stringify(a.slice(0, 6))}`);
+
+  const without = await stubCli(t, { execStdout: 'CCREAP ok 1 4\n' });
+  await createDockerTransport({ cli: without.cli }).reap(CONFIG, { token: 'tok', remoteId: 'r1' });
+  const b = await without.argv();
+  assert.notEqual(runIndex(b, ['exec', '--', 'app']), -1, 'and is byte-identical to before without one');
+  assert.equal(b.includes('-u'), false);
 });
 
 // ── the live suite's skip gate, tested WITHOUT a daemon ──────────────
@@ -458,6 +610,15 @@ test('spawnPlan: every other interpolated value is structurally an operand', () 
   assert.equal(createDockerTransport({ cli: ['docker'] }).validateConfig({ container: '-v /:/host' }).ok, false);
   const p = plan({}, { container: 'app' });
   assert.ok(p.args.indexOf('app') > p.args.indexOf('--'));
+
+  // (a2) the identity is guarded the same way, and reaches docker as `-u`'s
+  //      VALUE — two argv elements, so a leading dash is consumed rather than
+  //      parsed. The validator refuses one anyway, which is the belt.
+  assert.equal(createDockerTransport({ cli: ['docker'] }).validateConfig(
+    { container: 'app', user: '-v /:/host' }).ok, false);
+  const u = plan({}, { container: 'app', user: 'node' });
+  assert.equal(u.args[u.args.indexOf('-u') + 1], 'node');
+  assert.equal(u.args.filter(a => a === '-u').length, 1, 'one -u flag, its own argv element');
 
   // (b) a leading-dash cwd is CONSUMED BY `-w` as its value, never parsed.
   const c = plan({ cwd: '-evil' });

@@ -85,7 +85,16 @@ function installDom(clipboard) {
 // ── the fixture: one remote per row of the gate x probe table ────────
 
 const KINDS = [
-  { kind: 'docker', label: 'Docker containers', configFields: [{ name: 'container', label: 'Container', required: true, placeholder: 'my-app', hint: 'the container' }] },
+  {
+    kind: 'docker',
+    label: 'Docker containers',
+    configFields: [
+      { name: 'container', label: 'Container', required: true, placeholder: 'my-app', hint: 'the container' },
+      // `advanced: true` is the descriptor's routing signal: the form must draw
+      // this one inside the <details>, not in the connection block.
+      { name: 'user', label: 'Run as', required: false, advanced: true, placeholder: 'node', hint: 'the identity' },
+    ],
+  },
   { kind: 'ssh', label: 'SSH hosts', configFields: [{ name: 'host', label: 'Host', required: true, placeholder: 'my-box', hint: 'a Host alias' }, { name: 'user', label: 'User', required: false, placeholder: '', hint: 'optional' }] },
 ];
 
@@ -298,8 +307,9 @@ test('the add form renders one input per descriptor field, per kind', async () =
   const tile = cards().at(-1);
   assert.match(tile.text, /New remote/);
   const ids = tile.all(e => e.tagName === 'input').map(i => i.attrs.id);
-  assert.deepEqual(ids, ['f-id', 'f-label', 'f-container', 'f-mirror-on', 'f-mirror-root'],
-    'docker is the first kind, and the Advanced group renders last');
+  assert.deepEqual(ids, ['f-id', 'f-label', 'f-container', 'f-user', 'f-mirror-on', 'f-mirror-root'],
+    'docker is the first kind, and the Advanced group renders last — its advanced CONFIG field'
+    + ' (Run as) at the top of the group, above the mirror form');
   assert.match(tile.text, /the container/, "and the descriptor's hint is shown");
 
   // Switching kind swaps the config fields for the other kind's, including its
@@ -583,14 +593,14 @@ test('a hand-edited mirror does not crash the edit form', async () => {
 // lands there is nothing truthful to prefill — offering root `/` with an empty
 // exclude list would contradict the form's own copy — so the group is absent
 // rather than wrong, and a form submitted in that state advertises nothing.
-test('with no served defaults the Advanced group is absent, and Create still posts mirror:null', async () => {
+test('with no served defaults the mirror half is absent, and Create still posts mirror:null', async () => {
   const { byId, cards, calls } = await mount({ remotes: [], mirrorDefaults: null });
   byId.get('add').click();
   const tile = cards().at(-1);
 
-  assert.equal(detailsOf(tile), undefined, 'no group at all');
-  assert.equal(inputById(tile, 'f-mirror-on'), undefined);
-  assert.deepEqual(tile.all(e => e.tagName === 'input').map(i => i.attrs.id), ['f-id', 'f-label', 'f-container'],
+  assert.equal(inputById(tile, 'f-mirror-on'), undefined, 'no mirror form at all');
+  assert.equal(textareaOf(tile), undefined);
+  assert.deepEqual(tile.all(e => e.tagName === 'input').map(i => i.attrs.id), ['f-id', 'f-label', 'f-container', 'f-user'],
     'and the connection fields are untouched');
 
   for (const fn of inputById(tile, 'f-id').handlers.input ?? []) fn({ target: { value: 'app' } });
@@ -601,4 +611,85 @@ test('with no served defaults the Advanced group is absent, and Create still pos
   const body = calls.find(c => c.method === 'POST' && c.path === 'api/remotes')?.body;
   assert.notEqual(body, undefined, 'the POST really happened');
   assert.equal(body.mirror, null, 'and it advertises nothing, explicitly');
+});
+
+// ── the Advanced group: an advanced CONFIG field ─────────────────────
+//
+// `docker`'s `user` (Run as) is a kind-owned config field flagged
+// `advanced: true` in its descriptor. Unlike the mirror it has no form↔wire
+// conversion in cardState.mjs, so the WIRING here — which half of the form it is
+// drawn into, and that its value leaves in the body — is all there is to pin.
+
+// PINS THE PLACEMENT REQUIREMENT, which is the whole user-visible point of the
+// flag and the one thing that can only regress in a browser. A mutant ignoring
+// the flag draws Run as beside Container, where the connection fields live.
+test('an advanced config field renders inside the Advanced details, not in the connection block', async () => {
+  const { byId, cards } = await mount();
+  byId.get('add').click();
+  const tile = cards().at(-1);
+  const details = detailsOf(tile);
+
+  assert.notEqual(details, undefined, 'the group is rendered');
+  assert.notEqual(inputById(details, 'f-user'), undefined, 'Run as is INSIDE the <details>');
+  assert.equal(inputById(details, 'f-container'), undefined, 'and Container is not');
+  assert.notEqual(inputById(tile, 'f-container'), undefined, 'Container is still on the form');
+  assert.equal(details.text.includes('Run as'), true, 'with its label');
+});
+
+// PINS that the advanced config field is not collateral damage of the mirror
+// group's DELIBERATE absence. The two halves have different sources — the field
+// comes from the kind's descriptor and has nothing to prefill from — so gating
+// the whole <details> on `mirrorDefaults` would hide a field the operator
+// configured, with no error anywhere. Pairs with the mirror-half row above.
+test('the Advanced group renders even before mirrorDefaults arrive', async () => {
+  const { byId, cards } = await mount({ remotes: [], mirrorDefaults: null });
+  byId.get('add').click();
+  const details = detailsOf(cards().at(-1));
+
+  assert.notEqual(details, undefined, 'the group is still there');
+  assert.notEqual(inputById(details, 'f-user'), undefined, 'carrying the advanced config field');
+  assert.equal(inputById(details, 'f-mirror-on'), undefined, 'but not a mirror form it cannot prefill');
+  assert.equal('open' in details.attrs, false, 'and collapsed: nothing is advertised or configured yet');
+});
+
+// PINS THAT THE TYPED IDENTITY ACTUALLY LEAVES. The field could render
+// perfectly and send nothing; and an untouched one must be OMITTED rather than
+// sent as '', which is what keeps `sameConfig` from switching the remote off on
+// every save (tests/api.test.mjs pins the backend half).
+test('Create posts the typed identity, and omits it entirely when left empty', async () => {
+  const posted = async (typed) => {
+    const { byId, cards, calls } = await mount({ remotes: [] });
+    byId.get('add').click();
+    const tile = cards().at(-1);
+    for (const fn of inputById(tile, 'f-id').handlers.input ?? []) fn({ target: { value: 'app' } });
+    for (const fn of inputById(tile, 'f-container').handlers.input ?? []) fn({ target: { value: 'ctr' } });
+    if (typed !== null) {
+      for (const fn of inputById(tile, 'f-user').handlers.input ?? []) fn({ target: { value: typed } });
+    }
+    cards().at(-1).all(e => e.tagName === 'button' && e.text === 'Create')[0].click();
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    return calls.find(c => c.method === 'POST' && c.path === 'api/remotes')?.body;
+  };
+
+  const typed = await posted('node');
+  assert.notEqual(typed, undefined, 'the POST really happened');
+  assert.deepEqual(typed.config, { container: 'ctr', user: 'node' }, 'the identity reaches the wire');
+
+  const empty = await posted(null);
+  assert.deepEqual(empty.config, { container: 'ctr' }, 'an untouched field is omitted, not sent as \'\'');
+});
+
+// PINS: the operator is told the gate resets BEFORE they discover it. That
+// reset is the only user-visible cost of putting the identity in `config`, and
+// the note's previous wording promised the opposite for everything under
+// Advanced.
+test('the edit note names Run as, and no longer exempts the whole Advanced group', async () => {
+  const { cards } = await mount();
+  cardFor(cards(), 'on-up').all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
+  const note = cardFor(cards(), 'on-up').all(e => e.className === 'note')[0];
+
+  assert.notEqual(note, undefined, 'the edit form carries its note');
+  assert.match(note.text, /Run as/, 'the identity is named as something that DOES switch the remote off');
+  assert.match(note.text, /mirror settings/, 'and the exemption is scoped to the mirror');
 });
