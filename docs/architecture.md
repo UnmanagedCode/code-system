@@ -286,8 +286,9 @@ compares it against a manifest. `tests/ccCheckout.mjs` holds everything it
 shares with the `host` runner: the `CC_CHECKOUT` gate, the drift check, the
 spawn, and the parse. `tests/boundConformanceFixture.mjs` owns identity;
 `tests/boundConformanceExpectations.mjs` owns the manifest;
-`tests/boundconformance.test.mjs` covers the pure halves of both in `npm test`,
-with no docker.
+`tests/launcherDiagnostics.mjs` reads the launcher's own stderr back;
+`tests/boundconformance.test.mjs` covers the pure halves of all three in
+`npm test`, with no docker.
 
 **The `TMPDIR` seam is what makes it possible.** cc's suite builds its fixtures
 with node's own `fs`, rooting every one at `os.tmpdir()` — which reads `TMPDIR`
@@ -808,52 +809,60 @@ of a channel held by an op that will never answer, it depends on the counterpart
 sending a frame, and a reap does not by itself produce a sentinel, so `close`
 alone would leave the channel unusable rather than reclaimed.
 
-### What the channel's coverage does NOT yet reach
+### What the channel's coverage reaches, and what it does not
 
-All three are consequences of the same thing: the only cc checkout both
-conformance runners can be pointed at is the one our `protocol.mjs` mirror still
-matches, and that pin predates the commit which added cc's `lstat`, `symlink` and
-`removeEntry` derivations. Closing that mirror drift is **necessary but not
-sufficient**: `tests/boundConformanceExpectations.mjs` pins cc's battery
-absolutely by design — for `checkTotal` a vanished row and a new row are the same
-event — and cc's battery has grown past that pin, so pointing `CC_CHECKOUT` at
-current cc reds the manifest *independently* of the mirror. Both have to move
-together: sync the mirror **and** re-observe the manifest against the current
-suite.
+The bound run exercises the channel against cc's **current** battery, so every
+derivation in the admission table — `lstat`, `readDir`, `readlink`, `symlink`
+(`ln -sfnT`) and `removeEntry` (`rm -d`) included — runs over a real
+`docker exec` channel and is compared arm-to-arm against the per-op spawn path.
+The channel-invariance claim is a measurement on cc's own fixtures, not an
+inference from the seam.
 
-- **`symlink` (`ln -sfnT`) and `removeEntry` (`rm -d`) never run on a real
-  channel anywhere in the repo.** They are admitted and executed docker-free
-  (`tests/channel-observability.test.mjs` runs every table row through the
-  shipped launcher against a fixture tree), but no container-backed test and no
-  conformance row exercises them over `docker exec`.
-- **`lstat` is live-tested on the channel arm only**, with no arm-to-arm
-  comparison: `tests/docker-live.test.mjs` drives it with the channel on, and
-  nothing compares that answer to the per-op spawn's.
-- **The channel-invariance claim rests on `CC_CHECKOUT` runs.** Without it both
-  conformance arms skip cleanly, so a plain `npm test` proves the framing and the
-  routing but not that cc's own battery is outcome-identical on the two arms.
+What it still does not reach:
+
+- **Both conformance arms need `CC_CHECKOUT`.** Without it they skip cleanly, so
+  a plain `npm test` proves the framing and the routing but not that cc's own
+  battery is outcome-identical on the two arms.
+- **A green row under one capability config can be luck.** The bound run drives
+  both `CAPABILITY_CONFIGS`, but a row that passes in one and is not asserted in
+  the other proves only the one.
 
 ### Two diagnostic lines, and why they exist
 
 Admission failing closed is safe and **silent**, and this is a performance
 change: if cc changes one flag in a derivation, that row de-admits, every op
-quietly returns to ~90 ms, and every test in this repo still passes. Both lines
-go to **stderr**, of which cc keeps a bounded tail.
+quietly returns to ~90 ms, and every test in this repo still passes.
 
-1. **The drift line, once per session.** A frame that passes the envelope *and*
-   opens `['env','LC_ALL=C',…]` is a cc derivation by construction, so matching
-   no row is unambiguously drift rather than "something was refused". Grep for:
+**BOTH LINES GO TO THE LAUNCHER'S STDERR, WHICH cc DISCARDS ON A CLEAN EXIT.**
+`ProviderConnection` spawns the provider with piped stdio and drains stderr into
+a bounded tail it prints **only** inside an ETRANSPORT message — so a launcher
+that exits normally has its diagnostics thrown away, which is exactly the run in
+which the drift alarm matters. `tests/conformance-docker.mjs` therefore launches
+the provider through a shell that appends fd 2 to a per-arm file
+(`exec` replaces the shell, so the pid and the process-tree position cc's kill
+addresses are unchanged) and reads it back with
+`tests/launcherDiagnostics.mjs`. Anything else on that stream is printed as
+`launcher said — …`, which is what replaces the tail the redirect takes away.
 
-   ```
-   code-system launcher: a derivation-shaped exec matched no admission row and took the per-op spawn path — the table in src/launcher/admission.mjs may no longer match this cc: <argv>
-   ```
-
-   A deliberate exclusion (`removeTree`) and an ordinary user command emit
-   nothing.
+1. **The drift line, once per session — and a RED bound run.** A frame that
+   passes the envelope *and* opens `['env','LC_ALL=C',…]` is a cc derivation by
+   construction, so matching no row is unambiguously drift rather than "something
+   was refused". The text is `ADMISSION_DRIFT_WARNING` in
+   `src/launcher/session.mjs`, which both the emitter and the reader import, and
+   its presence fails `npm run conformance:docker`. **Only the channel-ON arm can
+   raise it**: with `CODE_SYSTEM_CHANNEL=0` `createChannelPool` answers null, so
+   `Session` never consults `admits` at all and the off arm's log can never carry
+   the line. One arm of coverage, not two — which is why that arm also reds when
+   its log holds no census, rather than reporting a drift-free run it has no
+   evidence for. A deliberate exclusion (`removeTree`) and an ordinary user
+   command emit nothing.
 2. **The census line, once, in `shutdown()`:**
    `channel carried <n> of <m> admitted ops on <k> channels`. `m` counts ops
    OFFERED to the pool; `k` counts channels that opened, so a target whose
-   channel could never start reports 0 and every op took the spawn path.
+   channel could never start reports 0 and every op took the spawn path. The
+   bound run sums it across every launcher session of an arm and prints the
+   total; it is a measurement, not a gate, and the channel-off arm correctly
+   reports none at all.
 
 ## Shutdown and reaping — protocol MUST 3
 
@@ -1289,10 +1298,17 @@ naming the invocation explicitly, and a writable `<repo>/.conformance-tmp`
 inside a host bind. It skips cleanly and loudly without the first two, and it is
 **never part of `npm test`**. It seeds its own store and remote and removes both.
 
-**What it proves:** of the 55 rows, **35 reach the shipped `docker` transport and
-pass** under the battery's own fixtures. (40 pass in total; 5 of those exercise no
+**What it proves:** of the 63 rows, **41 reach the shipped `docker` transport and
+pass** under the battery's own fixtures. (48 pass in total; 7 of those exercise no
 provider of ours. Three further rows reach the transport and FAIL on its
-behaviour — buckets 3 and 4 below — so 38 reach it at all.)
+behaviour — buckets 3 and 4 below — so 44 reach it at all.)
+
+**And what the channel carried while doing it**, summed from the census lines of
+one arm — cc launches a provider per connection and each prints one at shutdown,
+**46 of them per run**: 111–114 of 139 admitted ops on 24–25 channels, with no
+admission-drift alarm. (Four runs; the session count was 46 in every one, the
+carried figure moved within that range.) The channel-off arm reports no census and produces the
+same 63-row outcome table.
 
 **The 15 rows that do not pass, in four buckets:**
 
@@ -1313,4 +1329,6 @@ behaviour — buckets 3 and 4 below — so 38 reach it at all.)
 
 All four are enforced by `tests/boundConformanceExpectations.mjs` — anything not
 listed there must pass, a listed row that starts passing is red, and the run's
-total is pinned absolutely so a row vanishing from the suite is red too.
+total is pinned absolutely so a row vanishing from the suite is red too. A
+**fourth** guard reads a surface cc never shows: the launcher's own stderr, where
+an admission-drift alarm reds the arm.

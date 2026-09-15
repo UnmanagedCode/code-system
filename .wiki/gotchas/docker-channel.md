@@ -174,6 +174,37 @@ Driving the real `fileops.mjs` scripts: `ENOENT`, `EISDIR`, `EEXIST` and the
 yields the exact remainder, and `head -c 100000 | wc -c` = 100000 with 200000
 bytes following.
 
+## 8. cc DISCARDS a cleanly-exiting provider's stderr, so the drift alarm needs a seam
+
+The two diagnostics `src/launcher/session.mjs` emits — the one-shot
+admission-drift warning and the shutdown census — go to the launcher's **stderr**,
+and nothing else observes that stream. cc's `ProviderConnection`
+(`src/systems/providerConnection.ts`) spawns the provider with
+`stdio: ['pipe','pipe','pipe']` and drains stderr into a **bounded tail** it
+prints **only inside an ETRANSPORT message**, i.e. only when the provider dies or
+fails to start. A launcher that exits 0 has everything it said thrown away —
+which is exactly the run in which the drift alarm matters, since admission fails
+closed and every outcome stays correct.
+
+So `tests/conformance-docker.mjs` launches the provider through a shell that
+appends fd 2 to a per-arm file:
+
+```
+/bin/sh -c 'log=$1; shift; exec "$@" 2>>"$log"' sh <log> <node> <main.mjs> --kind docker
+```
+
+**`exec` is load-bearing**: it replaces the shell, so the launcher keeps the pid
+and the position in the process tree that cc's kill and the runner's watchdogs
+address. `"$@"` carries argv byte-for-byte, and the log path rides as `$1` so a
+scratch path is never shell syntax. `tests/launcherDiagnostics.mjs` reads the
+file back; a drift line **reds the arm**, the census is summed and printed, and
+everything else is echoed as `launcher said — …` — which is what replaces cc's
+tail, since the redirect means an ETRANSPORT message no longer quotes one.
+
+The marker text lives once, in `session.mjs`'s exported
+`ADMISSION_DRIFT_WARNING` / `CHANNEL_CENSUS_PREFIX`, imported by both the emitter
+and the reader, so a reworded line cannot make the alarm unmatchable.
+
 ## How to apply
 
 - **Never give the channel a `CC_EXEC_TOKEN`.** §2 is why. The token belongs on
@@ -190,4 +221,6 @@ bytes following.
   `src/launcher/admission.mjs`; `docs/protocol.md` → "The held-open channel" is
   its specification.
 - **Admission failing closed is silent** — a de-admitted row costs ~90 ms again
-  and reds nothing. That is what the one-shot drift line on stderr is for.
+  and reds nothing in cc's battery. The one-shot drift line is the only signal,
+  and §8 is why it needs a seam to be heard at all: never "simplify" the bound
+  runner's provider argv back to a bare launcher spawn.

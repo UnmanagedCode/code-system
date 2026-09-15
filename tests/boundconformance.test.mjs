@@ -20,6 +20,8 @@ import { checkTally, parseSpecReport } from './ccCheckout.mjs';
 import {
   EXPECTED, EXPECTED_TOTAL, MIN_CAUSE_CHARS, checkTotal, compareOutcomes, validateExpectations,
 } from './boundConformanceExpectations.mjs';
+import { readLauncherDiagnostics } from './launcherDiagnostics.mjs';
+import { ADMISSION_DRIFT_WARNING, CHANNEL_CENSUS_PREFIX } from '../src/launcher/session.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(HERE, 'fixtures', 'specReport.txt');
@@ -197,13 +199,99 @@ test('a row silently vanishing from the suite is caught by the total, and only b
   const raw = await fs.readFile(FIXTURE, 'utf8');
   const victim = 'parseFindLines refuses a malformed entry rather than skipping it';
   const shrunk = raw.split('\n').filter(l => !l.includes(victim)).join('\n')
-    .replace('\u2139 tests 55', '\u2139 tests 54')
-    .replace('\u2139 pass 40', '\u2139 pass 39');
+    .replace('\u2139 tests 63', '\u2139 tests 62')
+    .replace('\u2139 pass 48', '\u2139 pass 47');
   const report = parseSpecReport(shrunk);
   assert.equal(report.tests.has(victim), false, 'the row really is gone from the parse');
   assert.deepEqual(checkTally(report), [], 'the parse/tally cross-check cannot see consistent shrinkage');
   assert.deepEqual(compareOutcomes(report.tests), [], 'nor can the manifest comparison');
   assert.equal(checkTotal(report.tally).length, 1, 'the absolute total is what catches it');
+});
+
+// ── The launcher's own stderr ────────────────────────────────────────
+
+// The two lines exactly as src/launcher/session.mjs composes them, so a change
+// to either template reds here rather than in a bound run nobody re-reads.
+const DRIFT_LINE = `code-system launcher: ${ADMISSION_DRIFT_WARNING} — the table in`
+  + ' src/launcher/admission.mjs may no longer match this cc: ["env","LC_ALL=C","find","/p"]';
+const censusLine = (c, a, k) =>
+  `code-system launcher: ${CHANNEL_CENSUS_PREFIX} ${c} of ${a} admitted ops on ${k} channels`;
+
+// PINS: the drift warning is a PROBLEM, not a printed line. Admission fails
+// closed, so a de-admitted derivation still produces every correct outcome —
+// this alarm is the only signal that the optimisation silently stopped, and a
+// run carrying it must not be green.
+test('an admission-drift line in the launcher log is a problem', () => {
+  const d = readLauncherDiagnostics([censusLine(4, 4, 1), DRIFT_LINE].join('\n'));
+  assert.deepEqual(d.drift, [DRIFT_LINE]);
+  assert.equal(d.problems.length, 1);
+  assert.match(d.problems[0], /admission-drift alarm/);
+  // And a healthy log, with the very same census, is silent.
+  assert.deepEqual(readLauncherDiagnostics(censusLine(4, 4, 1)).problems, []);
+});
+
+// PINS: the census is SUMMED ACROSS SESSIONS on the raw lines. cc spawns a
+// launcher per connection, so one bound arm produces dozens of census lines;
+// deduping them — which the drift and passthrough halves DO — would silently
+// collapse identical sessions and under-report what the channel carried.
+test('the census sums every session, including identical ones', () => {
+  const d = readLauncherDiagnostics([
+    censusLine(3, 4, 1), censusLine(3, 4, 1), censusLine(0, 2, 0),
+  ].join('\n'));
+  assert.deepEqual(
+    { sessions: d.sessions, carried: d.carried, admitted: d.admitted, channels: d.channels },
+    { sessions: 3, carried: 6, admitted: 10, channels: 2 });
+  assert.deepEqual(d.problems, []);
+});
+
+// PINS: an ABSENT census is not a problem. The channel-off arm builds no pool
+// and prints no census at all, so a reader that treated silence as a fault would
+// red half of every bound run.
+test('a log with no census at all is not a problem', () => {
+  const d = readLauncherDiagnostics('code-system launcher (docker): something diagnostic\n');
+  assert.deepEqual({ sessions: d.sessions, problems: d.problems }, { sessions: 0, problems: [] });
+  assert.deepEqual(d.other, ['code-system launcher (docker): something diagnostic']);
+  assert.deepEqual(readLauncherDiagnostics('').problems, []);
+});
+
+// PINS THE MIS-PARSE ALARM, the same failure mode `checkTally` guards for cc's
+// reporter: a census line whose NUMERIC shape moved parses to nothing, and a
+// run whose channel carried nothing looks identical. So an unparseable census
+// line is reported rather than skipped.
+test('a census line whose format moved is reported, not skipped', () => {
+  const d = readLauncherDiagnostics(`code-system launcher: ${CHANNEL_CENSUS_PREFIX} lots of ops`);
+  assert.equal(d.sessions, 0);
+  assert.equal(d.problems.length, 1);
+  assert.match(d.problems[0], /cannot parse — the line format moved/);
+});
+
+// PINS: THE GUARD CAN DETECT ITS OWN DEAFNESS. The whole alarm rests on a
+// redirect in tests/conformance-docker.mjs putting the launcher's stderr in a
+// file; remove it, or let the read path drift from the path handed to the shell,
+// and the log is empty, every check here passes vacuously, and the arm still
+// prints "the launcher raised no admission-drift alarm" — asserting a positive
+// fact it no longer has evidence for. An arm that RAN a channel and reports no
+// census at all is therefore red.
+test('an arm that expects a census and finds none is red, not silently deaf', () => {
+  for (const text of ['', '   \n\n', 'code-system launcher (docker): something diagnostic']) {
+    const d = readLauncherDiagnostics(text, { expectCensus: true });
+    assert.equal(d.problems.length, 1, `deafness must be loud for ${JSON.stringify(text)}`);
+    assert.match(d.problems[0], /no census line at all/);
+  }
+  // A census present, and the same log is silent.
+  assert.deepEqual(readLauncherDiagnostics(censusLine(4, 4, 1), { expectCensus: true }).problems, []);
+  // The channel-off arm builds no pool, so it expects none and must stay silent.
+  assert.deepEqual(readLauncherDiagnostics('').problems, []);
+});
+
+// PINS: everything else in the log is passed through DEDUPED, so the runner can
+// print it. This is what replaces cc's own bounded stderr tail, which the
+// redirect takes away — an ETRANSPORT message no longer quotes one.
+test('other diagnostic lines are passed through once each', () => {
+  const line = "code-system launcher: --remote is not accepted for kind 'docker'";
+  const d = readLauncherDiagnostics([line, line, line].join('\n'));
+  assert.deepEqual(d.other, [line]);
+  assert.deepEqual(d.problems, []);
 });
 
 // ── The parse of cc's reporter output ────────────────────────────────
@@ -219,7 +307,7 @@ test('the parser reads a real captured bound run, and the manifest matches it', 
   assert.deepEqual(checkTally(report), [], 'the parse must agree with the reporter\'s own tally');
   assert.equal(report.tally.tests, EXPECTED_TOTAL);
   assert.deepEqual(checkTotal(report.tally), []);
-  assert.equal(report.tests.size, 55, 'the failing-tests recap repeats every failing line and must not double count');
+  assert.equal(report.tests.size, 63, 'the failing-tests recap repeats every failing line and must not double count');
   assert.equal(
     report.tests.get('every code in the taxonomy is produced by a real failure somewhere in this suite')?.reason,
     'counts producers across rows a third-party run skips');

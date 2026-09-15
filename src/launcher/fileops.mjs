@@ -199,6 +199,13 @@ function readTag(stderr, nonce) {
   for (const line of lines) {
     if (code === null && line.startsWith(marker)) {
       const c = line.slice(marker.length).trim();
+      // THE ACCEPTED SET IS THE MIRROR'S, not the set our scripts emit, and it
+      // is deliberately wider: the per-call nonce is what authenticates a tag
+      // as ours, so this check's job is rejecting garbage after the marker, not
+      // enumerating our emissions. Narrowing it to an explicit list would make
+      // a `refuseLine` call with an unlisted code leak the CCERR marker into
+      // the stderr cc shows a user. The `refuse(...)` call sites above own the
+      // emitting set.
       if (FS_ERROR_CODES.includes(c) || c === 'EFBIG') { code = c; continue; }
     }
     kept.push(line);

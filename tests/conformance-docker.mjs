@@ -27,7 +27,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { PROBE_SCRIPT, parseProbeOutput } from '../src/baseline.mjs';
-import { CHANNEL_ENV } from '../src/launcher/channel.mjs';
+import { CHANNEL_ENV, channelEnabled } from '../src/launcher/channel.mjs';
 import { createTransport } from '../src/launcher/kinds/index.mjs';
 import { makeRunner } from '../src/launcher/run.mjs';
 import { LAUNCHER_MAIN } from '../src/paths.mjs';
@@ -37,6 +37,7 @@ import {
 } from './ccCheckout.mjs';
 import { EXPECTED, checkTotal, compareOutcomes } from './boundConformanceExpectations.mjs';
 import { IdentityError, proveIdentity, resolveHostPath } from './boundConformanceFixture.mjs';
+import { readLauncherDiagnostics } from './launcherDiagnostics.mjs';
 import { SKIP_REASON, resolveDockerCli, run, withContainer } from './dockerFixture.mjs';
 
 // ── THE TWO ARMS ────────────────────────────────────────────────────
@@ -330,8 +331,31 @@ async function main() {
   // constant is the reason it is legitimate.
   //
   // No host-kind guard variables either: this is the shipped `docker` kind.
-  const provider = JSON.stringify([process.execPath, LAUNCHER_MAIN, '--kind', 'docker']);
-  log(`\n${SCRIPT}: ${checkout}\n${SCRIPT}: provider ${provider}\n`);
+  //
+  // THE LAUNCHER'S STDERR IS REDIRECTED TO A FILE OF THIS ARM'S OWN, because
+  // otherwise nothing in this repo can observe it on a real run: cc's
+  // ProviderConnection spawns the provider with piped stdio and drains stderr
+  // into a BOUNDED TAIL it prints only inside an ETRANSPORT message, so a
+  // launcher that exits cleanly has its diagnostics discarded — the admission
+  // drift alarm included, and an alarm nobody can hear is not an alarm.
+  //
+  // `exec` REPLACES THE SHELL, so the launcher keeps the pid and the position in
+  // the process tree that cc's kill and this file's watchdogs address, and
+  // `"$@"` carries its argv byte-for-byte with no quoting in the contract. The
+  // log path rides as `$1` rather than being interpolated into the `-c` string,
+  // so a scratch path is never shell syntax.
+  //
+  // One file per arm, appended to by every launcher cc spawns during it, and
+  // read back in full after the battery — which is strictly more than the tail
+  // it replaces. The trade is that cc's own ETRANSPORT messages no longer quote
+  // a stderr tail, so the digest below is printed unconditionally.
+  const launcherLog = path.join(storeRoot, 'launcher-stderr.log');
+  const provider = JSON.stringify([
+    '/bin/sh', '-c', 'log=$1; shift; exec "$@" 2>>"$log"', 'sh', launcherLog,
+    process.execPath, LAUNCHER_MAIN, '--kind', 'docker',
+  ]);
+  log(`\n${SCRIPT}: ${checkout}\n${SCRIPT}: provider ${provider}`);
+  log(`${SCRIPT}: launcher stderr → ${launcherLog}\n`);
 
   const started = Date.now();
   const child = suiteRun = spawnSuite(checkout, {
@@ -364,13 +388,25 @@ async function main() {
 
   // ── 6. parse, compare, report ────────────────────────────────────
   const report = parseSpecReport(out);
-  // THREE INDEPENDENT GUARDS, and they catch different things. `checkTotal` is
-  // the ABSOLUTE one: the other two are relative to what the run reported, so a
-  // row that vanished from the suite moves the tally and the parse together and
-  // is invisible to both.
+  // FOUR INDEPENDENT GUARDS, and they catch different things. `checkTotal` is
+  // the ABSOLUTE one: the other two reporter guards are relative to what the run
+  // reported, so a row that vanished from the suite moves the tally and the
+  // parse together and is invisible to both. The fourth reads a surface cc never
+  // shows at all — see the launcher-stderr redirect above.
   const parseProblems = checkTally(report);
   const sizeProblems = checkTotal(report.tally);
   const problems = compareOutcomes(report.tests);
+  // A FOURTH GUARD, and the only one reading a surface cc never shows: the
+  // launcher's own stderr.
+  //
+  // `expectCensus` uses THE LAUNCHER'S OWN PREDICATE over the same variable the
+  // arm exported, so the runner cannot disagree with the launchers it spawned
+  // about whether a pool was built — and an on-arm whose log holds no census at
+  // all reds instead of reporting a drift-free run it has no evidence for.
+  const diag = readLauncherDiagnostics(
+    await fs.readFile(launcherLog, 'utf8').catch(() => ''),
+    { expectCensus: channelEnabled(process.env) },
+  );
 
   log('');
   log(`${SCRIPT}: ${report.tally.pass ?? '?'} pass / ${report.tally.fail ?? '?'} fail`
@@ -394,6 +430,10 @@ async function main() {
         + (sharedPidNs ? ' (shared PID namespace: the same process)' : ' (NOT shared: cc SIGKILLed this)'));
     }
   }
+  log(`${SCRIPT}: launcher said — ${diag.sessions} session(s) reported a channel census:`
+    + ` carried ${diag.carried} of ${diag.admitted} admitted ops on ${diag.channels} channels`
+    + `; ${diag.drift.length} admission-drift alarm(s)`);
+  for (const line of diag.other) log(`${SCRIPT}: launcher said — ${line}`);
   log(`${SCRIPT}: ${EXPECTED.length} rows are expected not to pass`
     + ` (${EXPECTED.filter(e => e.outcome === 'skip').length} skip, `
     + `${EXPECTED.filter(e => e.outcome === 'fail').length} fail) — see`
@@ -405,13 +445,21 @@ async function main() {
   for (const p of parseProblems) console.error(`${SCRIPT}: PARSE — ${p}`);
   for (const p of sizeProblems) console.error(`${SCRIPT}: SIZE — ${p}`);
   for (const p of problems) console.error(`${SCRIPT}: ${p.kind.toUpperCase()} — ${p.name}\n      ${p.message}`);
+  for (const p of diag.problems) console.error(`${SCRIPT}: LAUNCHER — ${p}`);
 
-  if (parseProblems.length || sizeProblems.length || problems.length) {
-    console.error(`\n${SCRIPT}: FAILED — the run did not match the manifest`);
+  if (parseProblems.length || sizeProblems.length || problems.length || diag.problems.length) {
+    console.error(`\n${SCRIPT}: FAILED — the run did not match the manifest, or the launcher`
+      + ' reported a condition no outcome in the battery can show');
     return 1;
   }
-  log(`\n${SCRIPT}: OK — every unlisted row passed, and every listed row produced exactly its`
-    + ' recorded outcome');
+  // THE VERDICT NAMES ONLY WHAT THIS ARM COULD OBSERVE. With the channel off no
+  // pool is built, so `admits` is never consulted and the drift alarm cannot
+  // fire — claiming it was silent there would assert a fact the arm has no
+  // evidence for, which is the failure the census check above exists to catch.
+  log(`\n${SCRIPT}: OK — every unlisted row passed, every listed row produced exactly its`
+    + ' recorded outcome' + (diag.sessions > 0
+      ? `, and ${diag.sessions} launcher sessions reported a census with no admission-drift alarm`
+      : ' (channel off: no pool, so no admission table to drift)'));
   return 0;
 }
 

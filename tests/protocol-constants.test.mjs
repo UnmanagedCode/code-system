@@ -38,8 +38,9 @@ test('the constants equal the documented values', () => {
     'EFBIG', 'ECANCELLED', 'ENOREMOTE',
   ], "cc's eight protocol-level codes, in cc's order");
   assert.deepEqual(FS_ERROR_CODES, [
-    'ENOENT', 'EACCES', 'EEXIST', 'ENOTDIR', 'EISDIR', 'ENOSPC', 'EUNKNOWN',
-  ], "cc's seven filesystem codes, in cc's order");
+    'ENOENT', 'EACCES', 'EEXIST', 'ENOTDIR', 'EISDIR', 'ENOSPC', 'ENOTEMPTY', 'EINVAL',
+    'EUNKNOWN',
+  ], "cc's nine filesystem codes, in cc's order");
 });
 
 test('strict base64: a lenient decode is what turns a corrupt chunk into a silent truncation', () => {
@@ -83,6 +84,8 @@ test('the classifier matches the strerror TAIL, not a tool prefix', () => {
   assert.equal(classifyStderr('/x: File exists'), 'EEXIST');
   assert.equal(classifyStderr('Is a directory'), 'EISDIR');
   assert.equal(classifyStderr('No space left on device'), 'ENOSPC');
+  assert.equal(classifyStderr("rm: cannot remove '/d': Directory not empty"), 'ENOTEMPTY');
+  assert.equal(classifyStderr('readlink: /p: Invalid argument'), 'EINVAL');
   assert.equal(classifyStderr('busybox says something else entirely'), 'EUNKNOWN');
 });
 
