@@ -170,7 +170,8 @@ export async function runLauncher(argv, { stdin = process.stdin, stdout = proces
   // ONE POOL PER LAUNCHER PROCESS, built here and handed to the session, which
   // closes it at shutdown. `createChannelPool` answers null for a kind that
   // offers no `channelPlan` (`ssh`, `host`, `fake`) and for CODE_SYSTEM_CHANNEL=0.
-  const channels = createChannelPool(transport, { warn: (msg) => { stderr.write(`${msg}\n`); } });
+  // Its two diagnostic lines go out through the session's own `warn` seam.
+  const channels = createChannelPool(transport);
 
   const session = new Session({
     transport,

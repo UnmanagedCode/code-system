@@ -20,7 +20,7 @@ import { makeNonce } from '../src/launcher/fileops.mjs';
 const shTransport = { kind: 'fake', channelPlan() { return { file: '/bin/sh', args: [] }; } };
 
 function pool(t, opts = {}) {
-  const p = new ChannelPool({ transport: shTransport, warn: () => {}, ...opts });
+  const p = new ChannelPool({ transport: shTransport, ...opts });
   t.after(() => p.close());
   return p;
 }
@@ -328,7 +328,7 @@ test('a disabled pool offers nothing at all, and does not even count', async (t)
 // must be byte-identical after this change, and the seam is optional for exactly
 // that reason.
 test('a transport with no channelPlan is never given a channel', async (t) => {
-  const p = new ChannelPool({ transport: { kind: 'ssh' }, warn: () => {} });
+  const p = new ChannelPool({ transport: { kind: 'ssh' } });
   t.after(() => p.close());
   assert.equal(p.tryRun({ ...REQ, script: ':' }), null);
   assert.deepEqual(p.stats(), { admitted: 0, carried: 0, channels: 0 });

@@ -158,7 +158,6 @@ class Scan {
 
 export class ChannelPool {
   #transport;
-  #warn;
   #idleMs;
   #maxPerTarget;
   #enabled;
@@ -169,11 +168,10 @@ export class ChannelPool {
   #closed = false;
 
   constructor({
-    transport, warn = () => {}, idleMs = CHANNEL_IDLE_MS,
+    transport, idleMs = CHANNEL_IDLE_MS,
     maxPerTarget = MAX_CHANNELS_PER_TARGET, enabled = true,
   }) {
     this.#transport = transport;
-    this.#warn = warn;
     this.#idleMs = idleMs;
     this.#maxPerTarget = maxPerTarget;
     this.#enabled = enabled === true && typeof transport?.channelPlan === 'function';
@@ -315,13 +313,14 @@ export class ChannelPool {
       ch.busy = true;
       ch.op = op;
       if (signal) {
+        // `makeRunner` already refuses an ALREADY-aborted signal before it gets
+        // here, so this only ever fires for an abort that arrives mid-op.
         op.onAbort = () => {
           if (op.settled || op.orphaned) return;
           op.orphaned = true;
           reject(new Error('operation was closed by the client'));
         };
-        if (signal.aborted) { op.onAbort(); }
-        else signal.addEventListener('abort', op.onAbort, { once: true });
+        signal.addEventListener('abort', op.onAbort, { once: true });
         op.signal = signal;
       }
       this.#arm(ch);
@@ -449,8 +448,8 @@ export class ChannelPool {
  * `src/baseline.mjs` passes none: its probe is one-off, runs in the backend, and
  * has no shutdown path to close a channel on.
  */
-export function createChannelPool(transport, { warn = () => {}, env = process.env, idleMs } = {}) {
+export function createChannelPool(transport, { env = process.env, idleMs } = {}) {
   if (typeof transport?.channelPlan !== 'function') return null;
   if (!channelEnabled(env)) return null;
-  return new ChannelPool({ transport, warn, ...(idleMs === undefined ? {} : { idleMs }) });
+  return new ChannelPool({ transport, ...(idleMs === undefined ? {} : { idleMs }) });
 }

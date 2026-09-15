@@ -339,15 +339,18 @@ export class Session {
       if (verdict.drift) this.#warnDrift(f.argv);
       return false;
     }
+    // NO `timer`, `killGraceMs` OR `detached`, and their absence is the
+    // admission rule showing through: a frame carrying a `timeoutMs` or a
+    // `killGraceMs` fails the envelope, so a channel op can never time out or
+    // schedule a SIGTERM→SIGKILL grace, and `detached` is read only on the
+    // spawn path this state never takes. The idle watchdog in channel.mjs is
+    // what bounds a channel op.
     const state = {
       // What tells every other method on this class that there is no host-side
       // child to signal: the op lives in a shell that is already running, and
       // the only thing that reaches it is the kind's reap relay.
       channel: true,
       seq: 0,
-      timer: null,
-      killTimer: null,
-      timedOut: false,
       // ALWAYS, for the same reason `docker`'s spawnPlan is never `detached`:
       // nothing we can signal from here reaches the far side's process tree, so
       // every result we terminated must say descendants may survive.
@@ -356,10 +359,8 @@ export class Session {
       terminated: false,
       head: '',
       errHead: '',
-      detached: false,
       config: remote?.config ?? {},
       handle: { pid: null, token: req.token, remoteId: remote?.remoteId ?? null },
-      killGraceMs: typeof f.killGraceMs === 'number' ? f.killGraceMs : DEFAULT_KILL_GRACE_MS,
     };
     // The argv becomes a script through the same quoter fileops.mjs uses, so the
     // channel runner has ONE input shape — identical to `makeRunner`'s
@@ -405,8 +406,6 @@ export class Session {
       return;
     }
     state.closed = true;
-    if (state.timer) clearTimeout(state.timer);
-    if (state.killTimer) clearTimeout(state.killTimer);
     this.#execs.delete(id);
     if (err) {
       // THE CHANNEL DIED WITH THIS OP IN FLIGHT. `ETRANSPORT` and never a
@@ -416,7 +415,9 @@ export class Session {
       this.#fail(id, err?.code ?? 'ETRANSPORT', errMsg(err));
       return;
     }
-    const verdict = res.code !== 0 && !state.timedOut && !state.terminated
+    // Not consulted for an op WE killed: that failure is ours, and reading it
+    // through the transport's vocabulary could only mislabel it.
+    const verdict = res.code !== 0 && !state.terminated
       ? this.#transport.classifyFailure?.(state.config, {
           code: res.code, stdout: state.head, stderr: state.errHead,
         })
@@ -430,9 +431,9 @@ export class Session {
       this.#write({
         type: 'exit',
         id,
-        code: state.timedOut ? 124 : res.code,
+        code: res.code,
         signal: null,
-        timedOut: state.timedOut,
+        timedOut: false,
         ...(state.orphaned ? { descendantsMaySurvive: true } : {}),
       });
     }
