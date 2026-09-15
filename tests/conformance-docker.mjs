@@ -388,10 +388,11 @@ async function main() {
 
   // ── 6. parse, compare, report ────────────────────────────────────
   const report = parseSpecReport(out);
-  // THREE INDEPENDENT GUARDS, and they catch different things. `checkTotal` is
-  // the ABSOLUTE one: the other two are relative to what the run reported, so a
-  // row that vanished from the suite moves the tally and the parse together and
-  // is invisible to both.
+  // FOUR INDEPENDENT GUARDS, and they catch different things. `checkTotal` is
+  // the ABSOLUTE one: the other two reporter guards are relative to what the run
+  // reported, so a row that vanished from the suite moves the tally and the
+  // parse together and is invisible to both. The fourth reads a surface cc never
+  // shows at all — see the launcher-stderr redirect above.
   const parseProblems = checkTally(report);
   const sizeProblems = checkTotal(report.tally);
   const problems = compareOutcomes(report.tests);

@@ -97,9 +97,9 @@ to card 2026-0006 and that card did not do it**: 2026-0006's rig hosts the
 plugin under a real cc and runs no conformance battery
 ([hosted-integration-measured.md](hosted-integration-measured.md)).
 
-**Card 2026-0014 landed it: `npm run conformance:docker`.** It reports **40 pass
-/ 11 fail / 4 skip** of 55, of which **35 rows exercise the shipped `docker`
-transport** (re-measured 2026-09-05, card 2026-0018). Eight of the failures have
+**Card 2026-0014 landed it: `npm run conformance:docker`.** It reports **48 pass
+/ 11 fail / 4 skip** of 63, of which **41 rows exercise the shipped `docker`
+transport**. Eight of the failures have
 two structural causes — the hardcoded `processGroupSignal: false` against
 `CAPABILITY_CONFIGS[0]`, and `main.mjs` refusing
 `--remote`/`--mirror`/`--exclude` for a store-backed kind (the refusal stands now
@@ -125,8 +125,9 @@ CC_CHECKOUT=/tmp/cc-pin npm run conformance
 ```
 
 Confirm `git -C <cc-worktree> status --porcelain` is empty **before and after** —
-that is what proves the other team's tree was not disturbed. Note
-`code-conductor` **main** does not carry the suite; only the systems branch does.
+that is what proves the other team's tree was not disturbed. `code-conductor`
+**main** carries the suite, so a clone of `main` at a named commit is the normal
+source.
 
 **How to apply:**
 

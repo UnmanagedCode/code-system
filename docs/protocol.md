@@ -209,11 +209,12 @@ contacted.
 
 1. It carries **no `stderr`** — see above.
 2. It contains **no standalone FS errno token** (`ENOENT`, `EACCES`, `EEXIST`,
-   `ENOTDIR`, `EISDIR`, `ENOSPC`). cc's `runGit` and `ProviderShell` ignore the
-   structured code and re-derive one from the prose with `\b<CODE>\b` matching,
-   which silently downgrades an administrative refusal into "git answered
-   non-zero". This applies to **every** kind's `classifyFailure` message too —
-   see `.wiki/gotchas/refusal-message-errno-tokens.md`.
+   `ENOTDIR`, `EISDIR`, `ENOSPC`, `ENOTEMPTY`, `EINVAL`). cc's `runGit` and
+   `ProviderShell` ignore the structured code and re-derive one from the prose
+   with `\b<CODE>\b` matching, which silently downgrades an administrative
+   refusal into "git answered non-zero". This applies to **every** kind's
+   `classifyFailure` message too — see
+   `.wiki/gotchas/refusal-message-errno-tokens.md`.
 
 The gate is checked **before** the baseline gate, deliberately: a switched-off
 remote must say *switched off*, not *fails the tooling baseline*. The operator's

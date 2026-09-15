@@ -8,13 +8,13 @@ code is ignored** and a new one is derived from the `message` **text**:
 
 Both drop `spawnErrorCode` and call `classifySpawnError`, which is
 `new RegExp('\\b' + code + '\\b').test(message)` over cc's `FS_ERROR_CODES`
-(`src/systems/protocol.ts:140-145`).
+(`classifySpawnError`, `src/systems/protocol.ts`).
 
 ## The failure mode
 
 A refusal whose message contains a standalone FS errno token —
 
-    ENOENT  EACCES  EEXIST  ENOTDIR  EISDIR  ENOSPC
+    ENOENT  EACCES  EEXIST  ENOTDIR  EISDIR  ENOSPC  ENOTEMPTY  EINVAL
 
 — is **silently reclassified as the command's own failure**. An administrative
 refusal ("this remote is switched off", "this target fails the tooling
