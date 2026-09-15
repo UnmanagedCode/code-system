@@ -27,6 +27,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { PROBE_SCRIPT, parseProbeOutput } from '../src/baseline.mjs';
+import { CHANNEL_ENV } from '../src/launcher/channel.mjs';
 import { createTransport } from '../src/launcher/kinds/index.mjs';
 import { makeRunner } from '../src/launcher/run.mjs';
 import { LAUNCHER_MAIN } from '../src/paths.mjs';
@@ -38,7 +39,30 @@ import { EXPECTED, checkTotal, compareOutcomes } from './boundConformanceExpecta
 import { IdentityError, proveIdentity, resolveHostPath } from './boundConformanceFixture.mjs';
 import { SKIP_REASON, resolveDockerCli, run, withContainer } from './dockerFixture.mjs';
 
-const SCRIPT = 'conformance:docker';
+// ── THE TWO ARMS ────────────────────────────────────────────────────
+//
+// The invariant card 2026-0021 has to hold is that the held-open channel
+// changes NO observable outcome, so both arms are compared to the ONE shipped
+// manifest: any divergence between them is a failure, and the off arm is
+// today's behaviour unchanged.
+//
+// EACH ARM IS ITS OWN PROCESS, re-spawned from this file rather than `main()`
+// being called twice. That sidesteps this module's scope-level singletons
+// entirely — `suiteRun`, `cleanups`, the memoised `teardownRun`, and
+// `resolveDockerCli`'s per-environment memo — none of which is written to be
+// reused inside one run.
+const ARM_FLAG = '--arm';
+const ARMS = [
+  { name: 'on', channel: '1' },
+  { name: 'off', channel: '0' },
+];
+
+const armName = (() => {
+  const i = process.argv.indexOf(ARM_FLAG);
+  return i === -1 ? null : String(process.argv[i + 1] ?? '');
+})();
+
+const SCRIPT = armName === null ? 'conformance:docker' : `conformance:docker[channel=${armName}]`;
 
 // The wall clock at which this run stops being comfortably inside cc's per-file
 // hang guard (`CC_FILE_KILL_MS`, mirrored and drift-checked in ccCheckout.mjs).
@@ -391,6 +415,39 @@ async function main() {
   return 0;
 }
 
+/**
+ * THE DRIVER. Runs this same file once per arm, inheriting stdio so the whole
+ * output is watchable, and fails if EITHER arm fails.
+ */
+async function runArms() {
+  const { spawn } = await import('node:child_process');
+  let worst = 0;
+  for (const arm of ARMS) {
+    console.log(`\n================ conformance:docker — channel ${arm.name}`
+      + ` (${CHANNEL_ENV}=${arm.channel}) ================\n`);
+    const child = spawn(process.execPath, [process.argv[1], ARM_FLAG, arm.name], {
+      stdio: 'inherit',
+      // The launcher is spawned by cc's runner, which is spawned by the arm, and
+      // both inherit this — so setting it here is what reaches the provider.
+      env: { ...process.env, [CHANNEL_ENV]: arm.channel },
+    });
+    const forward = (sig) => { try { child.kill(sig); } catch { /* gone */ } };
+    for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, forward);
+    const status = await new Promise(r => child.on('close', (c, sg) => r(sg ? 1 : (c ?? 1))));
+    for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.removeListener(sig, forward);
+    console.log(`\nconformance:docker: channel ${arm.name} arm exited ${status}`);
+    if (status !== 0) worst = status;
+    // A SKIPPED arm skips the other too: the gates (a daemon, CC_CHECKOUT) are
+    // the same for both, and a second identical skip line says nothing.
+    if (status === 0 && !process.env.CC_CHECKOUT?.trim()) break;
+  }
+  return worst;
+}
+
+if (armName === null) {
+  process.exitCode = await runArms();
+} else {
+
 let code = 1;
 try {
   code = await main();
@@ -412,3 +469,5 @@ try {
 // exiting outright can truncate the verdict lines above — which are the whole
 // output an operator reads.
 process.exitCode = code;
+
+}

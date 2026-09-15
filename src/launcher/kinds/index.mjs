@@ -28,6 +28,18 @@ import { KIND_META as SSH_META, createSshTransport } from './ssh.mjs';
  *                                   no spawning — the core spawns it, which is what
  *                                   makes every kind's argv assertable with no
  *                                   docker and no ssh.
+ * @property {(config:object, ctx:{remoteId:string|null}) => SpawnPlan|null} [channelPlan]
+ *   OPTIONAL, and PURE like `spawnPlan`. The argv of ONE long-lived shell on the
+ *   target, which src/launcher/channel.mjs holds open and writes framed commands
+ *   into instead of paying a process + daemon + container-exec setup per frame
+ *   (measured: 84–94 ms → 3.5–4.4 ms per op). It must be INVARIANT across every
+ *   op that may ride it — no cwd, no per-op env, no per-exec token — because the
+ *   pool keys its channels on this argv and a running shell has no per-op
+ *   command line to put anything on.
+ *
+ *   A KIND WITHOUT IT IS UNTOUCHED. Every call site treats an absent member as
+ *   "no channel offered" and takes the per-op spawn path, which is why `ssh` and
+ *   `host` are byte-identical although `makeRunner` is shared by every kind.
  * @property {(config:object) => Promise<Reachability>} reachability
  * @property {(config:object, handle:ExecHandle) => Promise<void>} reap
  *   MAY THROW. A kind that cannot prove its relay reached the far side must say

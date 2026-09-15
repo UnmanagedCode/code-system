@@ -37,3 +37,11 @@ Three further differences the mode really has:
 - `persistentShell` is not a capability. cc's `Capabilities` interface is
   `processGroupSignal`, `remotes`, `remoteDescriptors` — see
   [host-kind-and-conformance.md](host-kind-and-conformance.md).
+
+**A PROVIDER-PRIVATE shell is a different thing, and it changes none of the
+above.** The `docker` kind holds one `docker exec -i … /bin/sh` open as a
+TRANSPORT optimisation ([docker-channel.md](docker-channel.md)) — it is invisible
+to cc, carries no state between ops (each op is its own `/bin/sh -c` with its own
+environment prefix), and admits only frames whose `cwd` is cc's placeholder `/`.
+Nothing about "capture, not carry", the fresh login shell for the `shell` form,
+or the deleted `stdin`/`stdinClose` frames is affected.

@@ -16,6 +16,7 @@ import path from 'node:path';
 import {
   NdjsonDecoder, ProtocolError, encodeFrame,
 } from './protocol.mjs';
+import { createChannelPool } from './channel.mjs';
 import { FlagRemoteSource, StoreRemoteSource } from './remotes.mjs';
 import { createTransport, isKnownKind } from './kinds/index.mjs';
 import { hostKindRefusal, hostUnfencedRefusal } from './kinds/host.mjs';
@@ -166,11 +167,18 @@ export async function runLauncher(argv, { stdin = process.stdin, stdout = proces
   // whenever cc dies reader-end-first.
   stdout.on('error', () => { void finish(0); });
 
+  // ONE POOL PER LAUNCHER PROCESS, built here and handed to the session, which
+  // closes it at shutdown. `createChannelPool` answers null for a kind that
+  // offers no `channelPlan` (`ssh`, `host`, `fake`) and for CODE_SYSTEM_CHANNEL=0.
+  // Its two diagnostic lines go out through the session's own `warn` seam.
+  const channels = createChannelPool(transport);
+
   const session = new Session({
     transport,
     source,
     capabilities,
     write,
+    channels,
     version: VERSION,
     // Diagnostics the session must report but must not die of — a failed reap.
     warn: (msg) => { stderr.write(`${msg}\n`); },

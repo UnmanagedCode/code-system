@@ -20,9 +20,44 @@ const PLACEHOLDER_CWD = '/';
 const CLASSIFY_HEAD_BYTES = 512;
 
 /**
+ * THE TRANSPORT'S OWN FAILURE, not the script's — read once, so the two paths
+ * below cannot answer differently. A stopped or missing container is a non-zero
+ * exit of the docker CLI carrying a daemon message; the script never ran at all,
+ * so reporting it as the script's result would surface a bare EUNKNOWN with a
+ * parse failure behind it. A null verdict (the common case, and every kind
+ * without the hook) resolves as before.
+ */
+function settleResult(transport, config, { code, stdout, stderr }, resolve, reject) {
+  const verdict = code !== 0
+    ? transport.classifyFailure?.(config ?? {}, {
+        // A bounded HEAD, matching session.mjs: the transport diagnostics this
+        // reads are one short line, and a failed multi-megabyte read must not be
+        // re-materialised as a string to look at its first 60 bytes.
+        code: code ?? 1,
+        stdout: stdout.subarray(0, CLASSIFY_HEAD_BYTES).toString('utf8'),
+        stderr: stderr.slice(0, CLASSIFY_HEAD_BYTES),
+      })
+    : null;
+  if (verdict) {
+    reject(new ProtocolError(verdict.code, verdict.message, {
+      exitCode: code ?? 1, stderr: verdict.stderr ?? stderr,
+    }));
+    return;
+  }
+  resolve({ code: code ?? 1, stdout, stderr });
+}
+
+/**
  * @param {import('./kinds/index.mjs').Transport} transport
  * @param {object} config      the remote's kind-specific config
  * @param {string|null} remoteId
+ * @param {{token?:string|null, onSpawn?:Function|null,
+ *          channels?:import('./channel.mjs').ChannelPool|null}} opts
+ *   `channels` is the held-open channel pool, when the launcher has one. It is
+ *   consulted FIRST and answers `null` whenever it has nothing idle — no queue,
+ *   no wait — so the worst case here is exactly the spawn below. The backend's
+ *   baseline probe (src/baseline.mjs) passes none: it is a one-off call with no
+ *   shutdown path to close a channel on.
  * @returns {(req:{script:string, stdinData?:Buffer|null, signal?:AbortSignal|null})
  *            => Promise<{code:number, stdout:Buffer, stderr:string}>}
  *
@@ -32,9 +67,25 @@ const CLASSIFY_HEAD_BYTES = 512;
  * instruction would be the one this launcher ignores, leaving a far-side
  * process nobody reaps.
  */
-export function makeRunner(transport, config, remoteId = null, { token = null, onSpawn = null } = {}) {
-  return ({ script, stdinData = null, signal = null }) => new Promise((resolve, reject) => {
-    if (signal?.aborted) { reject(new Error('operation was closed by the client')); return; }
+export function makeRunner(transport, config, remoteId = null, { token = null, onSpawn = null, channels = null } = {}) {
+  return ({ script, stdinData = null, signal = null }) => {
+    if (signal?.aborted) return Promise.reject(new Error('operation was closed by the client'));
+    // ONE TOKEN PER CALL, minted here so BOTH paths reap by the same handle: on
+    // the channel it becomes the far-side command's environment prefix, on the
+    // spawn path the kind puts it there itself.
+    const tok = token ?? randomBytes(12).toString('hex');
+    const viaChannel = channels?.tryRun({ config, remoteId, script, stdinData, token: tok, signal });
+    if (viaChannel) {
+      return viaChannel.then(res => new Promise((resolve, reject) => {
+        settleResult(transport, config, res, resolve, reject);
+      }));
+    }
+    return spawnOne(transport, config, remoteId, tok, onSpawn, { script, stdinData, signal });
+  };
+}
+
+function spawnOne(transport, config, remoteId, tok, onSpawn, { script, stdinData, signal }) {
+  return new Promise((resolve, reject) => {
     const req = {
       argv: ['/bin/sh', '-c', script],
       shell: null,
@@ -42,7 +93,7 @@ export function makeRunner(transport, config, remoteId = null, { token = null, o
       env: null,
       stdinMode: stdinData ? 'pipe' : 'ignore',
       remoteId,
-      token: token ?? randomBytes(12).toString('hex'),
+      token: tok,
     };
     let plan;
     try { plan = transport.spawnPlan(config ?? {}, req); }
@@ -86,32 +137,11 @@ export function makeRunner(transport, config, remoteId = null, { token = null, o
     child.on('error', settle(reject));
     child.on('close', settle((code) => {
       if (signal?.aborted) { reject(new Error('operation was closed by the client')); return; }
-      const stdout = Buffer.concat(out);
-      const stderr = Buffer.concat(err).toString('utf8');
-      // THE TRANSPORT'S OWN FAILURE, not the script's. A stopped or missing
-      // container is a non-zero exit of the docker CLI carrying a daemon
-      // message — the script never ran at all — so reporting it as the script's
-      // result would surface a bare EUNKNOWN with a parse failure behind it.
-      // This is the single funnel for fileops.mjs AND the baseline probe, which
-      // is why neither needs a line of transport-specific code. A null verdict
-      // (the common case, and every kind without the hook) resolves as before.
-      const verdict = code !== 0
-        ? transport.classifyFailure?.(config ?? {}, {
-            code: code ?? 1,
-            // A bounded HEAD, matching session.mjs: the transport diagnostics this
-            // reads are one short line, and a failed multi-megabyte read must
-            // not be re-materialised as a string to look at its first 60 bytes.
-            stdout: stdout.subarray(0, CLASSIFY_HEAD_BYTES).toString('utf8'),
-            stderr: stderr.slice(0, CLASSIFY_HEAD_BYTES),
-          })
-        : null;
-      if (verdict) {
-        reject(new ProtocolError(verdict.code, verdict.message, {
-          exitCode: code ?? 1, stderr: verdict.stderr ?? stderr,
-        }));
-        return;
-      }
-      resolve({ code: code ?? 1, stdout, stderr });
+      // The SAME funnel the channel path resolves through, so a stopped
+      // container reads identically whichever path the op took.
+      settleResult(transport, config, {
+        code, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString('utf8'),
+      }, resolve, reject);
     }));
     if (stdinData && child.stdin) {
       // A far side that exits before draining its stdin is not our error to

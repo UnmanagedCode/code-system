@@ -77,6 +77,14 @@ frame loop calls them; the backend's two gate routes and the live fixtures do.
 they govern, what may throw, and what the backend does when one does — read it
 there rather than here.
 
+`channelPlan(config, {remoteId})` is **optional** and, like `spawnPlan`, **pure**
+— it builds the argv of **one long-lived shell** on the target which
+`src/launcher/channel.mjs` holds open and writes framed commands into, instead
+of paying a process + daemon + container-exec setup per frame. Only `docker`
+implements it; `ssh` and `host` do not, and every call site treats its absence as
+"no channel offered", so those kinds are unchanged. See
+"The held-open channel" below.
+
 `classifyFailure(config, {code, stdout, stderr})` is **optional** and reads the
 *transport's* own error vocabulary — a docker daemon response — turning a
 non-zero exit into a named protocol failure instead of an `exit` frame. Only the
@@ -614,6 +622,8 @@ surfaces.
 | `CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED` | `kinds/host.mjs` | permits `--kind host` with no `--remote` fence. **No shipped path sets it** |
 | `CODE_SYSTEM_FAKE_TRANSPORT` | `main.mjs` | module path for `--kind fake`. Tests only |
 | `CODE_SYSTEM_FAKE_REAP_LOG` | `tests/fakeTransport.mjs` | file the fake transport appends each `reap` to, so the shutdown tests can prove the relay ran. Tests only |
+| `CODE_SYSTEM_CHANNEL` | `launcher/channel.mjs` → `channelEnabled`, read in `main.mjs` | `=0` removes the held-open channel pool **entirely** — the operator's escape hatch, and the arm `tests/conformance-docker.mjs` runs second. Any other value (including unset) is the shipped behaviour |
+| `CODE_SYSTEM_FAKE_CHANNEL` | `tests/fakeTransport.mjs` | `=1` gives `--kind fake` a `channelPlan` over the local `/bin/sh`, so the channel's wiring is drivable with no docker. Tests only; without it every existing fake-kind test is byte-identical |
 | `CC_CHECKOUT` | `tests/ccCheckout.mjs` | gates both conformance runs |
 | `CODE_SYSTEM_ALLOW_UNSHARED_PID` | `tests/conformance-docker.mjs` | `=1` permits the bound run when the daemon refuses `--pid=container:`. **Refused by default**: cc's suite SIGKILLs a far-side pid in this namespace, and an unoccupied low pid range is luck, not a guard |
 | `TMPDIR` | `kinds/ssh.mjs` → `controlDir`, via `os.tmpdir()` | the ControlPath's parent directory; `controlPathFor` refuses rather than truncates past the ceiling. Also **set** by `tests/conformance-docker.mjs`, to redirect cc's own fixture roots |
@@ -678,6 +688,173 @@ A launcher that meets a record at another schema refuses **that remote** with
 It does not attempt a read-time upgrade and it does not fail the connection — a
 launcher can legitimately be spawned before the backend has ever run.
 
+## The held-open channel (`docker` only)
+
+Every frame used to cost one `docker exec`. Measured through the shipped
+launcher against a live container with `node tests/bench-channel.mjs`
+(15 samples/op after 6 warm-up frames, Docker Engine 29.7.2, `node:24-slim`):
+
+| op | per-op spawn | held-open channel | speed-up |
+|---|---|---|---|
+| `stat` | 94.2 ms median (min 65.6, p90 100.2) | 5.9 ms (min 4.9, p90 7.0) | 16.1x |
+| `lstat` | 91.6 ms (min 73.3, p90 99.5) | 5.0 ms (min 4.6, p90 5.6) | 18.2x |
+| `readDir` | 94.6 ms (min 74.2, p90 100.7) | 5.8 ms (min 5.1, p90 6.7) | 16.4x |
+| `realpath` | 86.1 ms (min 67.5, p90 102.6) | 4.2 ms (min 2.7, p90 4.8) | 20.4x |
+| liveness probe | 84.3 ms (min 66.6, p90 97.7) | 2.0 ms (min 1.4, p90 3.2) | 43.0x |
+| `readFile` | 89.0 ms (min 73.0, p90 101.1) | 6.8 ms (min 5.4, p90 8.1) | 13.0x |
+
+**The cost removed is the SPAWN, not the command** — `docker exec … true` costs
+the same as `docker exec … stat`. Nothing is deployed into the target: the
+channel execs a POSIX shell the container already provides, the same dependency
+every derived file operation already has.
+
+**Two modules, one responsibility each.** `src/launcher/admission.mjs` decides
+*which frames* may ride it; `src/launcher/channel.mjs` owns the pool, the
+framing and the op state machine. The kind contributes only the pure
+`channelPlan`. The argv itself, the op framing and the admission table are
+specified in `docs/protocol.md` → "The held-open channel".
+
+**What rides it.** Admitted `exec` frames — cc's own derivations, by exact
+command vector — plus the launcher's own `readFile`/`writeFile` scripts, which
+reach it through `makeRunner` and are admitted by **provenance**: `fileops.mjs`
+authors them, nothing frame-supplied reaches them except as a quoted operand, and
+they background nothing. The backend's baseline probe passes no pool: it is a
+one-off call with no shutdown path to close a channel on.
+
+**Never queue, and a lazily-grown pool.** A single `sh` is strictly sequential.
+An op that finds no idle channel is refused **synchronously** and takes today's
+per-op spawn, so the worst case is exactly today's latency and the pool can never
+become a bottleneck; a new channel is opened in the background, one at a time, up
+to `MAX_CHANNELS_PER_TARGET` per (container, identity, remote). A channel is
+offered only after a handshake op has proved it alive — without that, a channel
+against a stopped container would be handed an op that failed `ETRANSPORT`,
+losing `classifyFailure`'s operator-facing `ENOREMOTE` message.
+
+**A channel whose payload op FAILED is retired, not returned to the pool.** The
+ready marker guarantees the payload is *in* the pipe; nothing guarantees the op
+*consumes* it. Every refusal `buildWriteScript` can produce — the
+documented-common `EEXIST` pre-check, the `set -C` noclobber failure,
+`ENOTDIR`/`ENOENT`/`EISDIR`/`EACCES`, and `ENOSPC` mid-decode — happens before or
+inside `base64 -d`, and `head` then dies of EPIPE with the remainder still
+unread. Those bytes sit in the **channel's** stdin, where the shell reads them as
+script text and fuses them with the next op's command: the op that caused it
+reports correctly, and an unrelated op dies later. A *successful* payload op
+provably drained (`base64 -d` reads to EOF), so **exit 0 is the whole condition**
+— how much `head` had pumped before its EPIPE is not knowable from this side, so
+no threshold is involved. Retiring costs one lazy reopen, which is already the
+status quo for a channel death. See `.wiki/gotchas/docker-channel.md`.
+
+**Failure asymmetry.** A channel that is dead or absent *before* an op starts is
+simply not offered, and the op takes the unchanged spawn path — including all of
+`classifyFailure`. A channel that dies *with an op in flight* fails that op with
+`ETRANSPORT` and it is **never retried, for any op kind**: cc's `#derive` reads
+that code through `spawnErrorCode` and keeps it out of the errno classifier,
+which is what stops a retried exclusive create's `EEXIST` being reported as a
+failure that actually succeeded. There is no second restart/backoff layer —
+`ProviderConnection` owns restart-on-demand; a dead channel is just not offered
+and the next op that finds the pool short reopens one.
+
+### The idle watchdog
+
+Every dispatched channel op arms **one** timer, reset on **every byte received on
+either of its streams**. After `CHANNEL_IDLE_MS` of silence the channel is
+declared dead and torn down, and the op fails `ETRANSPORT`.
+
+**Idle, not total elapsed**, because that is the property that distinguishes the
+two cases: a framing desync is silent for ever, while a legitimately slow op is
+making progress the whole time. A total-elapsed deadline would have to clear the
+worst pathological `readDir`.
+
+**Progress is not the same as output, and `writeFile` is the one op where they
+come apart.** Most admitted ops are either fast and silent (`mkdir`, `chmod`,
+`rm -d`, `unlink`, `ln`) or slow and progressively noisy (`find` over a very
+large directory, a large `readFile`'s base64). A `writeFile` is neither: between
+the ready marker and the sentinel it emits **zero bytes on either stream by
+construction**, because the whole transfer is on stdin. An output-only timer is
+therefore structurally blind to exactly the phase that takes longest, and on a
+daemon slower than the localhost this constant was measured against it would kill
+a healthy, progressing write. So the payload goes out one pipe buffer at a time
+and **each chunk's write callback re-arms the timer** — the callback, not
+`drain`, which for a payload node has already accepted whole fires once near the
+end.
+
+**What a kill mid-transfer would leave behind**, since that is what sets the
+severity: an **atomic** write decodes into `<path>.<pid>.<n>.tmp` and renames, so
+a kill leaves a stray temp file and the target **intact**; a **plain or
+exclusive** write decodes straight into the target through a truncating
+redirect, so a kill leaves it **truncated**. The `rm -f` cleanups in
+`buildWriteScript` run on a non-zero exit, not on a SIGKILL.
+
+**The residual silent window is bounded and does not grow with the payload.**
+After the host writes its last byte there is genuinely no signal left but the
+sentinel, and the far side still has whatever the kernel pipes hold — at most two
+pipe buffers — to decode. That tail is the same for a 1 KiB write and a 32 MiB
+one, which is why bounding the *transfer* is the whole of what this needs.
+
+**`CHANNEL_IDLE_MS` is anchored at both ends.** The measured medians are 2–7 ms,
+and the largest payload the protocol permits (`MAX_FILE_BYTES`) transfers in well
+under a second — measured over a real channel, 1 MiB in 18 ms and 16 MiB in
+40 ms, the per-MiB cost falling with size as the fixed overhead amortises. So the
+constant is an order of magnitude above anything real; and it is a sixth of cc's
+`DEFAULT_OP_TIMEOUT_MS`, so the watchdog reclaims
+a wedged channel long before cc gives up and can never be the first to fail an op
+that is merely slow. It is constructor-injectable, so `tests/channel.test.mjs`
+sets it to milliseconds rather than sleeping.
+
+**Why cc's own bound is not enough.** cc does reach an in-flight channel op on
+both paths at `DEFAULT_OP_TIMEOUT_MS` — `ProviderSystem.#exec`'s abandon timer
+and `#request`'s `done()` each send `{type:'close', id}` — but that is a minute
+of a channel held by an op that will never answer, it depends on the counterparty
+sending a frame, and a reap does not by itself produce a sentinel, so `close`
+alone would leave the channel unusable rather than reclaimed.
+
+### What the channel's coverage does NOT yet reach
+
+All three are consequences of the same thing: the only cc checkout both
+conformance runners can be pointed at is the one our `protocol.mjs` mirror still
+matches, and that pin predates the commit which added cc's `lstat`, `symlink` and
+`removeEntry` derivations. Closing that mirror drift is **necessary but not
+sufficient**: `tests/boundConformanceExpectations.mjs` pins cc's battery
+absolutely by design — for `checkTotal` a vanished row and a new row are the same
+event — and cc's battery has grown past that pin, so pointing `CC_CHECKOUT` at
+current cc reds the manifest *independently* of the mirror. Both have to move
+together: sync the mirror **and** re-observe the manifest against the current
+suite.
+
+- **`symlink` (`ln -sfnT`) and `removeEntry` (`rm -d`) never run on a real
+  channel anywhere in the repo.** They are admitted and executed docker-free
+  (`tests/channel-observability.test.mjs` runs every table row through the
+  shipped launcher against a fixture tree), but no container-backed test and no
+  conformance row exercises them over `docker exec`.
+- **`lstat` is live-tested on the channel arm only**, with no arm-to-arm
+  comparison: `tests/docker-live.test.mjs` drives it with the channel on, and
+  nothing compares that answer to the per-op spawn's.
+- **The channel-invariance claim rests on `CC_CHECKOUT` runs.** Without it both
+  conformance arms skip cleanly, so a plain `npm test` proves the framing and the
+  routing but not that cc's own battery is outcome-identical on the two arms.
+
+### Two diagnostic lines, and why they exist
+
+Admission failing closed is safe and **silent**, and this is a performance
+change: if cc changes one flag in a derivation, that row de-admits, every op
+quietly returns to ~90 ms, and every test in this repo still passes. Both lines
+go to **stderr**, of which cc keeps a bounded tail.
+
+1. **The drift line, once per session.** A frame that passes the envelope *and*
+   opens `['env','LC_ALL=C',…]` is a cc derivation by construction, so matching
+   no row is unambiguously drift rather than "something was refused". Grep for:
+
+   ```
+   code-system launcher: a derivation-shaped exec matched no admission row and took the per-op spawn path — the table in src/launcher/admission.mjs may no longer match this cc: <argv>
+   ```
+
+   A deliberate exclusion (`removeTree`) and an ordinary user command emit
+   nothing.
+2. **The census line, once, in `shutdown()`:**
+   `channel carried <n> of <m> admitted ops on <k> channels`. `m` counts ops
+   OFFERED to the pool; `k` counts channels that opened, so a target whose
+   channel could never start reports 0 and every op took the spawn path.
+
 ## Shutdown and reaping — protocol MUST 3
 
 `stdin` `end`/`close`, `SIGTERM` and `SIGINT` all run one path
@@ -741,6 +918,27 @@ container process keeps running. Without it the launcher emits
 `{code:124, timedOut:true}`, cc's own "the provider killed it", for a command
 still running in the container. `#terminate` therefore sets `state.terminated`,
 and the child's `close` handler reaps when it is set.
+
+**A CHANNEL OP IS REAPED BY ITS OWN TOKEN, AND THE CHANNEL IS NOT.** A channel
+op has no host-side child at all — it is a command inside a shell that is already
+running — so `#terminate` cannot signal anything and the reap relay *is* its
+kill. That works because the token rides as the far-side **command's environment
+prefix** (`CC_EXEC_TOKEN=<tok> /bin/sh -c …`), never on the channel's own
+`docker exec -e`: measured, the channel shell's `/proc/<pid>/environ` carries
+zero tokens, the unmodified `buildReapScript` answers `CCREAP ok` having killed
+the op's tree alone, the channel survives, and the reaped op still emits its
+sentinel (with `$? = 137`) so its pool slot is reclaimed. A channel-wide token
+would instead mean reaping one op killed every other op on that channel, and the
+design would be rejected. Pinned by `tests/docker-live.test.mjs` → *"an op on a
+shared channel is reaped by its own token, and the channel survives"*.
+
+**The CHANNEL itself needs no token and joins no reap set.** Measured: a shell
+blocked on a `docker exec`'s stdin dies with its host client — unlike a *running*
+command, which is the whole reason the per-op relay exists — and `shutdown()`
+closes stdin, which ends it cleanly. `Session.shutdown()` closes the pool inside
+the same 1500 ms window; in-flight channel ops are already covered above by their
+own per-op tokens. Pinned by `tests/docker-live.test.mjs` → *"a launcher that
+ends leaves no held-open shell in the container"*.
 
 **How `docker` reaps: a token scan, not a pgid.** Every `docker exec` carries
 `CC_EXEC_TOKEN=<per-exec nonce>` in the container process's environment; `reap`
@@ -1034,6 +1232,18 @@ global.
   generated scripts against a real shell on a temp dir — deterministic and
   local, and the only thing that proves the *scripts* are right rather than just
   the host-side parse.
+- **A local `/bin/sh` as the CHANNEL, for the same reason.**
+  `tests/channel.test.mjs` drives the real `ChannelPool` against a `channelPlan`
+  of `{file:'/bin/sh', args:[]}` — which is exactly what
+  `docker exec -i <container> /bin/sh` hands it, minus the container. So the
+  whole framing (both sentinels, the ready marker, the byte count, the exit-code
+  capture, the idle watchdog) is covered with no docker. Two fixtures do the
+  work a seam would otherwise need: `kill -9 $PPID` inside an op kills the
+  channel shell out from under itself, reproducing a container-side death with
+  no test-only method on the pool; and a blocking op with no output reproduces a
+  framing desync. `CODE_SYSTEM_FAKE_CHANNEL=1` gives `--kind fake` the same
+  plan, so the launcher's wiring and its two diagnostic lines are drivable end
+  to end (`tests/channel-observability.test.mjs`).
 
 ### The gated conformance run
 
@@ -1061,7 +1271,19 @@ CC_CHECKOUT=/path/to/code-conductor \
 ```
 
 The **bound** run: the same battery, unedited, against `--kind docker` over a
-container that shares this process's filesystem. Four inputs, all required:
+container that shares this process's filesystem.
+
+**It runs TWICE, once per channel arm.** The script re-spawns *itself* with
+`CODE_SYSTEM_CHANNEL=1` and then `=0` — a separate process per arm, which
+sidesteps its module-scope singletons (`suiteRun`, `cleanups`, the memoised
+`teardownRun`, `resolveDockerCli`'s memo) rather than resetting them. **Both arms
+compare to the one manifest** in `tests/boundConformanceExpectations.mjs`: the
+invariant is that the held-open channel changes no observable outcome, so any
+divergence between the arms is a failure and the off arm is today's behaviour
+unchanged. `npm run conformance` (host kind) is unaffected — `host` offers no
+channel.
+
+Four inputs, all required:
 `CC_CHECKOUT` (a clone of the pin), a reachable daemon, `CODE_SYSTEM_DOCKER`
 naming the invocation explicitly, and a writable `<repo>/.conformance-tmp`
 inside a host bind. It skips cleanly and loudly without the first two, and it is

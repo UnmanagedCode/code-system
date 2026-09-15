@@ -73,6 +73,10 @@ export const KIND_META = {
 // THE SHIPPED DEFAULT HARDCODES NO `sudo`. Pinned by tests/dockerkind.test.mjs.
 const DEFAULT_CLI = ['docker'];
 
+// cc's placeholder cwd — the one every derivation carries, and the one the
+// held-open channel runs at. Not a location (systems-protocol.md §7).
+const PLACEHOLDER_CWD = '/';
+
 // What `docker exec -u` accepts: a name or uid, optionally `:group`.
 // Deliberately a WHITELIST rather than a metacharacter blacklist — every real
 // POSIX user/group name and every uid fits, and the value becomes one argv
@@ -325,6 +329,38 @@ export function createDockerTransport({ cli } = {}) {
         // every terminated exec falsely omit `descendantsMaySurvive`.
         detached: false,
       };
+    },
+
+    // THE HELD-OPEN CHANNEL'S ARGV. PURE, exactly as `spawnPlan` is, and for
+    // the same reason: the core spawns what this returns, so the whole argv is
+    // assertable with no docker present.
+    //
+    // ONE ARGV FOR EVERY CANDIDATE OP, which is what makes a channel possible at
+    // all: every op that may ride it carries `cwd: '/'` (cc's placeholder), no
+    // frame `env`, and `stdin: 'ignore'` — so nothing per-op is left to put on
+    // this command line. The core keys its pool on this argv, which is therefore
+    // (container, identity, remote) and nothing else.
+    //
+    // `CC_REMOTE` RIDES THE CHANNEL rather than each op: the ops inherit it from
+    // the shell, and it is the POSITIVE ROUTING EVIDENCE cc's conformance suite
+    // asserts on — on a host where every target may be the same filesystem,
+    // "the command worked" is what a misroute also looks like.
+    //
+    // `CC_EXEC_TOKEN` IS DELIBERATELY ABSENT. A channel-wide token would mean
+    // reaping one op killed the channel and every other op on it; instead each
+    // op carries its own as the far-side command's environment prefix
+    // (src/launcher/channel.mjs), which reaches that op's whole process tree and
+    // nothing else. `reap` and `reapscript.mjs` are unchanged.
+    //
+    // `-i` ALWAYS, because the channel's stdin IS the command stream.
+    channelPlan(config, { remoteId = null } = {}) {
+      const container = String(config?.container ?? '');
+      const args = ['exec', '-i', '-w', PLACEHOLDER_CWD];
+      const user = String(config?.user ?? '');
+      if (user) args.push('-u', user);
+      if (remoteId !== null) args.push('-e', `CC_REMOTE=${remoteId}`);
+      args.push('--', container, '/bin/sh');
+      return { file: argv0[0], args: [...argv0.slice(1), ...args] };
     },
 
     // TIER 1 of the two-tier baseline probe: a daemon query, never a round trip
