@@ -810,3 +810,63 @@ test('resolveDockerCli answers per CODE_SYSTEM_DOCKER value, not once for the pr
   assert.deepEqual(second.cli, b.cli, 'a different override must be probed, not served from the memo');
   assert.equal(second.serverVersion, '28.0.1');
 });
+
+// ── P1c: the held-open channel's plan (card 2026-0021) ──────────────
+
+// PINS the whole channel argv, including the ROUTING EVIDENCE. `CC_REMOTE` has
+// to ride the channel itself, not each op, because a channel op is written into
+// a shell that is already running — and on a host where every target may be the
+// same filesystem, "the command worked" is what a MISROUTE also looks like.
+//
+// It also pins that the argv is INVARIANT across every candidate op: no cwd, no
+// per-op env, no token. That invariance is the reason the plan needs no per-op
+// context and the reason the pool can key its buckets on the argv itself.
+test('channelPlan: the whole argv, with CC_REMOTE and no per-op context', () => {
+  const p = createDockerTransport({ cli: ['docker'] }).channelPlan(CONFIG, { remoteId: 'r1' });
+  assert.equal(p.file, 'docker');
+  assert.deepEqual(p.args, ['exec', '-i', '-w', '/', '-e', 'CC_REMOTE=r1', '--', 'app', '/bin/sh']);
+  assert.equal(p.args.includes('CC_EXEC_TOKEN'), false,
+    'the reap token is NEVER channel-wide: it rides as each op\'s own env prefix,'
+    + ' or reaping one op would kill the channel and every other op on it');
+});
+
+// PINS that the configured identity governs the channel exactly as it governs
+// every other docker action on the remote — a channel running as the image
+// default would silently serve ops as the wrong user.
+test('channelPlan: the configured identity becomes -u, and its absence emits no flag', () => {
+  const withUser = createDockerTransport({ cli: ['docker'] })
+    .channelPlan(WITH_USER, { remoteId: 'r1' });
+  assert.deepEqual(withUser.args, [
+    'exec', '-i', '-w', '/', '-u', 'node', '-e', 'CC_REMOTE=r1', '--', 'app', '/bin/sh',
+  ]);
+  const without = createDockerTransport({ cli: ['docker'] }).channelPlan(CONFIG, { remoteId: 'r1' });
+  assert.equal(without.args.includes('-u'), false);
+});
+
+// PINS that an UNROUTED channel carries no `CC_REMOTE=` at all rather than an
+// empty one — the same rule `spawnPlan` follows, so a bucket for the default
+// target cannot collide with one for a remote literally named ''.
+test('channelPlan: an unrouted channel carries no CC_REMOTE', () => {
+  const p = createDockerTransport({ cli: ['docker'] }).channelPlan(CONFIG, { remoteId: null });
+  assert.deepEqual(p.args, ['exec', '-i', '-w', '/', '--', 'app', '/bin/sh']);
+});
+
+// PINS that the CLI seam reaches the channel too: an operator whose docker needs
+// a prefix must not find the channel bypassing it.
+test('channelPlan: the whole docker invocation comes from the same seam as every other call', () => {
+  const p = createDockerTransport({ cli: ['sudo', '-n', 'docker'] }).channelPlan(CONFIG, { remoteId: 'r1' });
+  assert.equal(p.file, 'sudo');
+  assert.deepEqual(p.args.slice(0, 3), ['-n', 'docker', 'exec']);
+});
+
+// PINS THAT THE OTHER KINDS ARE UNTOUCHED. The channel is an OPTIONAL transport
+// affordance; `ssh` and `host` must be byte-identical after card 2026-0021, and
+// the way that is guaranteed is that they expose no `channelPlan` for the pool
+// to find.
+test('only `docker` offers a channelPlan; `ssh` and `host` expose none', async () => {
+  const { createSshTransport } = await import('../src/launcher/kinds/ssh.mjs');
+  const { createHostTransport } = await import('../src/launcher/kinds/host.mjs');
+  assert.equal(typeof createDockerTransport({ cli: ['docker'] }).channelPlan, 'function');
+  assert.equal(createSshTransport({ cli: ['ssh'] }).channelPlan, undefined);
+  assert.equal(createHostTransport({}).channelPlan, undefined);
+});

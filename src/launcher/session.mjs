@@ -12,7 +12,8 @@ import {
   CHUNK_BYTES, DEFAULT_KILL_GRACE_MS, MAX_FILE_BYTES, PROTOCOL_VERSION,
   REQUEST_FRAMES, classifySpawnError,
 } from './protocol.mjs';
-import { readFileOp, writeFileOp } from './fileops.mjs';
+import { admits } from './admission.mjs';
+import { readFileOp, shellQuote, writeFileOp } from './fileops.mjs';
 import { makeRunner } from './run.mjs';
 import { withinRoot } from './remotes.mjs';
 
@@ -47,6 +48,16 @@ export class Session {
   #warn;
   #version;
   #reapDeadlineMs;
+  // The held-open channel pool, or null for a kind that offers none (and for
+  // every launcher run with CODE_SYSTEM_CHANNEL=0). Owned by main.mjs, closed
+  // here at shutdown.
+  #channels;
+  // ONE-SHOT. Admission failing closed is safe and SILENT, and this is a
+  // performance change: if cc changes one flag in a derivation, that row
+  // de-admits, every op quietly returns to the per-op spawn, and every test
+  // still passes. So the first frame that is unambiguously a cc derivation and
+  // matches no row says so, once, on the stderr surface cc already tails.
+  #driftWarned = false;
 
   #execs = new Map();
   #writes = new Map();
@@ -65,7 +76,7 @@ export class Session {
     // DIAGNOSTIC, never fatal and never a frame. Everything but frames goes to
     // stderr, of which cc keeps a bounded tail (MUST 1).
     warn = (msg) => { try { process.stderr.write(`${msg}\n`); } catch { /* nobody listening */ } },
-    version = '0.1.0', reapDeadlineMs = REAP_DEADLINE_MS,
+    version = '0.1.0', reapDeadlineMs = REAP_DEADLINE_MS, channels = null,
   }) {
     this.#transport = transport;
     this.#source = source;
@@ -75,6 +86,7 @@ export class Session {
     this.#warn = warn;
     this.#version = version;
     this.#reapDeadlineMs = reapDeadlineMs;
+    this.#channels = channels;
   }
 
   // Frames are handled STRICTLY IN ARRIVAL ORDER. Resolving a remote is an
@@ -195,6 +207,12 @@ export class Session {
       token,
     };
 
+    // THE HELD-OPEN CHANNEL, when this frame is one of cc's own derivations and
+    // a channel is idle. Everything else — every user command, every frame
+    // carrying a deadline or a real cwd, and `removeTree` — falls through to the
+    // per-op spawn below, unchanged.
+    if (this.#channels && this.#routeToChannel(f, id, remote, req)) return;
+
     let plan;
     try { plan = this.#transport.spawnPlan(remote?.config ?? {}, req); }
     catch (e) { this.#fail(id, classifySpawnError(e), errMsg(e)); return; }
@@ -308,10 +326,147 @@ export class Session {
     }
   }
 
+  /**
+   * Try to put this `exec` frame on a channel. Answers whether it went.
+   *
+   * REFUSING IS FREE AND IS THE DEFAULT: `admits` fails closed, and a frame the
+   * pool has no idle channel for is refused synchronously, so nothing here can
+   * ever make a frame slower than the spawn path it falls back to.
+   */
+  #routeToChannel(f, id, remote, req) {
+    const verdict = admits(f);
+    if (!verdict.ok) {
+      if (verdict.drift) this.#warnDrift(f.argv);
+      return false;
+    }
+    const state = {
+      // What tells every other method on this class that there is no host-side
+      // child to signal: the op lives in a shell that is already running, and
+      // the only thing that reaches it is the kind's reap relay.
+      channel: true,
+      seq: 0,
+      timer: null,
+      killTimer: null,
+      timedOut: false,
+      // ALWAYS, for the same reason `docker`'s spawnPlan is never `detached`:
+      // nothing we can signal from here reaches the far side's process tree, so
+      // every result we terminated must say descendants may survive.
+      orphaned: false,
+      closed: false,
+      terminated: false,
+      head: '',
+      errHead: '',
+      detached: false,
+      config: remote?.config ?? {},
+      handle: { pid: null, token: req.token, remoteId: remote?.remoteId ?? null },
+      killGraceMs: typeof f.killGraceMs === 'number' ? f.killGraceMs : DEFAULT_KILL_GRACE_MS,
+    };
+    // The argv becomes a script through the same quoter fileops.mjs uses, so the
+    // channel runner has ONE input shape — identical to `makeRunner`'s
+    // `['/bin/sh','-c',script]`. A path containing a quote or a newline is safe:
+    // it sits inside the quoted operand.
+    const script = verdict.argv.map(shellQuote).join(' ');
+    const run = this.#channels.tryRun({
+      config: state.config,
+      remoteId: state.handle.remoteId,
+      script,
+      token: req.token,
+      // STREAMED, not collected: the frames go out as the bytes arrive, exactly
+      // as the spawn path's stream handlers do, so a large `readDir` is not
+      // materialised here.
+      collect: false,
+      onStdout: (b) => this.#channelChunk(id, state, 'stdout', b),
+      onStderr: (b) => this.#channelChunk(id, state, 'stderr', b),
+    });
+    if (!run) return false;
+    this.#execs.set(id, state);
+    void this.#channelSettle(id, state, run);
+    return true;
+  }
+
+  #channelChunk(id, state, type, b) {
+    const head = type === 'stdout' ? 'head' : 'errHead';
+    if (state[head].length < HEAD_BYTES) {
+      state[head] = (state[head] + b.toString('utf8')).slice(0, HEAD_BYTES);
+    }
+    if (!state.closed) this.#write({ type, id, seq: state.seq++, dataB64: b.toString('base64') });
+  }
+
+  // The channel's equivalent of the spawn path's `close` handler, and it answers
+  // the same three questions in the same order: is the id still ours, is this
+  // the TRANSPORT's failure or the command's, and does the far side need reaping.
+  async #channelSettle(id, state, run) {
+    let res = null;
+    let err = null;
+    try { res = await run; }
+    catch (e) { err = e; }
+    if (state.closed) {
+      // `close`, `detach` or shutdown got here first. They own the reap.
+      return;
+    }
+    state.closed = true;
+    if (state.timer) clearTimeout(state.timer);
+    if (state.killTimer) clearTimeout(state.killTimer);
+    this.#execs.delete(id);
+    if (err) {
+      // THE CHANNEL DIED WITH THIS OP IN FLIGHT. `ETRANSPORT` and never a
+      // retry: cc's `#derive` reads it through `spawnErrorCode` and keeps it out
+      // of the errno classifier, which is what stops a mutating derivation that
+      // LANDED being re-run and reported as `EEXIST`.
+      this.#fail(id, err?.code ?? 'ETRANSPORT', errMsg(err));
+      return;
+    }
+    const verdict = res.code !== 0 && !state.timedOut && !state.terminated
+      ? this.#transport.classifyFailure?.(state.config, {
+          code: res.code, stdout: state.head, stderr: state.errHead,
+        })
+      : null;
+    if (verdict) {
+      this.#fail(id, verdict.code, verdict.message, {
+        exitCode: res.code,
+        ...(verdict.stderr ? { stderr: verdict.stderr } : {}),
+      });
+    } else {
+      this.#write({
+        type: 'exit',
+        id,
+        code: state.timedOut ? 124 : res.code,
+        signal: null,
+        timedOut: state.timedOut,
+        ...(state.orphaned ? { descendantsMaySurvive: true } : {}),
+      });
+    }
+  }
+
+  // ONE LINE, ONCE PER SESSION. A frame that passes the envelope AND opens
+  // `['env','LC_ALL=C',…]` is a cc derivation by construction — nothing a user
+  // command can produce reaches that shape — so matching no row is unambiguously
+  // cc-side drift rather than "something was refused". Silent in the healthy
+  // case, and it names the file to edit.
+  #warnDrift(argv) {
+    if (this.#driftWarned) return;
+    this.#driftWarned = true;
+    this.#warn('code-system launcher: a derivation-shaped exec matched no admission row and took'
+      + ' the per-op spawn path — the table in src/launcher/admission.mjs may no longer match this'
+      + ` cc: ${JSON.stringify(argv)}`);
+  }
+
   // SIGTERM now, SIGKILL after the grace — a script that traps or ignores
   // SIGTERM would otherwise never die.
   #terminate(state, signal, group) {
     state.terminated = true;
+    // A CHANNEL OP HAS NO HOST-SIDE CHILD AT ALL. It is a command inside a shell
+    // that is already running, so there is nothing here to signal and the kill
+    // has to go the only way it can: the kind's reap relay, by this op's own
+    // token. That relay reaches the op's whole process tree and NOT the channel
+    // — which is the whole reason the token rides as the command's env prefix —
+    // so the channel survives, the op settles with its sentinel, and the slot is
+    // returned to the pool.
+    if (state.channel) {
+      state.orphaned = true;
+      void this.#reap(state);
+      return;
+    }
     const reach = group && state.detached;
     // Without group reach we terminated the direct child only, so grandchildren
     // may still be running and every result we terminated must say so.
@@ -351,7 +506,10 @@ export class Session {
       if (state.killTimer) clearTimeout(state.killTimer);
       this.#execs.delete(id);
       this.#terminate({ ...state, closed: false }, 'SIGKILL', true);
-      void this.#reap(state);
+      // `#terminate` already reaped a CHANNEL op — that relay IS its kill, not a
+      // follow-up to one — so a second call here would only cost another round
+      // trip into the container.
+      if (!state.channel) void this.#reap(state);
     }
     this.#writes.delete(id);
     // `close` means cc has stopped listening: kill the command HARD, then let
@@ -423,6 +581,12 @@ export class Session {
     const runner = makeRunner(this.#transport, op.config, handle.remoteId, {
       token,
       onSpawn: (child) => { handle.pid = child.pid ?? null; },
+      // ADMITTED BY PROVENANCE, not by inspection. These scripts are authored by
+      // fileops.mjs itself — nothing frame-supplied reaches them except as a
+      // quoted operand — and they background nothing, so the `exit`-frame hazard
+      // (a survivor holding stdout open) cannot arise. `pid` stays null; `reap`
+      // works by token, not by pid.
+      channels: this.#channels,
     });
     return { op, runner };
   }
@@ -582,11 +746,14 @@ export class Session {
       if (state.timer) clearTimeout(state.timer);
       if (state.killTimer) clearTimeout(state.killTimer);
       // The host-side child (its group where the kind detached it) goes first,
-      // then the kind reaps whatever it left on the far side.
-      try {
-        if (state.detached && state.child.pid) process.kill(-state.child.pid, 'SIGKILL');
-        else state.child.kill('SIGKILL');
-      } catch { /* already gone */ }
+      // then the kind reaps whatever it left on the far side. A CHANNEL op has
+      // no host-side child; the reap is the whole of its kill.
+      if (!state.channel) {
+        try {
+          if (state.detached && state.child.pid) process.kill(-state.child.pid, 'SIGKILL');
+          else state.child.kill('SIGKILL');
+        } catch { /* already gone */ }
+      }
       pending.push(this.#reap(state));
     }
     this.#execs.clear();
@@ -598,6 +765,20 @@ export class Session {
       pending.push(this.#reap(op));
     }
     this.#fileOps.clear();
+    if (this.#channels) {
+      // THE CENSUS LINE: one line beside the reap warnings already emitted here,
+      // answering "was the channel carrying ops" for any session that ended
+      // cleanly. `channels` counts channels that OPENED — a target whose channel
+      // could never be started reports 0 and every op took the spawn path.
+      const c = this.#channels.stats();
+      this.#warn(`code-system launcher: channel carried ${c.carried} of ${c.admitted}`
+        + ` admitted ops on ${c.channels} channels`);
+      // The channels themselves need no reap token: a shell blocked on a
+      // `docker exec`'s stdin dies with its host client (measured), and closing
+      // stdin ends it cleanly. In-flight channel OPS are reaped above, by their
+      // own per-op tokens.
+      this.#channels.close();
+    }
     if (pending.length === 0) return;
     await Promise.race([Promise.allSettled(pending), sleep(this.#reapDeadlineMs)]);
   }

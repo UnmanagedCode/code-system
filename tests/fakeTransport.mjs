@@ -26,6 +26,17 @@ export function createTransport(opts = {}) {
 
     validateConfig(raw) { return { ok: true, config: raw && typeof raw === 'object' ? raw : {} }; },
 
+    // OPT-IN, by env var, so every existing `--kind fake` test stays
+    // byte-identical: without it the launcher builds no pool at all and nothing
+    // about the channel is in play. With it, the channel is this machine's own
+    // `/bin/sh` — which is exactly what `docker exec -i <container> /bin/sh`
+    // hands the pool, minus the container.
+    ...(process.env.CODE_SYSTEM_FAKE_CHANNEL === '1' ? {
+      channelPlan(_config, { remoteId = null } = {}) {
+        return { file: '/bin/sh', args: [], env: execEnv(null, remoteId) };
+      },
+    } : {}),
+
     spawnPlan(_config, req) {
       const [file, args] = req.shell !== null
         ? ['bash', ['-lc', req.shell]]
