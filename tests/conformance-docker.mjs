@@ -27,7 +27,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { PROBE_SCRIPT, parseProbeOutput } from '../src/baseline.mjs';
-import { CHANNEL_ENV } from '../src/launcher/channel.mjs';
+import { CHANNEL_ENV, channelEnabled } from '../src/launcher/channel.mjs';
 import { createTransport } from '../src/launcher/kinds/index.mjs';
 import { makeRunner } from '../src/launcher/run.mjs';
 import { LAUNCHER_MAIN } from '../src/paths.mjs';
@@ -398,7 +398,15 @@ async function main() {
   const problems = compareOutcomes(report.tests);
   // A FOURTH GUARD, and the only one reading a surface cc never shows: the
   // launcher's own stderr.
-  const diag = readLauncherDiagnostics(await fs.readFile(launcherLog, 'utf8').catch(() => ''));
+  //
+  // `expectCensus` uses THE LAUNCHER'S OWN PREDICATE over the same variable the
+  // arm exported, so the runner cannot disagree with the launchers it spawned
+  // about whether a pool was built — and an on-arm whose log holds no census at
+  // all reds instead of reporting a drift-free run it has no evidence for.
+  const diag = readLauncherDiagnostics(
+    await fs.readFile(launcherLog, 'utf8').catch(() => ''),
+    { expectCensus: channelEnabled(process.env) },
+  );
 
   log('');
   log(`${SCRIPT}: ${report.tally.pass ?? '?'} pass / ${report.tally.fail ?? '?'} fail`
@@ -444,8 +452,14 @@ async function main() {
       + ' reported a condition no outcome in the battery can show');
     return 1;
   }
+  // THE VERDICT NAMES ONLY WHAT THIS ARM COULD OBSERVE. With the channel off no
+  // pool is built, so `admits` is never consulted and the drift alarm cannot
+  // fire — claiming it was silent there would assert a fact the arm has no
+  // evidence for, which is the failure the census check above exists to catch.
   log(`\n${SCRIPT}: OK — every unlisted row passed, every listed row produced exactly its`
-    + ' recorded outcome, and the launcher raised no admission-drift alarm');
+    + ' recorded outcome' + (diag.sessions > 0
+      ? `, and ${diag.sessions} launcher sessions reported a census with no admission-drift alarm`
+      : ' (channel off: no pool, so no admission table to drift)'));
   return 0;
 }
 

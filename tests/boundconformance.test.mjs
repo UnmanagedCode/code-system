@@ -265,6 +265,25 @@ test('a census line whose format moved is reported, not skipped', () => {
   assert.match(d.problems[0], /cannot parse — the line format moved/);
 });
 
+// PINS: THE GUARD CAN DETECT ITS OWN DEAFNESS. The whole alarm rests on a
+// redirect in tests/conformance-docker.mjs putting the launcher's stderr in a
+// file; remove it, or let the read path drift from the path handed to the shell,
+// and the log is empty, every check here passes vacuously, and the arm still
+// prints "the launcher raised no admission-drift alarm" — asserting a positive
+// fact it no longer has evidence for. An arm that RAN a channel and reports no
+// census at all is therefore red.
+test('an arm that expects a census and finds none is red, not silently deaf', () => {
+  for (const text of ['', '   \n\n', 'code-system launcher (docker): something diagnostic']) {
+    const d = readLauncherDiagnostics(text, { expectCensus: true });
+    assert.equal(d.problems.length, 1, `deafness must be loud for ${JSON.stringify(text)}`);
+    assert.match(d.problems[0], /no census line at all/);
+  }
+  // A census present, and the same log is silent.
+  assert.deepEqual(readLauncherDiagnostics(censusLine(4, 4, 1), { expectCensus: true }).problems, []);
+  // The channel-off arm builds no pool, so it expects none and must stay silent.
+  assert.deepEqual(readLauncherDiagnostics('').problems, []);
+});
+
 // PINS: everything else in the log is passed through DEDUPED, so the runner can
 // print it. This is what replaces cc's own bounded stderr tail, which the
 // redirect takes away — an ETRANSPORT message no longer quotes one.

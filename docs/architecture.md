@@ -849,8 +849,13 @@ addresses are unchanged) and reads it back with
    construction, so matching no row is unambiguously drift rather than "something
    was refused". The text is `ADMISSION_DRIFT_WARNING` in
    `src/launcher/session.mjs`, which both the emitter and the reader import, and
-   its presence in either arm fails `npm run conformance:docker`. A deliberate
-   exclusion (`removeTree`) and an ordinary user command emit nothing.
+   its presence fails `npm run conformance:docker`. **Only the channel-ON arm can
+   raise it**: with `CODE_SYSTEM_CHANNEL=0` `createChannelPool` answers null, so
+   `Session` never consults `admits` at all and the off arm's log can never carry
+   the line. One arm of coverage, not two — which is why that arm also reds when
+   its log holds no census, rather than reporting a drift-free run it has no
+   evidence for. A deliberate exclusion (`removeTree`) and an ordinary user
+   command emit nothing.
 2. **The census line, once, in `shutdown()`:**
    `channel carried <n> of <m> admitted ops on <k> channels`. `m` counts ops
    OFFERED to the pool; `k` counts channels that opened, so a target whose
@@ -1298,9 +1303,11 @@ pass** under the battery's own fixtures. (48 pass in total; 7 of those exercise 
 provider of ours. Three further rows reach the transport and FAIL on its
 behaviour — buckets 3 and 4 below — so 44 reach it at all.)
 
-**And what the channel carried while doing it**, from the run's own census:
-111–114 of 139 admitted ops on 24–25 channels across 46 launcher sessions, with
-no admission-drift alarm. The channel-off arm reports no census and produces the
+**And what the channel carried while doing it**, summed from the census lines of
+one arm — cc launches a provider per connection and each prints one at shutdown,
+**46 of them per run**: 111–114 of 139 admitted ops on 24–25 channels, with no
+admission-drift alarm. (Four runs; the session count was 46 in every one, the
+carried figure moved within that range.) The channel-off arm reports no census and produces the
 same 63-row outcome table.
 
 **The 15 rows that do not pass, in four buckets:**

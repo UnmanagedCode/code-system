@@ -160,7 +160,8 @@ export const EXPECTED = [
   //
   // WHAT BREAKS THE ROW IS raw != trimmed, NOT the size or the line ending. The
   // diagnostic's length is a function of the argv it quotes (here the suite's
-  // 33-character fixture binary name), and the trailing bytes were CRLF on that
+  // 32-character fixture binary name, `definitely-not-a-real-binary-xyz`), and
+  // the trailing bytes were CRLF on that
   // daemon — but a bare `\n` would fail this assertion identically, and the
   // canned samples in tests/dockerkind.test.mjs all end `\n`. Do not restate
   // either as a property of the failure.

@@ -21,12 +21,14 @@ out-of-loop). A bound `docker` run, **identical on both channel arms**:
 | fail | **11** — 2 capability, 6 flag, 2 a real defect (below), 1 close's reap reach (card 2026-0019) |
 | skip | **4** — exactly the `IS_REFERENCE_PROVIDER` set in [host-kind-and-conformance.md](host-kind-and-conformance.md) |
 
-**What the channel carried while producing that table**, from the run's own
-census (`channel carried <n> of <m> admitted ops on <k> channels`, summed across
-the arm's launcher sessions): **111–114 of 139 admitted ops on 24–25 channels
-across 46 sessions** over four runs, with no admission-drift alarm. The carried
-figure moves a little run to run — a channel retired mid-run sends the op that
-retired it down the spawn path — so read the range, not a single number. The channel-off arm builds no pool,
+**What the channel carried while producing that table.** Each launcher prints one
+census line at shutdown (`channel carried <n> of <m> admitted ops on <k>
+channels`), and cc launches a provider per connection, so **one arm's run
+produces 46 of them** — a figure that was 46 in every one of four runs. Summed
+per run: **111–114 of 139 admitted ops on 24–25 channels**, with no
+admission-drift alarm. The carried figure moves a little run to run — a channel
+retired mid-run sends the op that retired it down the spawn path — so read the
+range, not a single number. The channel-off arm builds no pool,
 reports no census, and produces the same 63-row table. That is what makes the
 invariance claim a measurement rather than an inference from the seam — and it
 is only readable because the runner redirects the launcher's stderr to a file of

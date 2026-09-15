@@ -33,11 +33,24 @@ const CENSUS_RE = new RegExp(`${CHANNEL_CENSUS_PREFIX} (\\d+) of (\\d+) admitted
  * a line skipped: a format change that silently emptied this parse would read
  * exactly like a run whose channel carried nothing.
  *
+ * `expectCensus` IS HOW THE GUARD DETECTS ITS OWN DEAFNESS, and it is not
+ * optional polish. Every check here is a search through text somebody else had
+ * to deliver: if the redirect in tests/conformance-docker.mjs is removed, or its
+ * read path drifts from the path handed to the shell, this function is handed an
+ * empty string, finds nothing, reports nothing, and the arm goes on printing
+ * "the launcher raised no admission-drift alarm" — a positive claim with no
+ * evidence behind it, which is exactly the failure the redirect exists to
+ * prevent. An arm that RAN a channel says so; one that reports no census at all
+ * has lost the stream, not found a quiet run.
+ *
  * @param {string} text everything the launchers of one arm wrote to stderr
+ * @param {{expectCensus?:boolean}} [opts] `true` for an arm whose launchers built
+ *   a channel pool, i.e. `channelEnabled(env)`. The channel-off arm builds none
+ *   (src/launcher/main.mjs), so its silence is correct and must stay silent.
  * @returns {{drift:string[], sessions:number, carried:number, admitted:number,
  *   channels:number, problems:string[], other:string[]}}
  */
-export function readLauncherDiagnostics(text) {
+export function readLauncherDiagnostics(text, { expectCensus = false } = {}) {
   const out = { drift: [], sessions: 0, carried: 0, admitted: 0, channels: 0, problems: [], other: [] };
   const lines = String(text ?? '').split('\n').map(l => l.trim()).filter(Boolean);
 
@@ -61,6 +74,13 @@ export function readLauncherDiagnostics(text) {
     out.carried += Number(m[1]);
     out.admitted += Number(m[2]);
     out.channels += Number(m[3]);
+  }
+
+  if (expectCensus && out.sessions === 0) {
+    out.problems.push('this arm ran with the channel ON and the launcher log holds no census line'
+      + ' at all — so nothing here was read from the launcher and the drift alarm below is'
+      + ' vacuous. The stderr redirect in tests/conformance-docker.mjs, or the path it is read'
+      + ' back from, has broken.');
   }
 
   for (const line of out.drift) {
