@@ -773,6 +773,245 @@ live('a container stopped out of band reads as not running, and the provider nev
     'the provider never mutated the container');
 });
 
+// ── L13: the held-open channel, against a real container (card 2026-0021) ──
+
+// cc's derivation envelope on the wire, and two of its rows.
+const DERIVE = (id, argv) => ({ type: 'exec', id, remoteId: 'alpha', cwd: '/', stdin: 'ignore', argv });
+const LSTAT = (id, p) => DERIVE(id, ['env', 'LC_ALL=C', 'find', p, '-maxdepth', '0', '-printf', '%y\\t%m\\t%s\\t%T@\\t%l\\n']);
+
+// The channel's own invocation, as the counting shim records it: the only
+// `docker exec` this provider ever makes with `-i -w /` and no per-op token.
+const isChannelCall = (c) => /^exec -i -w \/ /.test(c) && c.endsWith('/bin/sh');
+
+/** Every BARE `/bin/sh` in the container — i.e. every held-open channel. */
+async function bareShellCount(cli, container) {
+  const res = await inContainer(cli, container, [
+    'n=0',
+    'for d in /proc/[0-9]*; do',
+    '  c=$(tr \'\\0\' \'|\' < "$d/cmdline" 2>/dev/null)',
+    '  [ "$c" = "/bin/sh|" ] && n=$((n+1))',
+    'done',
+    'printf %s "$n"',
+  ].join('\n'));
+  if (res.code !== 0) throw new Error(`bareShellCount failed: ${res.stderr || res.stdout}`);
+  return Number(res.stdout.trim());
+}
+
+/**
+ * Drive admitted derivations until the channel is OPEN and idle, and answer how
+ * many docker invocations that cost. Deterministic: it polls the shim's own log
+ * rather than sleeping, and the caller measures from this point on.
+ */
+async function warmChannel(l, shim) {
+  for (let i = 0; i < 60; i++) {
+    l.send(LSTAT(`warm${i}`, '/tmp'));
+    const exit = await l.waitFor(f => f.type === 'exit' && f.id === `warm${i}`);
+    assert.equal(exit.code, 0, `warm ${i} must succeed`);
+    const calls = await shim.calls();
+    // The channel is open AND idle once a channel call exists and the op that
+    // triggered it has settled.
+    if (calls.some(isChannelCall) && i > 0) return calls.length;
+  }
+  throw new Error(`the channel never opened: ${JSON.stringify(await shim.calls())}`);
+}
+
+/** A named FIFO in the container, and a `readFile` that blocks for ever on it. */
+async function blockingFifo(t, cli, box, marker) {
+  const p = `/tmp/ccfifo-${marker}`;
+  const res = await inContainer(cli, box, `mkfifo ${p}`);
+  assert.equal(res.code, 0, `mkfifo failed: ${res.stderr}`);
+  t.after(() => inContainer(cli, box, `rm -f ${p}`));
+  return p;
+}
+
+// PINS THE SINGLE MEASUREMENT THE WHOLE DESIGN RESTS ON: per-op reap
+// granularity survives a SHARED channel. The token rides as the far-side
+// command's environment prefix, so `buildReapScript` — unmodified — kills that
+// op's whole process tree and nothing else. A channel-wide token would instead
+// kill the channel and every other op on it, and the design would be rejected.
+live('an op on a shared channel is reaped by its own token, and the channel survives', async (t, d) => {
+  const box = await withContainer(t, d.cli);
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  await writeRecord(store.dir, dockerRecord('alpha', box));
+  const dir = await tempDir(t);
+  const shim = await countingShim(dir, d.cli);
+  const marker = newMarker();
+  const fifo = await blockingFifo(t, d.cli, box, marker);
+
+  const l = launcherFor(t, store, shim.argv);
+  await l.hello();
+  const afterWarm = await warmChannel(l, shim);
+  assert.equal(await bareShellCount(d.cli, box), 1, 'exactly one channel is held open');
+
+  // A `readFile` of a FIFO with an explicit length: the far side blocks in
+  // `tail | head` until a writer appears, which never happens. It rides the
+  // channel (its script comes from fileops.mjs, admitted by provenance) and it
+  // is the only op on it.
+  l.send({ type: 'readFile', id: 'blocked', remoteId: 'alpha', path: fifo, length: 1_000_000 });
+  assert.equal(await settle(async () => (await markerCount(d.cli, box, marker)) > 0), true,
+    'the blocked op must really be running in the container before the reap is asserted');
+  assert.equal(await shim.calls().then(c => c.length), afterWarm,
+    'and it cost NO docker invocation of its own — it rode the channel');
+
+  l.send({ type: 'close', id: 'blocked' });
+  assert.equal(await settle(async () => (await markerCount(d.cli, box, marker)) === 0), true,
+    "the op's own container-side tree is reaped");
+  assert.equal(await bareShellCount(d.cli, box), 1,
+    'and the CHANNEL SHELL IS UNTOUCHED — the whole point of the per-op env prefix');
+
+  // The reaped op settles with its sentinel, so the slot goes back to the pool
+  // and the next op rides the SAME channel rather than a replacement — at a cost
+  // of ZERO further docker invocations. (`before` is taken after the reap, whose
+  // own relay is a `docker exec` this provider legitimately makes.)
+  const before = await shim.calls().then(c => c.length);
+  l.send(LSTAT('after', '/tmp'));
+  const exit = await l.waitFor(f => f.type === 'exit' && f.id === 'after');
+  assert.equal(exit.code, 0, 'the channel still serves ops after a reap');
+  assert.equal(await shim.calls().then(c => c.length), before,
+    'and it cost nothing: the same channel served it');
+});
+
+// PINS "0 PROVIDERS LEFT IN BOX" for the channel itself. A `docker exec` child
+// is not an OS descendant, so a provider that exits without closing would leak
+// one idle `/bin/sh` per container per generation — the rig's measured standard.
+live('a launcher that ends leaves no held-open shell in the container', async (t, d) => {
+  const box = await withContainer(t, d.cli);
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  await writeRecord(store.dir, dockerRecord('alpha', box));
+  const dir = await tempDir(t);
+  const shim = await countingShim(dir, d.cli);
+
+  const l = launcherFor(t, store, shim.argv);
+  await l.hello();
+  await warmChannel(l, shim);
+  assert.ok(await bareShellCount(d.cli, box) > 0, 'a channel is held open before the shutdown');
+
+  l.closeStdin();
+  const { code } = await l.exited;
+  assert.equal(code, 0);
+  assert.equal(await settle(async () => (await bareShellCount(d.cli, box)) === 0), true,
+    'no channel survives the provider that opened it');
+  assert.match(l.stderr, /channel carried \d+ of \d+ admitted ops on \d+ channels/,
+    'and the census line says what it carried');
+});
+
+// PINS THAT ADMISSION IS NOT DEAD CODE, end to end and by COUNT: once a channel
+// is open, admitted derivations cost ZERO docker invocations. Deterministic —
+// the warm-up polls the shim's own log, and the count is taken from that point.
+live('once the channel is open, admitted derivations cost no docker invocation at all', async (t, d) => {
+  const box = await withContainer(t, d.cli);
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  await writeRecord(store.dir, dockerRecord('alpha', box));
+  const dir = await tempDir(t);
+  const shim = await countingShim(dir, d.cli);
+
+  const l = launcherFor(t, store, shim.argv);
+  await l.hello();
+  const baseline = await warmChannel(l, shim);
+
+  for (let i = 0; i < 10; i++) {
+    l.send(LSTAT(`n${i}`, '/tmp'));
+    const exit = await l.waitFor(f => f.type === 'exit' && f.id === `n${i}`);
+    assert.equal(exit.code, 0, `stderr=${textOf(l.frames, `n${i}`, 'stderr')}`);
+    assert.match(textOf(l.frames, `n${i}`), /^d\t/, 'and the answer is really find\'s');
+  }
+  const calls = await shim.calls();
+  assert.equal(calls.length, baseline,
+    `ten admitted ops on an open channel cost nothing: ${JSON.stringify(calls.slice(baseline))}`);
+  assert.equal(calls.filter(isChannelCall).length, 1, 'and exactly one channel was ever opened');
+});
+
+// PINS THAT THE REFUSED PATH IS TODAY'S PATH. `removeTree` is excluded by name
+// and a `shell` frame fails the envelope, so each must still cost its own
+// `docker exec` — the fallback is real, not a claim.
+live('a removeTree and a shell frame each still cost their own docker exec', async (t, d) => {
+  const box = await withContainer(t, d.cli);
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  await writeRecord(store.dir, dockerRecord('alpha', box));
+  const dir = await tempDir(t);
+  const shim = await countingShim(dir, d.cli);
+
+  const l = launcherFor(t, store, shim.argv);
+  await l.hello();
+  const baseline = await warmChannel(l, shim);
+
+  l.send(DERIVE('rt', ['env', 'LC_ALL=C', 'rm', '-rf', '--', '/tmp/cc-nothing-here']));
+  assert.equal((await l.waitFor(f => f.type === 'exit' && f.id === 'rt')).code, 0);
+  l.send({ type: 'exec', id: 'sh', remoteId: 'alpha', cwd: '/tmp', shell: 'printf shell' });
+  assert.equal((await l.waitFor(f => f.type === 'exit' && f.id === 'sh')).code, 0);
+
+  const calls = (await shim.calls()).slice(baseline);
+  assert.equal(calls.length, 2, `one docker exec each, and no more: ${JSON.stringify(calls)}`);
+  assert.equal(calls.some(isChannelCall), false, 'neither opened a second channel');
+});
+
+// PINS THE FAILURE ASYMMETRY at the box: the in-flight op fails `ETRANSPORT`
+// (never a retry — a mutating op that LANDED must not run twice), and the next
+// frame is served on a fresh channel with no second backoff layer of our own.
+live('killing the container-side channel shell fails the in-flight op with ETRANSPORT', async (t, d) => {
+  const box = await withContainer(t, d.cli);
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  await writeRecord(store.dir, dockerRecord('alpha', box));
+  const dir = await tempDir(t);
+  const shim = await countingShim(dir, d.cli);
+  const marker = newMarker();
+  const fifo = await blockingFifo(t, d.cli, box, marker);
+
+  const l = launcherFor(t, store, shim.argv);
+  await l.hello();
+  await warmChannel(l, shim);
+
+  l.send({ type: 'readFile', id: 'doomed', remoteId: 'alpha', path: fifo, length: 1_000_000 });
+  assert.equal(await settle(async () => (await markerCount(d.cli, box, marker)) > 0), true,
+    'the op must be in flight on the channel before the channel is killed');
+
+  // Kill the CHANNEL SHELL itself — every bare `/bin/sh` in the container.
+  await inContainer(d.cli, box, [
+    'for d in /proc/[0-9]*; do',
+    '  c=$(tr \'\\0\' \'|\' < "$d/cmdline" 2>/dev/null)',
+    '  [ "$c" = "/bin/sh|" ] && kill -9 "${d#/proc/}" 2>/dev/null',
+    'done; true',
+  ].join('\n'));
+
+  const err = await l.waitFor(f => f.type === 'error' && f.id === 'doomed');
+  assert.equal(err.code, 'ETRANSPORT',
+    'a dead channel is a TRANSPORT failure, kept out of cc\'s errno classifier');
+
+  l.send(LSTAT('next', '/tmp'));
+  assert.equal((await l.waitFor(f => f.type === 'exit' && f.id === 'next')).code, 0,
+    'and the very next frame is served, on the spawn path or a fresh channel');
+});
+
+// PINS that `classifyFailure`'s operator-facing message is not lost to the
+// channel. A stopped container must still answer ENOREMOTE saying the provider
+// is attach-only — which is the answer that tells someone what to do — rather
+// than the ETRANSPORT the dead channel produced.
+live('a container stopped under an open channel still answers ENOREMOTE', async (t, d) => {
+  const box = await withContainer(t, d.cli);
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  await writeRecord(store.dir, dockerRecord('alpha', box));
+  const dir = await tempDir(t);
+  const shim = await countingShim(dir, d.cli);
+
+  const l = launcherFor(t, store, shim.argv);
+  await l.hello();
+  await warmChannel(l, shim);
+
+  // THE FIXTURE stops the container; the provider never may.
+  assert.equal((await run([...d.cli, 'stop', '-t', '0', box])).code, 0);
+
+  l.send(LSTAT('afterstop', '/tmp'));
+  const err = await l.waitFor(f => f.type === 'error' && f.id === 'afterstop');
+  assert.equal(err.code, 'ENOREMOTE', `got ${JSON.stringify(err)}`);
+  assert.match(err.message, /ATTACH-ONLY/);
+});
+
 // ── registration, and the count proof ────────────────────────────────
 
 let ran = 0;
