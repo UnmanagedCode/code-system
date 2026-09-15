@@ -35,6 +35,14 @@ export const REAP_DEADLINE_MS = 1500;
 // diagnostics it reads are a single short line arriving before anything else.
 const HEAD_BYTES = 512;
 
+// THE TWO DIAGNOSTIC LINES A BOUND RUN READS BACK, and the only reason they are
+// constants: `tests/conformance-docker.mjs` matches on them to turn admission
+// drift into a red run, and it must match the text this file writes rather than
+// a copy of it.
+export const ADMISSION_DRIFT_WARNING =
+  'a derivation-shaped exec matched no admission row and took the per-op spawn path';
+export const CHANNEL_CENSUS_PREFIX = 'channel carried';
+
 const sleep = (ms) => new Promise(r => setTimeout(r, ms).unref?.());
 
 function errMsg(e) { return e instanceof Error ? e.message : String(e); }
@@ -56,7 +64,10 @@ export class Session {
   // performance change: if cc changes one flag in a derivation, that row
   // de-admits, every op quietly returns to the per-op spawn, and every test
   // still passes. So the first frame that is unambiguously a cc derivation and
-  // matches no row says so, once, on the stderr surface cc already tails.
+  // matches no row says so, once, on the launcher's stderr — which cc keeps only
+  // a bounded tail of and prints only when the provider dies, so the bound run
+  // redirects that stream to a file of its own and reads the alarm there
+  // (tests/conformance-docker.mjs).
   #driftWarned = false;
 
   #execs = new Map();
@@ -448,9 +459,8 @@ export class Session {
   #warnDrift(argv) {
     if (this.#driftWarned) return;
     this.#driftWarned = true;
-    this.#warn('code-system launcher: a derivation-shaped exec matched no admission row and took'
-      + ' the per-op spawn path — the table in src/launcher/admission.mjs may no longer match this'
-      + ` cc: ${JSON.stringify(argv)}`);
+    this.#warn(`code-system launcher: ${ADMISSION_DRIFT_WARNING} — the table in`
+      + ` src/launcher/admission.mjs may no longer match this cc: ${JSON.stringify(argv)}`);
   }
 
   // SIGTERM now, SIGKILL after the grace — a script that traps or ignores
@@ -773,7 +783,7 @@ export class Session {
       // cleanly. `channels` counts channels that OPENED — a target whose channel
       // could never be started reports 0 and every op took the spawn path.
       const c = this.#channels.stats();
-      this.#warn(`code-system launcher: channel carried ${c.carried} of ${c.admitted}`
+      this.#warn(`code-system launcher: ${CHANNEL_CENSUS_PREFIX} ${c.carried} of ${c.admitted}`
         + ` admitted ops on ${c.channels} channels`);
       // The channels themselves need no reap token: a shell blocked on a
       // `docker exec`'s stdin dies with its host client (measured), and closing
