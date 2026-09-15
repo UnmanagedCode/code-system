@@ -12,12 +12,20 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ChannelPool, buildOpCommand } from '../src/launcher/channel.mjs';
-import { makeNonce } from '../src/launcher/fileops.mjs';
+import { makeNonce, readFileOp, writeFileOp } from '../src/launcher/fileops.mjs';
+import { makeRunner } from '../src/launcher/run.mjs';
 
 // A Transport offering a channel that is just this machine's `/bin/sh` — which
 // is exactly what `docker exec -i <container> /bin/sh` hands the pool, minus
 // the container.
-const shTransport = { kind: 'fake', channelPlan() { return { file: '/bin/sh', args: [] }; } };
+// It also carries a `spawnPlan`, so `makeRunner`'s fall-through is a real path
+// rather than a throw — the tests that drive the production `fileops` entry
+// points need both halves to exist.
+const shTransport = {
+  kind: 'fake',
+  channelPlan() { return { file: '/bin/sh', args: [] }; },
+  spawnPlan(_config, req) { return { file: req.argv[0], args: req.argv.slice(1) }; },
+};
 
 function pool(t, opts = {}) {
   const p = new ChannelPool({ transport: shTransport, ...opts });
@@ -166,6 +174,99 @@ test('a large stdin payload round-trips byte-exact', async (t) => {
   assert.deepEqual(res.stdout, payload);
 });
 
+// ── a payload op that does NOT drain its stdin ───────────────────────
+
+// A payload larger than a pipe buffer (64 KiB on Linux), so `head` provably
+// cannot have pumped all of it into the op before the op exits.
+const BIG = (() => {
+  const b = Buffer.alloc(256 * 1024);
+  for (let i = 0; i < b.length; i++) b[i] = (i * 7) % 251;
+  return b;
+})();
+
+// PINS THE INVARIANT A FAILED WRITE BREAKS: **a failed payload op is followed by
+// a successful op on the same pool.**
+//
+// The ready marker guarantees the payload is IN the pipe; nothing guarantees the
+// op CONSUMES it. Every refusal in `buildWriteScript` — the `EEXIST` pre-check,
+// the `set -C` noclobber failure, `ENOTDIR`/`ENOENT`/`EISDIR`/`EACCES`, and an
+// `ENOSPC` mid-decode — runs before or inside `base64 -d`, so `head` dies of
+// EPIPE with the remainder still unread. Those bytes then sit in the CHANNEL's
+// stdin, where the shell reads them as script text and fuses them with the next
+// op's command. The op that causes it reports correctly, so the damage surfaces
+// on an unrelated op later — the worst diagnostic shape there is.
+//
+// The boundary is nondeterministic (it depends on how much `head` pumped before
+// the EPIPE), so this pins the OUTCOME, not a threshold.
+test('a payload op that exits without draining its stdin does not poison the channel', async (t) => {
+  // Bounded, so a poisoned channel fails this test instead of hanging it.
+  const p = pool(t, { idleMs: 3_000 });
+  const failed = await onChannel(p, { script: 'exit 3', stdinData: BIG });
+  assert.equal(failed.code, 3, 'the op that caused it still reports correctly');
+
+  const after = await onChannel(p, { script: 'cat', stdinData: BIG });
+  assert.equal(after.code, 0, 'the NEXT op must not inherit the undrained remainder');
+  assert.deepEqual(after.stdout, BIG, 'and it must be byte-exact, not fused with leftovers');
+});
+
+// PINS THE SAME INVARIANT THROUGH THE PRODUCTION PATH, with the refusal
+// `docs/protocol.md` documents as the common one: `exclusive` against a file
+// that already exists. `writeFileOp` must answer `EEXIST` *and* leave the pool
+// able to serve the next `readFile`.
+test('a real EEXIST refusal at 256 KiB leaves the pool able to serve the next op', async (t) => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'code-system-chan-'));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+  const target = path.join(tmp, 'taken');
+  await fs.writeFile(target, 'already here\n');
+
+  const p = pool(t, { idleMs: 3_000 });
+  const warm = await until(() => p.tryRun({ ...REQ, script: ':' }));
+  assert.ok(warm, 'no channel became ready');
+  await warm;
+
+  const run = makeRunner(shTransport, {}, 'r1', { channels: p });
+  const before = p.stats().carried;
+  await assert.rejects(
+    writeFileOp(run, { path: target, data: BIG, exclusive: true }),
+    (e) => { assert.equal(e.code, 'EEXIST'); return true; },
+  );
+  assert.ok(p.stats().carried > before, 'the refused write really rode a channel');
+
+  const read = await readFileOp(run, { path: target });
+  assert.equal(read.data.toString('utf8'), 'already here\n',
+    'the next file operation is served correctly, not ETRANSPORT and not garbage');
+});
+
+// ── the watchdog counts STDIN progress, not only output ──────────────
+
+// PINS THE ONE EXCEPTION to "a slow op is a noisy op". Between the ready marker
+// and the sentinel a `writeFile` emits ZERO bytes on either stream BY
+// CONSTRUCTION — the whole transfer is on stdin — so an output-only watchdog is
+// structurally blind to it and would kill a healthy, progressing write mid
+// `base64 -d`, which for a non-atomic write leaves a TRUNCATED target. The timer
+// therefore also counts host-side stdin write progress.
+//
+// The fixture consumes 768 KiB in 32 KiB steps ~40 ms apart and prints nothing at
+// all until it is done — roughly a second of total silence on both streams,
+// against a 300 ms deadline it must outlive three times over.
+//
+// THE RESIDUAL SILENT WINDOW IS BOUNDED AND DOES NOT GROW WITH THE PAYLOAD.
+// After the host writes its last byte there is genuinely no signal left but the
+// sentinel, and the far side still has whatever the kernel pipes hold — at most
+// two pipe buffers, ~128 KiB — to digest. That tail is the same for a 1 KiB
+// write and a 32 MiB one, which is why bounding the TRANSFER is the whole of
+// what this needs.
+test('a large payload whose far side reads slowly is NOT killed, though it emits nothing', async (t) => {
+  const p = pool(t, { idleMs: 300 });
+  const payload = Buffer.alloc(768 * 1024, 0x61);
+  const res = await onChannel(p, {
+    script: 'i=0; while [ $i -lt 24 ]; do head -c 32768 > /dev/null; sleep 0.04; i=$((i+1)); done; printf drained',
+    stdinData: payload,
+  });
+  assert.equal(res.code, 0, 'a progressing write must outlive an output-only deadline');
+  assert.equal(res.stdout.toString(), 'drained');
+});
+
 // PINS the per-op reap handle. The token rides as the COMMAND's env prefix, so
 // the op's whole process tree carries it while the channel shell's own
 // environment does not — which is what keeps `buildReapScript` able to kill ONE
@@ -264,6 +365,83 @@ test('an op that never answers is failed at the idle deadline and the channel is
   assert.equal(p.tryRun({ ...REQ, script: ':' }), null, 'the wedged channel is gone, not left busy for ever');
   // AND THE POOL RECOVERS: the next op is served on a fresh channel.
   assert.equal((await onChannel(p, { script: 'printf recovered' })).stdout.toString(), 'recovered');
+});
+
+// PINS THE WATCHDOG'S OTHER HALF — "and the channel is RECLAIMED".
+//
+// A watchdog that failed the op but left the channel BUSY IN THE POOL for ever
+// passes every other test in this file: `tryRun` answers null either way, and
+// `stats().channels` is a monotonic open counter that cannot tell a reclaimed
+// slot from a wedged one. Wedged slots would accumulate to the cap and carriage
+// would silently stop — the card's win evaporating with nothing red.
+//
+// `maxPerTarget: 1` is what makes it discriminating: a wedged slot leaves no
+// room to grow into, so `carried` never moves again.
+test('after a watchdog reclaim the pool CARRIES again, not merely answers null', async (t) => {
+  const p = pool(t, { idleMs: 150, maxPerTarget: 1 });
+  const { run } = await dispatch(p, { script: 'exec sleep 5' });
+  await assert.rejects(run, (e) => e.code === 'ETRANSPORT');
+  const carriedBefore = p.stats().carried;
+
+  const res = await onChannel(p, { script: 'printf recovered' });
+  assert.equal(res.stdout.toString(), 'recovered');
+  assert.ok(p.stats().carried > carriedBefore,
+    'the reclaimed slot was reused: an op was CARRIED, not merely offered');
+  assert.equal(p.stats().channels, 2, 'and the wedged channel was replaced, not resurrected');
+});
+
+// ── lazy growth, and the cap ─────────────────────────────────────────
+
+// PINS LAZY GROWTH UNDER CONCURRENCY — the property the card was filed for, and
+// the one no other test models, because every other test's ops are sequential.
+//
+// Growth capped at one channel passes the whole docker-free suite while silently
+// putting every concurrent op back on the ~90 ms spawn path.
+test('an op arriving while the only channel is busy grows a second one in the background', async (t) => {
+  const p = pool(t, { maxPerTarget: 2 });
+  const { run: busy } = await dispatch(p, { script: 'sleep 1' });
+  assert.equal(p.stats().channels, 1, 'exactly one channel so far');
+  // A HAPPENS-BEFORE, not a clock: with growth capped at one the second op can
+  // only be served once the FIRST has finished, and this is what tells the two
+  // apart without measuring time.
+  let firstDone = false;
+  const settled = busy.then(() => { firstDone = true; }, () => { firstDone = true; });
+
+  // Concurrent, not queued: this MISSES (and must), and the miss is what asks
+  // the pool to grow.
+  assert.equal(p.tryRun({ ...REQ, script: ':' }), null, 'a busy pool never queues');
+
+  const carriedBefore = p.stats().carried;
+  const second = await until(() => p.tryRun({ ...REQ, script: 'printf parallel' }), 3_000);
+  assert.ok(second, 'a second channel must open while the first is still busy');
+  assert.equal(firstDone, false, 'and it was served CONCURRENTLY, not after the first finished');
+  const res = await second;
+  assert.equal(res.stdout.toString(), 'parallel');
+  assert.ok(p.stats().carried > carriedBefore, 'and the later op really rode it');
+  assert.equal(p.stats().channels, 2, 'exactly one channel was added');
+  await busy;
+  await settled;
+});
+
+// PINS THE CAP IN THE OTHER DIRECTION. With the ceiling deleted, a busy target
+// grows an unbounded number of held-open shells — one per miss — and no test in
+// this file notices.
+test('repeated misses against a busy pool never exceed the cap', async (t) => {
+  const p = pool(t, { maxPerTarget: 1 });
+  const { run: busy } = await dispatch(p, { script: 'sleep 1' });
+  assert.equal(p.stats().channels, 1);
+
+  // Miss hard for half a second — far longer than the ~15 ms an open takes, so
+  // an uncapped pool would have grown several by now.
+  const until500 = Date.now() + 500;
+  let misses = 0;
+  while (Date.now() < until500) {
+    if (p.tryRun({ ...REQ, script: ':' }) === null) misses += 1;
+    await new Promise(r => setTimeout(r, 10));
+  }
+  assert.ok(misses > 10, `the pool really was busy throughout: ${misses} misses`);
+  assert.equal(p.stats().channels, 1, 'the cap held: no second channel was opened');
+  await busy;
 });
 
 // PINS *IDLE*, NOT TOTAL ELAPSED — the distinction the whole constant rests on.

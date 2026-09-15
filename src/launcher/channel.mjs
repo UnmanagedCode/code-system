@@ -63,6 +63,13 @@ export const CHANNEL_IDLE_MS = 10_000;
 // A module constant, not a config knob.
 export const MAX_CHANNELS_PER_TARGET = 4;
 
+// How much of a stdin payload is handed to the channel at a time. It is not a
+// throughput knob — the whole payload could be written in one call — it is the
+// GRANULARITY OF PROGRESS the idle watchdog below sees. One `write` per pipe
+// buffer is the finest resolution the far side's reading can actually be
+// observed at.
+const PAYLOAD_CHUNK_BYTES = 64 * 1024;
+
 /**
  * Is the pool on? Off only for an explicit `0`, so an unset or unreadable
  * variable is the shipped behaviour.
@@ -354,6 +361,48 @@ export class ChannelPool {
     else this.#feedErr(ch, op, chunk);
   }
 
+  /**
+   * Hand the payload to the channel a pipe buffer at a time, RE-ARMING THE
+   * WATCHDOG on every accepted chunk and on every drain.
+   *
+   * THE WATCHDOG WOULD OTHERWISE BE STRUCTURALLY BLIND TO THIS PHASE. Between
+   * the ready marker and the sentinel a `writeFile` emits ZERO bytes on either
+   * stream by construction — the whole transfer is on stdin — so an output-only
+   * timer measures the far side's *silence* while it is in fact reading as fast
+   * as it can. On a slower daemon than the one `CHANNEL_IDLE_MS` was measured
+   * against, a large write would then be killed mid-`base64 -d`, and for a
+   * non-atomic write that leaves a TRUNCATED TARGET: worse than a spurious
+   * failure. Backpressure from the far side is the progress signal, so it is the
+   * one this reads.
+   */
+  #releasePayload(ch, op) {
+    let at = 0;
+    const pump = () => {
+      if (ch.dead || ch.op !== op || op.settled) return;
+      if (at >= op.stdinData.length) return;
+      const end = Math.min(at + PAYLOAD_CHUNK_BYTES, op.stdinData.length);
+      const chunk = op.stdinData.subarray(at, end);
+      at = end;
+      try {
+        // ONE CHUNK IN FLIGHT AT A TIME, and the WRITE CALLBACK — not `drain` —
+        // is the progress signal. `drain` fires when node's own buffer falls
+        // below its high-water mark, which for a payload node has already
+        // accepted whole is once, near the end; the per-chunk callback fires
+        // when THAT chunk reached the far side's pipe, which is exactly the far
+        // side reading. Queuing the next chunk only from the callback is also
+        // what makes backpressure fall out rather than be handled.
+        ch.proc.stdin.write(chunk, (err) => {
+          if (err || ch.dead || ch.op !== op || op.settled) return;
+          this.#arm(ch);
+          pump();
+        });
+      } catch (e) {
+        this.#kill(ch, `the payload could not be written: ${e?.message ?? e}`);
+      }
+    };
+    pump();
+  }
+
   #feedOut(ch, op, chunk) {
     let c = chunk;
     if (op.rdy && !op.rdy.seen) {
@@ -363,8 +412,7 @@ export class ChannelPool {
       // THE HANDSHAKE'S SECOND HALF: the shell has parsed the whole command and
       // its input buffer is empty, so the bytes written now are the ones
       // `head -c <n>` will read.
-      try { ch.proc.stdin.write(op.stdinData); }
-      catch (e) { this.#kill(ch, `the payload could not be written: ${e?.message ?? e}`); return; }
+      this.#releasePayload(ch, op);
     }
     if (!op.out.seen) {
       const emit = op.out.push(c);
@@ -404,12 +452,33 @@ export class ChannelPool {
     if (ch.timer) { clearTimeout(ch.timer); ch.timer = null; }
     ch.busy = false;
     ch.op = null;
-    if (op.orphaned) return;
-    op.resolve({
-      code: op.code,
-      stdout: Buffer.concat(op.outChunks),
-      stderr: Buffer.concat(op.errChunks).toString('utf8'),
-    });
+    if (!op.orphaned) {
+      op.resolve({
+        code: op.code,
+        stdout: Buffer.concat(op.outChunks),
+        stderr: Buffer.concat(op.errChunks).toString('utf8'),
+      });
+    }
+    // A FAILED PAYLOAD OP MAY HAVE LEFT ITS PAYLOAD IN THE CHANNEL'S STDIN, so
+    // the channel is retired rather than returned to the pool.
+    //
+    // The ready marker guarantees the payload is IN the pipe; nothing guarantees
+    // the op CONSUMES it. Every refusal `buildWriteScript` can produce — the
+    // documented-common `EEXIST` pre-check, the `set -C` noclobber failure,
+    // `ENOTDIR`/`ENOENT`/`EISDIR`/`EACCES`, and `ENOSPC` mid-decode — happens
+    // before or inside `base64 -d`, and `head` then dies of EPIPE with the
+    // remainder still unread. Those bytes sit in the CHANNEL's stdin, where the
+    // shell reads them as script text and fuses them with the next op's command:
+    // the op that caused it reports correctly and an unrelated op later dies.
+    //
+    // A SUCCESSFUL PAYLOAD OP PROVABLY DRAINED — `base64 -d` reads to EOF — so
+    // exit 0 is the whole condition, and no threshold is involved: how much
+    // `head` had pumped before the EPIPE is not something this side can know.
+    // Retiring costs one lazy reopen, which is already the status quo for a
+    // channel death.
+    if (op.stdinData && op.code !== 0) {
+      this.#kill(ch, `a stdin payload op exited ${op.code} and may not have drained its payload`);
+    }
   }
 
   // A DEAD CHANNEL IS NOT OFFERED AGAIN, and its in-flight op is NEVER RETRIED —
