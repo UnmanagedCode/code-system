@@ -50,7 +50,8 @@ export const PROTOCOL_ERROR_CODES = [
 ];
 
 export const FS_ERROR_CODES = [
-  'ENOENT', 'EACCES', 'EEXIST', 'ENOTDIR', 'EISDIR', 'ENOSPC', 'EUNKNOWN',
+  'ENOENT', 'EACCES', 'EEXIST', 'ENOTDIR', 'EISDIR', 'ENOSPC', 'ENOTEMPTY', 'EINVAL',
+  'EUNKNOWN',
 ];
 
 // stderr text → code, for a command that ran and exited non-zero. Substring
@@ -68,6 +69,14 @@ const STDERR_TABLE = [
   ['Not a directory', 'ENOTDIR'],
   ['Is a directory', 'EISDIR'],
   ['No space left on device', 'ENOSPC'],
+  // cc's `removeEntry` is NON-RECURSIVE, so this is an answer its caller acts
+  // on rather than a surprise: a directory still holding children the worker
+  // never enumerated fails the op instead of taking them with it.
+  ['Directory not empty', 'ENOTEMPTY'],
+  // `readlink` of a path that is not a symlink. The taxonomy is CLOSED — every
+  // errno a derived command can produce is named — because naming it is what
+  // lets a caller tell "that is not a symlink" from "the box hiccuped".
+  ['Invalid argument', 'EINVAL'],
 ];
 
 export function classifyStderr(stderr) {
