@@ -992,6 +992,52 @@ live('killing the container-side channel shell fails the in-flight op with ETRAN
     'and the very next frame is served, on the spawn path or a fresh channel');
 });
 
+// PINS THE UNDRAINED-PAYLOAD HAZARD OVER A REAL CONTAINER, at a size that
+// matters. The existing readFile/writeFile row exercises `EEXIST` with a
+// 34-byte payload, which fits a pipe buffer and so drains incidentally; this one
+// uses 256 KiB, where `head` provably dies of EPIPE with the remainder still in
+// the CHANNEL's stdin. The refusal must be correct AND the next, unrelated
+// operation must still be served.
+live('a 256 KiB write refused EEXIST on the channel leaves the next file op working', async (t, d) => {
+  const box = await withContainer(t, d.cli);
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  await writeRecord(store.dir, dockerRecord('alpha', box));
+  const dir = await tempDir(t);
+  const shim = await countingShim(dir, d.cli);
+
+  const l = launcherFor(t, store, shim.argv);
+  await l.hello();
+  await warmChannel(l, shim);
+  assert.equal((await inContainer(d.cli, box, 'printf taken > /tmp/occupied')).code, 0);
+
+  // 256 KiB of base64-able bytes, sent the way cc sends a writeFile.
+  const payload = Buffer.alloc(256 * 1024, 0x7a);
+  // The precondition that makes this test ABOUT the channel: the refused write
+  // must ride it, not fall back to a per-op spawn.
+  const beforeWrite = await shim.calls().then(c => c.length);
+  l.send({ type: 'writeFile', id: 'w1', remoteId: 'alpha', path: '/tmp/occupied', exclusive: true });
+  for (let at = 0; at < payload.length; at += 64 * 1024) {
+    l.send({ type: 'data', id: 'w1', seq: at / (64 * 1024),
+      dataB64: payload.subarray(at, at + 64 * 1024).toString('base64') });
+  }
+  l.send({ type: 'end', id: 'w1' });
+  const err = await l.waitFor(f => (f.type === 'error' || f.type === 'writeFileResult') && f.id === 'w1');
+  assert.equal(err.type, 'error', `the write must be refused, not accepted: ${JSON.stringify(err)}`);
+  assert.equal(err.code, 'EEXIST', `got ${JSON.stringify(err)}`);
+  assert.equal(await shim.calls().then(c => c.length), beforeWrite,
+    'the refused write rode the channel — it cost no docker invocation of its own');
+
+  // THE ASSERTION THE HAZARD BREAKS: an unrelated op afterwards.
+  l.send({ type: 'readFile', id: 'r1', remoteId: 'alpha', path: '/tmp/occupied' });
+  const end = await l.waitFor(f => (f.type === 'end' || f.type === 'error') && f.id === 'r1');
+  assert.equal(end.type, 'end', `the next file op must be served: ${JSON.stringify(end)}`);
+  assert.equal(bytesOf(l.frames, 'r1').toString('utf8'), 'taken',
+    'and answer correctly, not with the poisoned channel\'s leftovers');
+  // The target was never touched, which is what `exclusive` promises.
+  assert.equal((await inContainer(d.cli, box, 'wc -c < /tmp/occupied')).stdout.trim(), '5');
+});
+
 // PINS that `classifyFailure`'s operator-facing message is not lost to the
 // channel. A stopped container must still answer ENOREMOTE saying the provider
 // is attach-only — which is the answer that tells someone what to do — rather

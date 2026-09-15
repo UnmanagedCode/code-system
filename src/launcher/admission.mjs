@@ -87,7 +87,10 @@ function matches(spec, argv) {
  *
  *  - `cwd` is the placeholder — `runGit` sends the repo path and the
  *    post-worktree hook sends a worktree path, so this alone refuses both;
- *  - `argv` without `shell` — `project_bash` on a remote sends `shell`;
+ *  - `argv` and NOTHING in `shell` — not merely "no `shell` string". cc's
+ *    `execFrame` spreads one or the other and never both, so anything at all in
+ *    that field is a frame this rule has never seen, and a predicate whose whole
+ *    job is to fail closed must not hand it to the table;
  *  - no `env` — a replacement environment is `env -i`'s job on the spawn path
  *    and has no meaning on a shell whose environment is already fixed;
  *  - `stdin: 'ignore'` — the channel's own stdin is the command stream, so an
@@ -98,7 +101,7 @@ function matches(spec, argv) {
 function envelopeOk(f) {
   if (f?.type !== 'exec') return false;
   if (!Array.isArray(f.argv) || f.argv.length === 0) return false;
-  if (typeof f.shell === 'string') return false;
+  if (f.shell !== undefined) return false;
   if (f.cwd !== PLACEHOLDER_CWD) return false;
   if (f.env !== undefined && f.env !== null) return false;
   if (f.stdin !== 'ignore') return false;

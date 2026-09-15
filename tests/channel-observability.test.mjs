@@ -154,6 +154,18 @@ test('an admitted frame and a refused frame answer identically', async (t) => {
   assert.notEqual(fa.code, 0);
   assert.equal(textOf(l.frames, 'failon', 'stderr'), textOf(l.frames, 'failoff', 'stderr'));
   assert.match(textOf(l.frames, 'failon', 'stderr'), /No such file or directory/);
+
+  // WITHOUT THIS THE COMPARISON IS VACUOUS. Under a dead-admission mutant both
+  // arms take the spawn path and compare trivially equal — so the test has to
+  // prove the admitted arm really rode a channel. Eight frames here are
+  // admitted (six warm-ups, `onchan`, `failon`); the two with a non-placeholder
+  // cwd fail the envelope and are never offered at all.
+  l.closeStdin();
+  await l.exited;
+  const m = /channel carried (\d+) of (\d+) admitted ops on \d+ channels/.exec(l.stderr);
+  assert.ok(m, `no census line: ${l.stderr}`);
+  assert.equal(Number(m[2]), 8, 'exactly the admitted frames were offered, and the refused ones were not');
+  assert.ok(Number(m[1]) >= 6, `and the admitted arm really rode a channel: ${m[0]}`);
 });
 
 // PINS that cc's LIVENESS PROBE row reaches the channel through the shipped
@@ -175,4 +187,102 @@ test('the liveness probe rides the channel', async (t) => {
   await l.exited;
   const m = /channel carried (\d+) of/.exec(l.stderr);
   assert.ok(m && Number(m[1]) > 0, `the probe rode the channel: ${l.stderr}`);
+});
+
+// PINS EVERY ROW OF THE ADMISSION TABLE THROUGH THE SHIPPED LAUNCHER, as cc
+// actually sends it.
+//
+// WHY THIS IS NOT COVERED BY tests/admission.test.mjs. That file's `ROWS` and
+// the table in `src/launcher/admission.mjs` share one author: if both drift from
+// what cc really puts on the wire — the `-printf` escape rendering and chmod's
+// mode rendering are the fragile ones — the row de-admits silently, CI stays
+// green, and only the production drift line notices, at a customer site. Nine of
+// the twelve rows had no end-to-end binding at all before this.
+//
+// `admitted` IS THE EXACT DISCRIMINATOR: a de-admitted frame never reaches
+// `tryRun`, so the census's offered-count drops by exactly one per row that
+// stopped matching. Each row is also RUN, against a real fixture tree, and the
+// parsed ones are checked against the shape cc's own derivation parsers expect —
+// so a row that matches the table but that the tool itself rejects reds too.
+test('every admission-table row, as cc sends it, is admitted and carried by the shipped launcher', async (t) => {
+  const { promises: fs } = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'code-system-rows-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const p = (...s) => path.join(dir, ...s);
+  await fs.writeFile(p('file'), 'contents\n');
+  await fs.writeFile(p('doomed'), 'x');
+  await fs.symlink('./file', p('link'));
+  await fs.mkdir(p('emptydir'));
+
+  const FF = '%y\\t%m\\t%s\\t%T@\\t%l';
+  // Each row: the argv cc's `#derive` builds, and what its output must look like
+  // to the parser on cc's side.
+  const rows = [
+    ['stat', [...E, 'stat', '-L', '-c', '%f %s %.3Y', '--', p('file')],
+      /^[0-9a-f]+ \d+ \d+\.\d{3}\n$/],
+    ['lstat', [...E, 'find', p('link'), '-maxdepth', '0', '-printf', `${FF}\\n`],
+      // Five TAB-separated fields, and `%y` really reports the LINK — which is
+      // what `-P` being find's default buys, and what `stat -L` cannot say.
+      /^l\t\d+\t\d+\t\d+(\.\d+)?\t\.\/file\n$/],
+    ['readDir', [...E, 'find', `${dir}/.`, '-mindepth', '1', '-maxdepth', '1', '-printf', `${FF}\\t%f\\n`],
+      // SIX TAB-separated fields per line with the NAME LAST, and the names are
+      // asserted rather than counted — a count would silently track the order
+      // the rows above happen to run in.
+      (out) => {
+        const lines = out.replace(/\n$/, '').split('\n');
+        for (const line of lines) {
+          assert.equal(line.split('\t').length, 6, `six fields, name last: ${JSON.stringify(line)}`);
+        }
+        assert.deepEqual(
+          lines.map(l => l.split('\t')[5]).sort(),
+          ['doomed', 'emptydir', 'file', 'link'],
+          'readDir lists exactly the entries present when it ran');
+      }],
+    ['readlink', [...E, 'readlink', '-v', '--', p('link')], /^\.\/file\n$/],
+    ['realpath', [...E, 'realpath', '-e', '--', p('file')], null],
+    ['mkdir', [...E, 'mkdir', '--', p('made')], /^$/],
+    ['mkdir -p', [...E, 'mkdir', '-p', '--', p('made', 'deep', 'er')], /^$/],
+    // The mode exactly as cc renders it: `(mode & 0o7777).toString(8).padStart(4,'0')`.
+    ['chmod', [...E, 'chmod', '0644', '--', p('file')], /^$/],
+    ['unlink', [...E, 'unlink', '--', p('doomed')], /^$/],
+    ['removeEntry', [...E, 'rm', '-d', '--', p('emptydir')], /^$/],
+    ['symlink', [...E, 'ln', '-sfnT', '--', './file', p('link2')], /^$/],
+    ['liveness probe', ['true'], /^$/],
+  ];
+
+  const l = await launcher(t);
+  // Warm the pool first, so the rows under measurement are not competing with
+  // the lazy open. These are admitted too and are counted below.
+  const WARM = 8;
+  for (let i = 0; i < WARM; i++) {
+    l.send({ type: 'exec', id: `warm${i}`, remoteId: 'alpha', cwd: '/', stdin: 'ignore', argv: ['true'] });
+    await l.waitFor(f => f.type === 'exit' && f.id === `warm${i}`);
+  }
+
+  for (const [name, argv, shape] of rows) {
+    l.send(derive(name, argv));
+    const exit = await l.waitFor(f => (f.type === 'exit' || f.type === 'error') && f.id === name);
+    assert.equal(exit.type, 'exit', `${name} must run, not fail to start: ${JSON.stringify(exit)}`);
+    assert.equal(exit.code, 0,
+      `${name} exited ${exit.code}: ${textOf(l.frames, name, 'stderr')}`);
+    if (typeof shape === 'function') shape(textOf(l.frames, name));
+    else if (shape) {
+      assert.match(textOf(l.frames, name), shape,
+        `${name} must answer in the shape cc's own parser expects`);
+    }
+  }
+
+  l.closeStdin();
+  await l.exited;
+  assert.equal(l.stderr.includes('matched no admission row'), false,
+    `no row drifted: ${l.stderr}`);
+  const m = /channel carried (\d+) of (\d+) admitted ops on \d+ channels/.exec(l.stderr);
+  assert.ok(m, `no census line: ${l.stderr}`);
+  assert.equal(Number(m[2]), WARM + rows.length,
+    'EVERY row was admitted and offered to the pool — a row that stopped matching'
+    + ' would never reach tryRun, and this count would drop by exactly one');
+  assert.ok(Number(m[1]) >= rows.length, `and the rows really rode a channel: ${m[0]}`);
 });

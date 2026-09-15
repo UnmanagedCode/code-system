@@ -67,6 +67,57 @@ makes the count *reachable* on dash. Verified: 20 consecutive `writeFile` +
 `readFile` round trips byte-exact with payloads containing NUL, newlines, `'`,
 `$` and backticks, and 1 MiB written in 26 ms / read in 27 ms.
 
+## 3b. The marker guarantees the payload ARRIVES, not that the op READS it
+
+This is the hazard §3's fix does not close, and it bites on the refusal path
+`docs/protocol.md` calls the common one.
+
+Every refusal `buildWriteScript` can produce runs **before or inside**
+`base64 -d`: the `exclusive` `EEXIST` pre-check, the `set -C` noclobber failure,
+`ENOTDIR`/`ENOENT`/`EISDIR`/`EACCES` on the target or its dirname, and `ENOSPC`
+mid-decode. When the op exits there, `head -c <n>` dies of EPIPE with the
+remainder **still unread** — and that remainder is sitting in the *channel's*
+stdin, where the shell reads it as script text and fuses it with the next op's
+command.
+
+**The shape of the damage is the worst one there is: the op that causes it
+reports correctly.** Reproduced through the production path — a 256 KiB
+`writeFileOp({exclusive: true})` against an existing file answered `EEXIST`
+exactly as it should, and the **next `readFile` on that launcher** died
+`ETRANSPORT: the channel ended`.
+
+**Do not reason in thresholds.** Measured, 64 KiB poisoned the channel in one run
+and 65 KiB did not: it depends on how much `head` had pumped into its downstream
+pipe before the EPIPE, which is not knowable from the host side. A *small*
+payload is safe only incidentally — it fits a pipe buffer, so `head` drains the
+channel before the op exits. That is why every existing round-trip test passed:
+they are all successes, and the live `EEXIST` row uses a 34-byte payload.
+
+**The fix is exit 0, not a size.** A successful payload op provably drained —
+`base64 -d` reads to EOF — so any payload op that settles non-zero retires its
+channel. Lazy reopen is already the status quo for a channel death, so it costs
+one open.
+
+A `cat > /dev/null` drain inside the compound command is **not** the cheap
+alternative: with the channel's stdin as its source it blocks until the channel
+closes.
+
+## 3c. A `writeFile` is slow AND silent, which no output-only watchdog can see
+
+Between the ready marker and the sentinel a `writeFile` emits **zero bytes on
+either stream by construction** — the whole transfer is on stdin. So the general
+claim "a legitimately slow op is a progressively noisy op" has exactly one
+exception, and it is the op that takes longest. An output-only idle timer would
+kill a healthy, progressing write; the timer therefore also counts host-side
+stdin write progress, one pipe buffer at a time, using each chunk's **write
+callback** (`drain` fires once near the end, not per chunk).
+
+Severity, because it sets how much this matters: a kill mid-`base64 -d` leaves an
+**atomic** write's target intact with a stray `<path>.<pid>.<n>.tmp` beside it,
+and a **plain or exclusive** write's target **truncated** — the redirect is
+straight into the target. The `rm -f` cleanups in `buildWriteScript` run on a
+non-zero exit, not on a SIGKILL.
+
 ## 4. A missing binary is `env` failing to exec, NOT docker failing to start
 
 This is the one place the two paths could have diverged, and it mostly does not.
@@ -130,6 +181,10 @@ bytes following.
 - **Never write a payload before the ready marker comes back.** §3 is why, and
   `tests/channel.test.mjs`'s payload round-trip test *hangs* if the marker is
   removed rather than failing — do not "simplify" it away.
+- **Never return a channel to the pool after a payload op exits non-zero.** §3b
+  is why, and the failure it causes lands on a later, unrelated op.
+- **Never make the idle watchdog output-only.** §3c is why: the phase it would be
+  blind to is the longest one, and killing it can truncate a target.
 - **Route by exact command vector, never by argv form.** `project_bash` and every
   `worktrees.ts` git call are argv-form too. The table is
   `src/launcher/admission.mjs`; `docs/protocol.md` → "The held-open channel" is

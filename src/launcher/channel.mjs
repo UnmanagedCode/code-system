@@ -34,16 +34,24 @@ export const CHANNEL_ENV = 'CODE_SYSTEM_CHANNEL';
 //
 // IDLE, NOT TOTAL ELAPSED, and the distinction is the whole reason this number
 // can be small. A framing desync has exactly one signature — an op that never
-// emits its sentinel, silent for ever — while every legitimately slow admitted
-// op is either fast and silent (`mkdir`, `chmod`, `rm -d`, `unlink`, `ln`) or
-// slow and progressively NOISY (`find` over a very large directory, a large
-// `readFile`'s base64). A total-elapsed deadline would have to clear the worst
-// pathological `readDir`; an idle one needs no such margin.
+// emits its sentinel, silent for ever — while a legitimately slow op is making
+// progress the whole time. A total-elapsed deadline would have to clear the
+// worst pathological `readDir`; an idle one needs no such margin.
 //
-// ANCHORED AT BOTH ENDS. The measured medians are 3.5–4.4 ms and the largest
-// payload the protocol permits (`MAX_FILE_BYTES`, 32 MiB) streams at a measured
-// ~27 ms/MiB — under a second end to end — so this is an order of magnitude
-// above anything real. And it is a sixth of cc's own 60 s abandon
+// PROGRESS IS NOT THE SAME AS OUTPUT, and there is exactly one op where they
+// come apart. Most admitted ops are either fast and silent (`mkdir`, `chmod`,
+// `rm -d`, `unlink`, `ln`) or slow and progressively NOISY (`find` over a very
+// large directory, a large `readFile`'s base64). A `writeFile` is neither:
+// between the ready marker and the sentinel it emits ZERO bytes on either
+// stream BY CONSTRUCTION, because the whole transfer is on stdin. So
+// `#releasePayload` feeds host-side write progress to this same timer — see
+// there for why an output-only timer would kill a healthy write.
+//
+// ANCHORED AT BOTH ENDS. The measured medians are 2–7 ms, and the largest payload
+// the protocol permits (`MAX_FILE_BYTES`, 32 MiB) transfers in well under a
+// second — measured over a real channel, 1 MiB in 18 ms and 16 MiB in 40 ms, the
+// per-MiB cost falling with size as the fixed overhead amortises. So this is an
+// order of magnitude above anything real. And it is a sixth of cc's own 60 s abandon
 // (`DEFAULT_OP_TIMEOUT_MS`), so the watchdog reclaims a wedged channel long
 // before cc gives up and can never be the first to fail an op that is merely
 // slow.

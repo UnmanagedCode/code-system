@@ -730,6 +730,20 @@ offered only after a handshake op has proved it alive — without that, a channe
 against a stopped container would be handed an op that failed `ETRANSPORT`,
 losing `classifyFailure`'s operator-facing `ENOREMOTE` message.
 
+**A channel whose payload op FAILED is retired, not returned to the pool.** The
+ready marker guarantees the payload is *in* the pipe; nothing guarantees the op
+*consumes* it. Every refusal `buildWriteScript` can produce — the
+documented-common `EEXIST` pre-check, the `set -C` noclobber failure,
+`ENOTDIR`/`ENOENT`/`EISDIR`/`EACCES`, and `ENOSPC` mid-decode — happens before or
+inside `base64 -d`, and `head` then dies of EPIPE with the remainder still
+unread. Those bytes sit in the **channel's** stdin, where the shell reads them as
+script text and fuses them with the next op's command: the op that caused it
+reports correctly, and an unrelated op dies later. A *successful* payload op
+provably drained (`base64 -d` reads to EOF), so **exit 0 is the whole condition**
+— how much `head` had pumped before its EPIPE is not knowable from this side, so
+no threshold is involved. Retiring costs one lazy reopen, which is already the
+status quo for a channel death. See `.wiki/gotchas/docker-channel.md`.
+
 **Failure asymmetry.** A channel that is dead or absent *before* an op starts is
 simply not offered, and the op takes the unchanged spawn path — including all of
 `classifyFailure`. A channel that dies *with an op in flight* fails that op with
@@ -747,16 +761,42 @@ either of its streams**. After `CHANNEL_IDLE_MS` of silence the channel is
 declared dead and torn down, and the op fails `ETRANSPORT`.
 
 **Idle, not total elapsed**, because that is the property that distinguishes the
-two cases: a framing desync is silent for ever, while every legitimately slow
-admitted op is either fast and silent (`mkdir`, `chmod`, `rm -d`, `unlink`,
-`ln`) or slow and progressively noisy (`find` over a very large directory, a
-large `readFile`'s base64). A total-elapsed deadline would have to clear the
+two cases: a framing desync is silent for ever, while a legitimately slow op is
+making progress the whole time. A total-elapsed deadline would have to clear the
 worst pathological `readDir`.
 
-**`CHANNEL_IDLE_MS` is anchored at both ends.** The measured medians are 2–7 ms
-and the largest payload the protocol permits (`MAX_FILE_BYTES`) streams at a
-measured ~27 ms/MiB, so the constant is an order of magnitude above anything
-real; and it is a sixth of cc's `DEFAULT_OP_TIMEOUT_MS`, so the watchdog reclaims
+**Progress is not the same as output, and `writeFile` is the one op where they
+come apart.** Most admitted ops are either fast and silent (`mkdir`, `chmod`,
+`rm -d`, `unlink`, `ln`) or slow and progressively noisy (`find` over a very
+large directory, a large `readFile`'s base64). A `writeFile` is neither: between
+the ready marker and the sentinel it emits **zero bytes on either stream by
+construction**, because the whole transfer is on stdin. An output-only timer is
+therefore structurally blind to exactly the phase that takes longest, and on a
+daemon slower than the localhost this constant was measured against it would kill
+a healthy, progressing write. So the payload goes out one pipe buffer at a time
+and **each chunk's write callback re-arms the timer** — the callback, not
+`drain`, which for a payload node has already accepted whole fires once near the
+end.
+
+**What a kill mid-transfer would leave behind**, since that is what sets the
+severity: an **atomic** write decodes into `<path>.<pid>.<n>.tmp` and renames, so
+a kill leaves a stray temp file and the target **intact**; a **plain or
+exclusive** write decodes straight into the target through a truncating
+redirect, so a kill leaves it **truncated**. The `rm -f` cleanups in
+`buildWriteScript` run on a non-zero exit, not on a SIGKILL.
+
+**The residual silent window is bounded and does not grow with the payload.**
+After the host writes its last byte there is genuinely no signal left but the
+sentinel, and the far side still has whatever the kernel pipes hold — at most two
+pipe buffers — to decode. That tail is the same for a 1 KiB write and a 32 MiB
+one, which is why bounding the *transfer* is the whole of what this needs.
+
+**`CHANNEL_IDLE_MS` is anchored at both ends.** The measured medians are 2–7 ms,
+and the largest payload the protocol permits (`MAX_FILE_BYTES`) transfers in well
+under a second — measured over a real channel, 1 MiB in 18 ms and 16 MiB in
+40 ms, the per-MiB cost falling with size as the fixed overhead amortises. So the
+constant is an order of magnitude above anything real; and it is a sixth of cc's
+`DEFAULT_OP_TIMEOUT_MS`, so the watchdog reclaims
 a wedged channel long before cc gives up and can never be the first to fail an op
 that is merely slow. It is constructor-injectable, so `tests/channel.test.mjs`
 sets it to milliseconds rather than sleeping.
@@ -767,6 +807,25 @@ and `#request`'s `done()` each send `{type:'close', id}` — but that is a minut
 of a channel held by an op that will never answer, it depends on the counterparty
 sending a frame, and a reap does not by itself produce a sentinel, so `close`
 alone would leave the channel unusable rather than reclaimed.
+
+### What the channel's coverage does NOT yet reach
+
+All three are consequences of the same thing: the only cc checkout both
+conformance runners can be pointed at is the one our `protocol.mjs` mirror still
+matches, and that pin predates the commit which added cc's `lstat`, `symlink` and
+`removeEntry` derivations. Whoever closes that mirror drift closes these too.
+
+- **`symlink` (`ln -sfnT`) and `removeEntry` (`rm -d`) never run on a real
+  channel anywhere in the repo.** They are admitted and executed docker-free
+  (`tests/channel-observability.test.mjs` runs every table row through the
+  shipped launcher against a fixture tree), but no container-backed test and no
+  conformance row exercises them over `docker exec`.
+- **`lstat` is live-tested on the channel arm only**, with no arm-to-arm
+  comparison: `tests/docker-live.test.mjs` drives it with the channel on, and
+  nothing compares that answer to the per-op spawn's.
+- **The channel-invariance claim rests on `CC_CHECKOUT` runs.** Without it both
+  conformance arms skip cleanly, so a plain `npm test` proves the framing and the
+  routing but not that cc's own battery is outcome-identical on the two arms.
 
 ### Two diagnostic lines, and why they exist
 

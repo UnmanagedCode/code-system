@@ -99,6 +99,13 @@ test('each envelope condition refuses on its own', () => {
     'a timeoutMs': { timeoutMs: 1000 },
     'a killGraceMs': { killGraceMs: 50 },
     'a shell beside the argv': { shell: 'echo hi' },
+    // ABSENT means absent. cc sends `argv` or `shell` and never both, so
+    // anything at all in that field is a frame shape this rule has never seen —
+    // and a predicate whose whole job is to fail closed must not let a
+    // non-string through the gap a `typeof` check leaves open.
+    'a null shell': { shell: null },
+    'a numeric shell': { shell: 0 },
+    'an object shell': { shell: {} },
     'a non-exec frame': { type: 'readFile' },
   };
   for (const [what, over] of Object.entries(cases)) {

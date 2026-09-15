@@ -337,6 +337,14 @@ back-to-back lets the shell swallow the payload into its own buffer, where it is
 parsed as script text while `head` gets nothing
 (`.wiki/gotchas/docker-channel.md`).
 
+**What the marker does NOT guarantee is that the op CONSUMES the payload.** Every
+refusal `buildWriteScript` can produce happens before or inside `base64 -d`, and
+`head` then dies of EPIPE with the remainder still unread — in the *channel's*
+stdin, where the shell reads it as script text. So **a channel whose payload op
+exits non-zero is retired** rather than returned to the pool. A successful
+payload op provably drained, so exit 0 is the whole condition; no byte threshold
+is involved. `docs/architecture.md` → "The held-open channel" has the reasoning.
+
 #### Which frames ride it
 
 **By exact command vector, never by argv FORM** — `project_bash` sends
