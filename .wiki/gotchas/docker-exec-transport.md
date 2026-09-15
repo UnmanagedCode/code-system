@@ -200,4 +200,7 @@ has no such flag. See `src/launcher/kinds/docker.mjs` for all three sites.
 
 See also: [exec-env-across-a-boundary.md](exec-env-across-a-boundary.md),
 [kill-relay.md](kill-relay.md),
-[baseline-probe-two-tier.md](baseline-probe-two-tier.md).
+[baseline-probe-two-tier.md](baseline-probe-two-tier.md),
+[docker-channel.md](docker-channel.md) — the held-open channel that removes the
+per-frame spawn these measurements are about, and the five further measurements
+it needed.

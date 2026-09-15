@@ -21,6 +21,10 @@ function env(storeDir, extra = {}) {
     CODE_SYSTEM_STORE: storeDir,
     CODE_SYSTEM_FAKE_TRANSPORT: FAKE_TRANSPORT,
     CODE_SYSTEM_FAKE_CHANNEL: '1',
+    // PINNED, not inherited: `Launcher` spreads `process.env`, so an operator
+    // running the suite with the kill switch set would otherwise turn these
+    // rows into a test of something else. The kill-switch test overrides it.
+    CODE_SYSTEM_CHANNEL: '1',
     ...extra,
   };
 }

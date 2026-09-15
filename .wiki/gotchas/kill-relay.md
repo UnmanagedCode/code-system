@@ -18,6 +18,12 @@ connections keep running, leaking processes on the target and violating MUST 3.
 
 **How to apply:** The provider's shutdown path must explicitly SIGKILL every child it started (`docker exec` children, `ssh` slaves) before or as part of exiting on stdin EOF. This is not optional cleanup — it's a protocol MUST.
 
+**The held-open channel does not weaken this, and it needs no relay of its own.**
+A shell *blocked on a `docker exec`'s stdin* DOES die with its host client — the
+opposite of the measurement above, and both are true. Each op on that channel
+still carries its own `CC_EXEC_TOKEN` and is still reaped by this relay,
+unmodified. See [docker-channel.md](docker-channel.md) §2 and §5.
+
 **It fires at FOUR sites, not two.** `close` and provider shutdown are the
 obvious ones. A **`timeoutMs` expiry** and a **`signal` frame** are the same case
 — `Session.#terminate` kills the host-side proxy while the far side keeps running

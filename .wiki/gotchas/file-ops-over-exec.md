@@ -18,6 +18,12 @@ with a companion `stat` for `size`/`mode`" for the same reason.
 Deriving it once also means the `mode` / `atomic` / `exclusive` rules are a
 single piece of code that `docker` and `ssh` inherit for free.
 
+**For `docker` these scripts now ride a held-open channel** rather than a fresh
+`docker exec` each — admitted by PROVENANCE (`fileops.mjs` authors them; nothing
+frame-supplied reaches them except as a quoted operand), with the `writeFile`
+payload framed by exact byte count behind a ready-marker handshake. `fileops.mjs`
+itself is unchanged. See [docker-channel.md](docker-channel.md).
+
 **How to apply:**
 
 - Don't reach for `docker cp`/`scp` when implementing a kind. A kind builds

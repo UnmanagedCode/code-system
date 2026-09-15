@@ -284,6 +284,104 @@ argv token (measured).
 `CC_EXEC_TOKEN` is the per-exec nonce `reap` finds this exec's container-side
 processes by (`docs/architecture.md` → Shutdown and reaping).
 
+### The held-open channel
+
+Instead of one `docker exec` per frame, the provider holds **one shell per
+(container, identity, remote)** open and writes framed commands into it. Measured
+84–95 ms → 2–7 ms per op; the numbers, the pool's rules and the idle watchdog are
+in `docs/architecture.md` → "The held-open channel". Only `docker` does this;
+`ssh` and `host` are unchanged. `CODE_SYSTEM_CHANNEL=0` removes it entirely.
+
+```
+<docker-cli> exec -i -w / [-u <user>] [-e CC_REMOTE=<id>] -- <container> /bin/sh
+```
+
+| Element | Rule |
+|---|---|
+| `-i` | **always** — the channel's stdin *is* the command stream |
+| `-w /` | cc's placeholder cwd, the only one an admitted frame may carry |
+| `-u <user>` | the remote's `config.user`, exactly as `spawnPlan` emits it; absent entirely when unset |
+| `-e CC_REMOTE` | on the **channel**, not per op: ops inherit it from the shell. Absent entirely when the channel is unrouted |
+| `CC_EXEC_TOKEN` | **never here.** It rides as each op's own command prefix (below), or reaping one op would kill the channel and every other op on it |
+
+The argv is **invariant across every op that may ride it**, which is what makes a
+channel possible: a running shell has no per-op command line. That is also the
+pool's key.
+
+**One op at a time per channel**, written as a single compound command — the
+shell cannot execute any of it before it has parsed all of it, which is what
+makes the ready marker's guarantee independent of the shell's input-buffer size:
+
+```sh
+{ printf '\nCCRDY-<nonce>\n'; head -c <n> | CC_EXEC_TOKEN=<tok> /bin/sh -c '<script>'; rc=$?; printf '\nCCEND-<nonce> %s\n' "$rc"; printf '\nCCEND-<nonce>\n' >&2; }
+```
+
+With no stdin payload the first two clauses collapse to
+`CC_EXEC_TOKEN=<tok> /bin/sh -c '<script>' < /dev/null` — matching the spawn
+path's `stdin: 'ignore'`, and keeping the channel's own command stream out of
+reach of the op.
+
+| Element | Rule |
+|---|---|
+| `<nonce>` | **per call**, from `fileops.mjs`'s `makeNonce`. Never a fixed string: a command that echoed one could otherwise settle its own call early |
+| leading `\n` on every marker | so "start of line" is free and the scanner never has to remember whether it sits at a line boundary — cc's own `ClosingLineScan` idiom |
+| `CCRDY` | emitted **only** when a payload follows. The payload is released when it comes back, and not before — see below |
+| `head -c <n>` | the payload is framed by **exact byte count**, known host-side, unspoofable by content. No delimiter anywhere |
+| `CC_EXEC_TOKEN=<tok>` | a **command prefix**, so it reaches that op's whole process tree and nothing else. `reap` and `reapscript.mjs` are unmodified |
+| stdout sentinel | carries the exit code; the call settles on the **AND** of both streams' sentinels |
+| stderr sentinel | bare |
+
+**The ready marker is load-bearing, not belt-and-braces.** Measured: dash
+over-reads its command stream, so writing the command and the payload
+back-to-back lets the shell swallow the payload into its own buffer, where it is
+parsed as script text while `head` gets nothing
+(`.wiki/gotchas/docker-channel.md`).
+
+#### Which frames ride it
+
+**By exact command vector, never by argv FORM** — `project_bash` sends
+`{argv:['bash','--noprofile','--norc','-c',…]}` and every `worktrees.ts` git call
+is argv-form too, so a form rule would put `git clone` on a shared sequential
+shell. A frame rides the channel only if **every** envelope condition holds *and*
+its argv matches exactly one row. The table lives in
+`src/launcher/admission.mjs`; drift de-admits a row rather than mis-routing it.
+
+**Envelope:** `type: 'exec'`; `argv` present and no `shell`; `cwd` exactly `/`;
+no `env`; `stdin: 'ignore'`; no `timeoutMs`; no `killGraceMs`.
+
+**Vector table** (`env LC_ALL=C` is prepended by cc's `#derive` to every
+derivation; only the marked operands are free):
+
+| cc op | admitted argv | free operands |
+|---|---|---|
+| `stat` | `env LC_ALL=C stat -L -c '%f %s %.3Y' -- <p>` | `<p>` |
+| `lstat` | `env LC_ALL=C find <p> -maxdepth 0 -printf '%y\t%m\t%s\t%T@\t%l\n'` | `<p>` |
+| `readDir` | `env LC_ALL=C find <p>/. -mindepth 1 -maxdepth 1 -printf '%y\t%m\t%s\t%T@\t%l\t%f\n'` | `<p>/.` |
+| `readlink` | `env LC_ALL=C readlink -v -- <p>` | `<p>` |
+| `realpath` | `env LC_ALL=C realpath -e -- <p>` | `<p>` |
+| `mkdir` | `env LC_ALL=C mkdir [-p] -- <p>` | `<p>` |
+| `chmod` | `env LC_ALL=C chmod <4 octal digits> -- <p>` | the mode, `<p>` |
+| `unlink` | `env LC_ALL=C unlink -- <p>` | `<p>` |
+| `removeEntry` | `env LC_ALL=C rm -d -- <p>` | `<p>` |
+| `symlink` | `env LC_ALL=C ln -sfnT -- <target> <p>` | `<target>`, `<p>` |
+| liveness probe | `true` (no prefix, no operands) | — |
+| `removeTree` | `env LC_ALL=C rm -rf -- <p>` | **REFUSED — excluded by name** |
+
+The `-printf` formats are **two-character escape sequences** (`find` interprets
+them), compared byte-for-byte. `removeTree` is excluded because no derivation is
+output- or time-fenced — cc's `#derive` passes no `maxBufferBytes` and no
+`timeoutMs` — and `rm -rf` is the one row whose runtime scales with its target
+rather than being a single bounded syscall-shaped command.
+
+`readFile` and `writeFile` ride the channel too, admitted by **provenance**: they
+reach it through `makeRunner`, whose only callers are `fileops.mjs` and the
+backend's baseline probe, and `fileops.mjs` authors those scripts itself. They
+never enter `session.mjs`'s `#execs` map, never emit an `exit` frame and never
+accept `detach`.
+
+**Routing is invisible on the wire**: an admitted frame and a refused one produce
+the same frame types, the same decoded streams and the same `exit`.
+
 ### How a docker failure becomes a code
 
 Measured against Docker Engine 29.7.2. **Note the channel**: a daemon-level

@@ -68,6 +68,11 @@ function launcherFor(t, store, cli, extraEnv = {}) {
   const l = new Launcher(['--kind', 'docker'], {
     CODE_SYSTEM_STORE: store.dir,
     CODE_SYSTEM_DOCKER: JSON.stringify(cli),
+    // PINNED TO THE SHIPPED DEFAULT, not inherited. `Launcher` spreads
+    // `process.env`, so an operator running the suite with the kill switch set
+    // would otherwise turn every channel row below into a test of something
+    // else — silently, and green. `extraEnv` can still override it.
+    CODE_SYSTEM_CHANNEL: '1',
     ...extraEnv,
   });
   t.after(() => l.kill());
