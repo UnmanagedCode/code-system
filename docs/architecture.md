@@ -813,7 +813,13 @@ alone would leave the channel unusable rather than reclaimed.
 All three are consequences of the same thing: the only cc checkout both
 conformance runners can be pointed at is the one our `protocol.mjs` mirror still
 matches, and that pin predates the commit which added cc's `lstat`, `symlink` and
-`removeEntry` derivations. Whoever closes that mirror drift closes these too.
+`removeEntry` derivations. Closing that mirror drift is **necessary but not
+sufficient**: `tests/boundConformanceExpectations.mjs` pins cc's battery
+absolutely by design — for `checkTotal` a vanished row and a new row are the same
+event — and cc's battery has grown past that pin, so pointing `CC_CHECKOUT` at
+current cc reds the manifest *independently* of the mirror. Both have to move
+together: sync the mirror **and** re-observe the manifest against the current
+suite.
 
 - **`symlink` (`ln -sfnT`) and `removeEntry` (`rm -d`) never run on a real
   channel anywhere in the repo.** They are admitted and executed docker-free

@@ -237,6 +237,26 @@ test('a real EEXIST refusal at 256 KiB leaves the pool able to serve the next op
     'the next file operation is served correctly, not ETRANSPORT and not garbage');
 });
 
+// PINS THE RETIREMENT'S CONSERVATIVE HALF: **a SUCCESSFUL payload op's channel
+// is returned to the pool.**
+//
+// Retiring on every payload op — successes included — is correctness-neutral and
+// passes every other test here, while costing an extra `docker exec` per write
+// and roughly halving the write path's win. Silent degradation, exactly the
+// shape the drift line and the pool pins exist for.
+//
+// `maxPerTarget: 1` is the census idiom that makes it discriminating: a retired
+// channel has to be replaced, so `channels` would climb once per write.
+test('a successful payload op keeps its channel — only a failed one retires it', async (t) => {
+  const p = pool(t, { maxPerTarget: 1 });
+  for (let i = 0; i < 2; i++) {
+    const res = await onChannel(p, { script: 'cat', stdinData: BIG });
+    assert.equal(res.code, 0);
+    assert.deepEqual(res.stdout, BIG);
+  }
+  assert.equal(p.stats().channels, 1, 'one channel served both writes; neither was retired');
+});
+
 // ── the watchdog counts STDIN progress, not only output ──────────────
 
 // PINS THE ONE EXCEPTION to "a slow op is a noisy op". Between the ready marker
