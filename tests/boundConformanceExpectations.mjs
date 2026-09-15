@@ -20,8 +20,8 @@
 
 export const MIN_CAUSE_CHARS = 60;
 
-// THE BATTERY'S OWN SIZE at the pin: 19 in-loop rows x 2 `CAPABILITY_CONFIGS`,
-// plus 17 out-of-loop. Pinned ABSOLUTELY rather than derived from the run,
+// THE BATTERY'S OWN SIZE at the pin: 22 in-loop rows x 2 `CAPABILITY_CONFIGS`,
+// plus 19 out-of-loop. Pinned ABSOLUTELY rather than derived from the run,
 // because every other guard here is RELATIVE — `compareOutcomes` walks observed
 // union listed, and the parse/tally cross-check compares two numbers that shrink
 // together. Measured: delete one unlisted PASSING row and decrement the tally to
@@ -31,7 +31,7 @@ export const MIN_CAUSE_CHARS = 60;
 // RED IN BOTH DIRECTIONS. A vanished row and a new row are the same event: the
 // harness moved, and this manifest was written against a battery that no longer
 // exists. Re-read it against the current suite rather than editing the number.
-export const EXPECTED_TOTAL = 55;
+export const EXPECTED_TOTAL = 63;
 
 const OUTCOMES = new Set(['skip', 'fail']);
 
@@ -117,10 +117,11 @@ export const EXPECTED = [
   //
   // NOT the missing `detach` frame — that is implemented (src/launcher/session.mjs
   // → `#detach`), and the row's three siblings pass because of it. This row
-  // fails on its CLOSE half, at systems-protocol-conformance.test.mjs:259:
-  // `assert.equal(alive(c.pid), true, 'without group reach close cannot get to
-  // it either')`. cc models close's reach as identical to `signal`'s, so a
-  // provider advertising processGroupSignal:false must not reach a grandchild.
+  // fails on its CLOSE half — the assertion in
+  // systems-protocol-conformance.test.mjs reading `assert.equal(alive(c.pid),
+  // true, 'without group reach close cannot get to it either')`. cc models
+  // close's reach as identical to `signal`'s, so a provider advertising
+  // processGroupSignal:false must not reach a grandchild.
   {
     name: '[processGroupSignal:false] detach ends the operation and kills nothing; close kills as far as it reaches',
     outcome: 'fail',
@@ -130,9 +131,9 @@ export const EXPECTED = [
       + ' scans the whole far-side subtree by design — its token "reaches the whole subtree with no'
       + ' discovery step, and it survives a descendant that called setsid, which a process-group'
       + ' kill does not" — and src/launcher/session.mjs `#close` runs it, so close reaches further'
-      + ' than signal does. MEASURED BOTH WAYS on 2026-09-05 in a full bound run: WITH close\'s'
-      + ' reap, [all capabilities] passes and this row fails; WITHOUT it, exactly the reverse;'
-      + ' 40 pass / 11 fail / 4 skip either way. The row is therefore unsatisfiable in BOTH'
+      + ' than signal does. MEASURED BOTH WAYS in a full bound run: WITH close\'s'
+      + ' reap, [all capabilities] passes and this row fails; WITHOUT it, exactly the reverse, and'
+      + ' the run\'s totals are the same either way. The row is therefore unsatisfiable in BOTH'
       + ' configurations for any provider hardcoding the flag — listing it is not a choice between'
       + ' two green states. Resolved by card 2026-0019 (advertise processGroupSignal: true per'
       + ' systems-protocol.md \u00a711: setsid in the container, pgid discovery, kill -- -<pgid>),'
