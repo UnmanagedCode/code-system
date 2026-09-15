@@ -32,7 +32,7 @@ out-of-loop). A bound `docker` run, **identical on both channel arms**:
 > **Re-run before investigating an `UNEXPECTED-FAIL` on this row** — and if it
 > repeats, it is an ordering question about `Session`'s `#detach`, not load. Do
 > not list it in the manifest: a `cause` there must make an outcome *forced*, and
-> an intermittent one is not.
+> an intermittent one is not. Carded as **2026-0026**.
 
 **What the channel carried while producing that table.** Each launcher prints one
 census line at shutdown (`channel carried <n> of <m> admitted ops on <k>
