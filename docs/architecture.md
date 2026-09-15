@@ -1298,9 +1298,9 @@ pass** under the battery's own fixtures. (48 pass in total; 7 of those exercise 
 provider of ours. Three further rows reach the transport and FAIL on its
 behaviour — buckets 3 and 4 below — so 44 reach it at all.)
 
-**And what the channel carried while doing it**, from the run's own census: 114
-of 139 admitted ops on ~25 channels across 46 launcher sessions, with no
-admission-drift alarm. The channel-off arm reports no census and produces the
+**And what the channel carried while doing it**, from the run's own census:
+111–114 of 139 admitted ops on 24–25 channels across 46 launcher sessions, with
+no admission-drift alarm. The channel-off arm reports no census and produces the
 same 63-row outcome table.
 
 **The 15 rows that do not pass, in four buckets:**
