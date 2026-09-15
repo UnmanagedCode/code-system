@@ -351,9 +351,10 @@ export class Session {
       // the only thing that reaches it is the kind's reap relay.
       channel: true,
       seq: 0,
-      // ALWAYS, for the same reason `docker`'s spawnPlan is never `detached`:
-      // nothing we can signal from here reaches the far side's process tree, so
-      // every result we terminated must say descendants may survive.
+      // Set by `#terminate`, and it is set UNCONDITIONALLY there for the same
+      // reason `docker`'s spawnPlan is never `detached`: nothing we can signal
+      // from here reaches the far side's process tree, so every result we
+      // terminated must say descendants may survive.
       orphaned: false,
       closed: false,
       terminated: false,
