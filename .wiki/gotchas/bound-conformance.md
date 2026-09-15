@@ -21,6 +21,19 @@ out-of-loop). A bound `docker` run, **identical on both channel arms**:
 | fail | **11** — 2 capability, 6 flag, 2 a real defect (below), 1 close's reap reach (card 2026-0019) |
 | skip | **4** — exactly the `IS_REFERENCE_PROVIDER` set in [host-kind-and-conformance.md](host-kind-and-conformance.md) |
 
+> **ONE ROW HAS BEEN SEEN TO FLAKE, on the SPAWN path under sustained load.**
+> `[all capabilities] detach ends the operation and kills nothing; close kills as
+> far as it reaches` failed once in eight channel-off arms with
+> `detach: 1 more frames arrived on a detached id (stdout) … 6 !== 5`, and passed
+> on both immediate re-runs and every other run. The assertion counts frames
+> arriving after cc sends `detach`, so a `stdout` chunk already in flight when the
+> frame is read makes the count one high; with the channel off every op is its own
+> `docker exec` streaming its own pipe, which is where that window is widest.
+> **Re-run before investigating an `UNEXPECTED-FAIL` on this row** — and if it
+> repeats, it is an ordering question about `Session`'s `#detach`, not load. Do
+> not list it in the manifest: a `cause` there must make an outcome *forced*, and
+> an intermittent one is not.
+
 **What the channel carried while producing that table.** Each launcher prints one
 census line at shutdown (`channel carried <n> of <m> admitted ops on <k>
 channels`), and cc launches a provider per connection, so **one arm's run
