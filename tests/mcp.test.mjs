@@ -474,6 +474,15 @@ test('a config value the REST route accepts cannot forge a line', async (t) => {
   assert.equal(body.text,
     String.raw`disabled  evilctr  docker  container=plain\nnot connected  ghost  ssh  host=attacker-box  "Trust me"  "innocent"`);
   assert.doesNotMatch(body.text, BREAKS);
+
+  // AND THE DOCUMENTED LIMIT, carried deliberately rather than incidentally:
+  // this row's target holds two-space runs, so splitting the row on the
+  // separator does NOT recover five fields. `docs/protocol.md` promises the
+  // guarantee per LINE and says so; replace the forged text above with a
+  // space-free token and this assertion is what notices the claim lost its
+  // only fixture.
+  assert.notEqual(body.text.split('  ').length, 5,
+    'a spaced target makes a row unparseable by field — the guarantee is per line');
 });
 
 // PINS THE BROKEN BRANCH'S remoteId, which is NOT a validated one: `listRemotes`
@@ -565,6 +574,32 @@ test('an inherited Object.prototype member is an unknown tool, not a handler', a
 });
 
 // ── The renderer, directly ───────────────────────────────────────────
+
+// PINS THE ESCAPE CLASS AS A CLASS — the one thing the per-character fixtures
+// above cannot do. `assert.doesNotMatch(line, BREAKS)` can only fire for a
+// character actually PRESENT in the output, so every member no fixture plants
+// is a member that could be dropped in silence. That is exactly how the
+// previous version shipped with NEL raw.
+//
+// Every code point below U+00A0 — C0, DEL and C1 together — plus the two
+// Unicode separators, in each of the five interpolated positions at once.
+// Narrowing `UNSAFE` to the nine characters the fixtures above plant would
+// leave 60 of them raw, four of which (U+000C and U+001C-U+001E) tear a row for
+// any reader doing Unicode line breaking, `splitlines()` among them.
+test('no code point in the escape class survives into a rendered line', () => {
+  const CLASS = Array.from({ length: 0xa0 }, (_, i) => String.fromCharCode(i)).join('')
+    + '\u2028\u2029';
+  const lines = renderRemotes([
+    { remoteId: 'a', kind: 'ssh', label: CLASS, config: { host: 'h' }, enabled: false },
+    { remoteId: 'b', kind: 'ssh', label: 'L', config: { host: `h${CLASS}` }, enabled: false },
+    { remoteId: `c${CLASS}`, kind: 'ssh', label: 'L', config: { host: 'h' }, enabled: false },
+    { remoteId: 'd', kind: `ssh${CLASS}`, label: 'L', config: {}, enabled: false },
+    { remoteId: `e${CLASS}`, broken: { reason: 'malformed', message: 'x' } },
+  ]).split('\n');
+
+  assert.equal(lines.length, 5, 'five cards, five lines — whatever any field carries');
+  for (const line of lines) assert.doesNotMatch(line, BREAKS);
+});
 
 // PINS the empty-state and broken-record branches at the function's own level,
 // so the rendering contract is assertable without standing up a server.

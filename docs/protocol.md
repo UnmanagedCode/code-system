@@ -867,9 +867,9 @@ disabled  db  docker  container=pg  "Postgres"
 not readable  bad-rec
 ```
 
-**Five fields, separated by two spaces, and nothing else** — no `mirror`, no
+**A row carries these five things and nothing else** — no `mirror`, no
 `baseline`, no docker `user`, no `schema`, no `createdAt`/`updatedAt`, no
-`fingerprint`:
+`fingerprint`. They are written in this order, set off by two spaces:
 
 | Field | What it is |
 |---|---|
@@ -877,29 +877,30 @@ not readable  bad-rec
 | `remoteId` | what a cc project's *Remote* field takes |
 | kind | the raw token (`docker` / `ssh`) — what `POST /api/remotes` accepts, not `KIND_META.label` |
 | target | `<field>=<value>`, the field named by the kind's `KIND_META.identityField` (`container` for docker, `host` for ssh). A record whose kind has none — never accepted by `POST /api/remotes`, but reachable in a hand-written record file — renders the literal `[unregistered kind]`, bracketed so it cannot be read as a field named `unregistered` |
-| label | the only **quoted** field: surrounding double quotes, with any double quote inside escaped, so a reader can see where free-form text ends |
+| label | the only **quoted** field: surrounding double quotes, with any double quote inside escaped, so a reader can see where the label ends |
 
 #### One row per line, and what guarantees it
 
-**Every one of those fields is operator-supplied text**, and none of it is
-checked for this: `POST`/`PATCH` accept any `label`; `operand()` trims a config
-value and refuses a leading `-` and nothing else; and a record read off disk has
-its `kind` re-validated nowhere, while the broken branch's `remoteId` is a
-filename stem the charset check has already refused. A raw line break in any of
-them would emit a second row — with an attacker-chosen status, remoteId, kind
-and target — indistinguishable from a genuine one.
+**Four of those five are interpolated from stored data** — `remoteId`, kind,
+target and label; only the status is the renderer's own word — and none of that
+data is checked for this: `POST`/`PATCH` accept any `label`; `operand()` trims a
+config value and refuses a leading `-` and nothing else; a record read off disk
+has its `kind` re-validated nowhere; and the broken branch's `remoteId` is a raw
+filename stem. A raw line break in any of them would emit a second row — with an
+attacker-chosen status, remoteId, kind and target — indistinguishable from a
+genuine one.
 
-So **the renderer escapes every field against one shared rule**
-(`lineSafe` in `src/mcp.mjs`, which owns the character class): the backslash,
-and every character Unicode classifies as a control or a line boundary. The
-backslash, CR, LF and tab take their familiar short forms; everything else
-becomes `\uXXXX`. Enumerating the class here would be a copy that drifts — read
-it from `UNSAFE` beside the helper.
+So **every one of those four goes through one shared rule** — `lineSafe` in
+`src/mcp.mjs` — which escapes the backslash and every character Unicode
+classifies as a control or a line boundary. Neither the class nor the escape
+forms are repeated here, because a copy is what drifts: `UNSAFE` owns which
+characters are escaped, and `SHORT` owns how they come out.
 
 **The guarantee is per line: one remote, one row.** It is not a promise that
 splitting a row on two spaces recovers exactly five fields — a target value may
-itself contain spaces. Parse a listing by line; read the fields within a line as
-a human does.
+contain spaces, and so may a label, which its quotes do not help a whitespace
+splitter with. Parse a listing by line; read the fields within a line as a human
+does.
 
 The escaping is the renderer's and not the store's, deliberately: validating at
 the REST front door would change that contract, and would still leave every

@@ -578,11 +578,12 @@ really required — because that drift would fail only in a browser.
 identifies its *target* (`container` for docker, `host` for ssh) — read through
 `identityFieldFor()` beside `kindDescriptors()`, and throwing the same way for a
 kind that lacks one. `src/mcp.mjs`'s listing resolves what a remote points at
-through it, so that rendering has no per-kind branch. It is **deliberately not** on `kindDescriptors()`'s return value:
-`kindDescriptors()` is the `GET /api/kinds` wire shape, and `KIND_META` carries
-more than that shape serves. `kindDescriptors` builds its own object field by
-field rather than spreading the meta, which is what keeps a new `KIND_META` key
-off the wire by construction.
+through it, so that rendering has no per-kind branch. It is **deliberately not**
+on `kindDescriptors()`'s return value: `kindDescriptors()` is the
+`GET /api/kinds` wire shape, and `KIND_META` carries more than that shape
+serves. `kindDescriptors` builds its own object field by field rather than
+spreading the meta, which is what keeps a new `KIND_META` key off the wire by
+construction.
 
 A field may carry **`advanced: true`**. It is a **rendering flag only** —
 `kindDescriptors()` passes `configFields` through by reference, the card form
