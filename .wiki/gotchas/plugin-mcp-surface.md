@@ -51,10 +51,14 @@ somebody else's validator drifts silently and then lies in both directions.
 ## 4. A tool-level failure is a 200; only a malformed envelope is not
 
 The pinned child contract is HTTP 200 for **every well-formed tool invocation** —
-unknown tool name, bad arguments and the tool's own failure alike, each as
-`{error}`. A non-200 means a transport-level failure and maps to an HTTP-coded
-error the caller reads very differently. A plugin that answered 500 for "that
-remote does not exist" would be reporting itself broken.
+an unknown tool name and the tool's own failure alike, each as `{error}`. A
+non-200 means a transport-level failure and maps to an HTTP-coded error the
+caller reads very differently. A plugin that answered 500 for "that remote does
+not exist" would be reporting itself broken.
+
+**Bad arguments never reach the child at all**: the conductor's `validateArgs`
+checks them against the declared `inputSchema` and refuses before forwarding. A
+child re-validating them is writing a branch nothing can enter.
 
 ## 5. The name a caller actually types is three names deep
 

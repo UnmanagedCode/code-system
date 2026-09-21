@@ -16,7 +16,7 @@
     "tools": [
       {
         "name": "list_remotes",
-        "description": "List code-system's registered remotes as plain text, one line each: status, remoteId, provider kind, that kind's target (docker container, ssh host), label. Status folds the remote's two states into one word: `disabled` — the operator gate is off, so the remote refuses every command and its target is not probed; `connected` / `not connected` — the gate is on, and this is a fresh probe of the target; `not readable` — the stored record could not be parsed. A remoteId is what a code-conductor project's Remote field takes.",
+        "description": "List code-system's registered remotes as plain text, one line each: status, remoteId, provider kind, that kind's target (docker container, ssh host), label. Status folds the remote's two states into one word: `disabled` — the operator gate is off, so the remote refuses every command and its target is not probed; `connected` / `not connected` — the gate is on, and this is a fresh probe of the target; `not readable` — the stored record could not be read. A remoteId is what a code-conductor project's Remote field takes.",
         "inputSchema": { "type": "object", "properties": {} }
       }
     ]

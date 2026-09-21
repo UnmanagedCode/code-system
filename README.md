@@ -75,11 +75,11 @@ The launcher and the backend share **no in-memory state**: the launcher reads th
 
 See [`.wiki/decisions/architecture-shape.md`](.wiki/decisions/architecture-shape.md) for the source of truth and rationale.
 
-- **One cc System row per provider KIND, not per remote.** Two rows total — `docker` and `ssh` — each advertising `remotes:true` **and `remoteDescriptors:true`**, always. cc has no `listRemotes` frame, so this plugin is the only catalog of remotes — read through the card UI and the `list_remotes` MCP tool, written through the card UI alone.
+- **One cc System row per provider KIND, not per remote.** Two rows total — `docker` and `ssh` — each advertising `remotes:true` **and `remoteDescriptors:true`**, always. cc has no `listRemotes` frame, so this plugin is the only catalog of remotes ([`.wiki/gotchas/no-remote-discovery.md`](.wiki/gotchas/no-remote-discovery.md)).
 - **System is a transport, not the remote system.** The cc System row is just how cc reaches a target. The real unit of identity is the remote/`remoteId`, and config is stored per `remoteId`.
 - **Ownership split:** the **launcher** owns execution; the **backend** owns config storage and the UI.
 - **Attach-only connect toggle.** Connecting to a remote never starts or stops a container.
-- **The MCP surface is read-only.** One tool, `list_remotes`. The card UI and the REST API are the only writers; no tool creates, edits, connects or deletes a remote.
+- **The MCP surface is read-only.** One tool, `list_remotes`; see [`.wiki/decisions/architecture-shape.md`](.wiki/decisions/architecture-shape.md) for what that forbids.
 
 ### Docs
 

@@ -12,6 +12,11 @@ import { identityFieldFor } from './launcher/kinds/index.mjs';
 
 const EMPTY = 'no remotes are registered';
 
+// What the target field says for a record whose kind has no card. Bracketed so
+// it cannot be read as a `<field>=<value>` pair — there is no field to name, and
+// fabricating one would be worse than saying so.
+const NO_TARGET = '[unregistered kind]';
+
 // ONE WORD FOR A REMOTE'S TWO STATES, and the GATE WINS. A gate-off remote
 // refuses every command whatever its target is doing, so reporting a probe of
 // that target would describe something the caller cannot use — and the word
@@ -21,6 +26,37 @@ function statusOf(card) {
   if (card.broken) return 'not readable';
   if (card.enabled !== true) return 'disabled';
   return card.reachability?.connected === true ? 'connected' : 'not connected';
+}
+
+// THE LABEL IS OPERATOR-SUPPLIED AND UNVALIDATED — `POST`/`PATCH` accept any
+// string — so it is the one field that could break the one-line-per-remote
+// contract this renderer owns. A label carrying a newline would emit a SECOND
+// line indistinguishable from a genuine row, in output an agent parses.
+//
+// JSON string quoting is the whole answer: it supplies the surrounding quotes
+// and escapes every C0 control character, the double quote and the backslash,
+// in one rule a reader can state. The two line separators JSON leaves raw are
+// escaped after it. Validating at the store's front door instead would change a
+// REST contract AND leave every already-stored label dangerous.
+function quotedLabel(label) {
+  return JSON.stringify(String(label ?? ''))
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+// The kind's identifying target, or NO_TARGET for a kind that has none.
+//
+// `identityFieldFor` THROWS for such a kind, deliberately, and this is the one
+// caller that must degrade instead: a record whose kind was never registered is
+// reachable — the store's front door refuses one, but a hand-written or
+// hand-migrated record file does not pass through it — and letting the throw
+// reach `handle` would turn ONE of them into an error body carrying zero
+// remotes. The refusal is not swallowed; it is what the line reports.
+function targetOf(card) {
+  let field;
+  try { field = identityFieldFor(card.kind); }
+  catch { return NO_TARGET; }
+  return `${field}=${card.config?.[field] ?? ''}`;
 }
 
 /**
@@ -41,13 +77,12 @@ export function renderRemotes(cards) {
     // A record that did not parse yields its remoteId and nothing else: no
     // other field of it is known.
     if (card.broken) return `${status}  ${card.remoteId}`;
-    const field = identityFieldFor(card.kind);
     return [
       status,
       card.remoteId,
       card.kind,
-      `${field}=${card.config?.[field] ?? ''}`,
-      `"${card.label}"`,
+      targetOf(card),
+      quotedLabel(card.label),
     ].join('  ');
   }).join('\n');
 }
@@ -76,8 +111,13 @@ export async function handle(body) {
   if (typeof tool !== 'string' || tool.length === 0) {
     return { status: 400, body: { error: 'tool is required and must be a non-empty string' } };
   }
+  // AN OWN PROPERTY, NOT AN INHERITED ONE. A plain object inherits
+  // `toString`/`constructor`/`hasOwnProperty` from `Object.prototype`, and a
+  // bare `handlers[tool]` would CALL one of those instead of refusing it —
+  // answering `"[object Undefined]"`, `{}` or a TypeError's message, none of
+  // them this contract's refusal. Same guard, same reason, as `isKnownKind`.
+  if (!Object.hasOwn(handlers, tool)) return { status: 200, body: { error: `unknown tool: ${tool}` } };
   const fn = handlers[tool];
-  if (!fn) return { status: 200, body: { error: `unknown tool: ${tool}` } };
   try {
     return { status: 200, body: await fn(args ?? {}) };
   } catch (e) {

@@ -835,7 +835,7 @@ conductor's own `validateArgs` refuses an unknown argument before forwarding.
 | Outcome | Status | Body |
 |---|---|---|
 | success | 200 | `{text}` |
-| unknown tool name | 200 | `{error: "unknown tool: <name>"}` |
+| unknown tool name | 200 | `{error: "unknown tool: <name>"}` — the name is looked up as an **own** property, so an inherited `Object.prototype` member (`toString`, `constructor`, `hasOwnProperty`) is refused like any other unknown name rather than being called. This is a deliberate divergence from the reference implementation's plain `handlers[tool]` |
 | the tool itself failed | 200 | `{error: <message>}` |
 | `tool` missing or not a string | **400** | `{error}` |
 | a body express itself refused (malformed JSON, over the 256kb limit) | **400** | `{error}`, from the router tail |
@@ -872,14 +872,21 @@ not readable  bad-rec
 
 | Field | What it is |
 |---|---|
-| status | one of the four words below |
+| status | a word from the derivation below |
 | `remoteId` | what a cc project's *Remote* field takes |
 | kind | the raw token (`docker` / `ssh`) — what `POST /api/remotes` accepts, not `KIND_META.label` |
-| target | `<field>=<value>`, the field named by the kind's `KIND_META.identityField` (`container` for docker, `host` for ssh) |
-| label | in double quotes |
+| target | `<field>=<value>`, the field named by the kind's `KIND_META.identityField` (`container` for docker, `host` for ssh). A record whose kind has none — never accepted by `POST /api/remotes`, but reachable in a hand-written record file — renders the literal `[unregistered kind]`, bracketed so it cannot be read as a field named `unregistered` |
+| label | **JSON-quoted**: the surrounding double quotes, with the backslash, the double quote and every control character escaped |
+
+**The label is quoted because it is the one field an operator writes freely.**
+`POST`/`PATCH` accept any string, so a raw interpolation would let
+`label: "A\nnot readable  forged"` emit a second line indistinguishable from a
+genuine row. The quoting is the renderer's, not the store's: validating at the
+REST front door would change that contract and would still leave every
+already-stored label dangerous.
 
 A `not readable` line carries the `remoteId` **and nothing more**: the record
-did not parse, so no other field of it is known.
+could not be read, so no other field of it is known.
 
 **The status word folds a remote's two states into one**, and the gate wins:
 
@@ -891,7 +898,22 @@ did not parse, so no other field of it is known.
 | `enabled === true`, otherwise | `not connected` |
 
 `disabled` borrows no form of "connect": the gate is never called connected
-(`.wiki/gotchas/gate-versus-probe.md`). The gate-off branch renders no probe
-result, so it **computes** none — no `docker inspect`, no `ssh -O check`. This
-is the one place the two read surfaces differ deliberately: `GET /api/remotes`
-probes a switched-off remote anyway, because a card must still show reality.
+(see [`gate-versus-probe.md`](../.wiki/gotchas/gate-versus-probe.md)). The
+gate-off branch renders no probe result, so it **computes** none — no
+`docker inspect`, no `ssh -O check`.
+
+**`not readable` is decided before either state is consulted**, so it is neither
+a gate nor a probe answer. Its reasons are every way the store can refuse a
+record — `invalid-id`, `unreadable`, `malformed`, `schema` — not a parse failure
+alone. On a running backend it means a reason the startup pass does **not**
+move aside: `src/migrate.mjs` quarantines a `malformed` or `schema` record
+before the server listens, so a line surviving into a listing is one that became
+unreadable afterwards (`docs/architecture.md` → **The startup pass** owns the
+mechanics).
+
+**The two read surfaces differ in two deliberate options, not one:**
+
+| Option | `GET /api/remotes` | `list_remotes` |
+|---|---|---|
+| `reachability` | `'always'` — probes a switched-off remote too, because a card must still show reality | `'gated'` — the gate-off branch contacts nothing |
+| `baseline` | `true` — refreshes the tooling verdict, and **persists** a moved one | `false` — no probe and no write, which is what makes the tool read-only |

@@ -198,6 +198,9 @@ test('the gate-off word borrows no form of "connect"', async (t) => {
   await plant(store, remoteRecord('r', { enabled: false }));
   const { body } = await listRemotes(call);
   const word = body.text.split('  ')[0];
+  // THE WORD FIRST. An empty rendering splits to `''`, which satisfies the
+  // negative match below and would let this test pass while saying nothing.
+  assert.equal(word, 'disabled');
   assert.doesNotMatch(word, /connect/i, `'${word}' collapses the gate into the probe`);
 });
 
@@ -243,6 +246,11 @@ test('a gate-off remote is probed by the REST card and NOT by the MCP tool', asy
 // PINS that a probe that cannot even run is one remote's word, not the tool's
 // failure — and that the transport's own error text (an ENOENT on a binary that
 // does not exist) does not leak into a listing a model reads.
+//
+// NOT a test of `cardFor`'s try/catch: neither shipped kind lets a spawn failure
+// escape as a throw — both collapse it into their own `{connected:false}`
+// return — so the probe here FAILS without THROWING. What fails the whole call
+// is covered by the `readdir` test below.
 test('a probe that cannot run renders `not connected`, and the call is still 200', async (t) => {
   // withApi's default CLIs point at binaries that cannot exist.
   const { call, store } = await withApi(t);
@@ -359,6 +367,127 @@ test('the conductor\'s caller envelope field is accepted and ignored', async (t)
   assert.equal(withCaller.body.text, 'disabled  r  docker  container=app  "R"');
 });
 
+// ── A record the store's front door would never have accepted ────────
+
+// PINS THAT ONE UNRENDERABLE RECORD DOES NOT REPLACE THE CATALOG. A readable
+// record whose kind has no card — `host`, or a kind that does not exist at all
+// — has no identifying field to read, and `identityFieldFor` throws for it by
+// design. That throw must not reach `handle`, which would turn ONE such record
+// into an `{error}` body carrying ZERO remotes. `POST /api/remotes` refuses an
+// unregistered kind, but a hand-written or hand-migrated record file never
+// passes through it.
+//
+// BOTH SUB-CASES, because they reach the renderer by different routes: `host`
+// has a real transport and probes for real, while a kind in no registry at all
+// gets `cardFor`'s fabricated `unknown kind` reachability.
+test('a record whose kind is unregistered is a line, and the catalog is still complete', async (t) => {
+  const stub = await stubDockerCli(t, { stdout: RUNNING });
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_DOCKER: JSON.stringify(stub.cli) });
+  await plant(store,
+    remoteRecord('a-ok', { label: 'A', enabled: true }),
+    remoteRecord('m-host', { kind: 'host', label: 'H', config: {}, enabled: false }),
+    remoteRecord('n-weird', { kind: 'weird', label: 'W', config: { container: 'x' }, enabled: true }),
+    remoteRecord('z-ok', { label: 'Z', config: { container: 'zed' }, enabled: false }));
+
+  const res = await listRemotes(call);
+  assert.equal(res.status, 200);
+  assert.equal('error' in res.body, false, 'one unrenderable record must not fail the call');
+  assert.deepEqual(res.body.text.split('\n'), [
+    'connected  a-ok  docker  container=app  "A"',
+    'disabled  m-host  host  [unregistered kind]  "H"',
+    'not connected  n-weird  weird  [unregistered kind]  "W"',
+    'disabled  z-ok  docker  container=zed  "Z"',
+  ]);
+});
+
+// PINS THAT THE TARGET IS RESOLVED THROUGH `identityFieldFor`, not by kind
+// knowledge copied into the renderer. A renderer written
+// `kind === 'ssh' ? 'host' : 'container'` passes every other test in this file
+// — including the docker/ssh one — and fails here, because it would emit
+// `container=undefined` for a kind that has no identifying field at all.
+test('the target is read from the kind registry, not from a branch on the kind name', async (t) => {
+  const { call, store } = await withApi(t);
+  await plant(store, remoteRecord('h', { kind: 'host', label: 'H', config: {}, enabled: false }));
+  const { body } = await listRemotes(call);
+  assert.equal(body.text, 'disabled  h  host  [unregistered kind]  "H"');
+  assert.equal(body.text.includes('undefined'), false,
+    'a hardcoded field name fabricates `container=undefined` here');
+});
+
+// ── A label cannot forge a line ──────────────────────────────────────
+
+// PINS THE ONE-LINE-PER-REMOTE CONTRACT AGAINST ITS OWN DATA. `label` is
+// operator-supplied and unvalidated — `POST`/`PATCH` accept any string — so a
+// label carrying a newline would emit a SECOND line indistinguishable from a
+// genuine row, in output an agent parses. The renderer owns the contract, so
+// the neutralisation is the renderer's.
+test('a label carrying newlines cannot forge a second line', async (t) => {
+  const { call, store } = await withApi(t);
+  await plant(store,
+    remoteRecord('one', { label: 'A\nnot readable  forged', enabled: false }),
+    remoteRecord('two', { label: 'B\r\ndisabled  also-forged  docker  container=x  "X"', enabled: false }));
+
+  const { body } = await listRemotes(call);
+  const lines = body.text.split('\n');
+  assert.equal(lines.length, 2, 'two remotes, two lines — whatever the labels contain');
+  assert.equal(body.text.includes('forged'), true, 'the label text itself is still shown');
+  assert.deepEqual(lines, [
+    'disabled  one  docker  container=app  "A\\nnot readable  forged"',
+    'disabled  two  docker  container=app  "B\\r\\ndisabled  also-forged  docker  container=x  \\"X\\""',
+  ]);
+  // No raw line terminator of any kind survives into the rendering.
+  assert.doesNotMatch(body.text, /[\r\u2028\u2029]/);
+});
+
+// ── The gate predicate is STRICT ─────────────────────────────────────
+
+// PINS `enabled !== true`, NOT `enabled === false`. A record with no `enabled`
+// key at all is not switched on, and the gate must treat it as off — a mutant
+// reading `=== false` would render it as a probe result AND probe the target.
+// The counting stub asserts the second half, which is the one that reaches out.
+test('a record with no `enabled` key is disabled, and its target is not probed', async (t) => {
+  const stub = await stubDockerCli(t, { stdout: RUNNING });
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_DOCKER: JSON.stringify(stub.cli) });
+  const rec = remoteRecord('absent', { label: 'Absent' });
+  delete rec.enabled;
+  await plant(store, rec);
+
+  const { body } = await listRemotes(call);
+  assert.equal(body.text, 'disabled  absent  docker  container=app  "Absent"');
+  assert.deepEqual(await stub.argv(), [],
+    'an absent gate is an off gate, so the target is never contacted');
+});
+
+// ── A failure that IS the tool\'s ─────────────────────────────────────
+
+// PINS `handle`'s catch, which nothing else reaches: listing the store is the
+// one step that can fail outright. Driven by planting a FILE where the remotes
+// DIRECTORY belongs, so `listRemotes`'s `readdir` raises a non-ENOENT error and
+// rethrows it — a real failure of the real code path, with no injected seam.
+test('a store that cannot be listed is a 200 error body, not a crash', async (t) => {
+  const { call, store } = await withApi(t);
+  await fs.writeFile(path.join(store.dir, 'remotes'), 'not a directory');
+
+  const res = await listRemotes(call);
+  assert.equal(res.status, 200, 'a tool-level failure is never a non-200');
+  assert.ok(res.body.error, 'and it says what went wrong');
+  assert.equal('text' in res.body, false);
+});
+
+// PINS THAT A TOOL NAME IS LOOKED UP AS AN OWN PROPERTY. A plain object
+// inherits from `Object.prototype`, so `toString`, `constructor` and
+// `hasOwnProperty` all resolve to functions and would each be CALLED instead of
+// refused — answering `"[object Undefined]"`, `{}` and a TypeError's message
+// respectively, none of them the contracted refusal.
+test('an inherited Object.prototype member is an unknown tool, not a handler', async (t) => {
+  const { call } = await withApi(t);
+  for (const name of ['toString', 'constructor', 'hasOwnProperty', 'valueOf', '__proto__']) {
+    const res = await call('POST', '/mcp', { tool: name });
+    assert.equal(res.status, 200, name);
+    assert.deepEqual(res.body, { error: `unknown tool: ${name}` }, name);
+  }
+});
+
 // ── The renderer, directly ───────────────────────────────────────────
 
 // PINS the empty-state and broken-record branches at the function's own level,
@@ -372,4 +501,9 @@ test('renderRemotes is a pure function of the cards it is given', () => {
     renderRemotes([{ remoteId: 'y', kind: 'ssh', label: 'Y', config: { host: 'h' }, enabled: true,
       reachability: { connected: true, detail: '', fingerprint: null } }]),
     'connected  y  ssh  host=h  "Y"');
+  // A kind with no identifying field, and a label that would otherwise break
+  // the line — the two degradations, at the function's own level.
+  assert.equal(
+    renderRemotes([{ remoteId: 'z', kind: 'host', label: 'a"b\nc', config: {}, enabled: false }]),
+    'disabled  z  host  [unregistered kind]  "a\\"b\\nc"');
 });

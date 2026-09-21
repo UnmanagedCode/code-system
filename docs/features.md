@@ -46,14 +46,17 @@ the gate wins:
 - **`connected` / `not connected`** — the gate is on, and this is a fresh probe
   of the target, asked while answering.
 - **`not readable`** — the stored record could not be read. The line carries the
-  `remoteId` and nothing else, because nothing else about it is known.
+  `remoteId` and nothing else, because nothing else about it is known. Rare in
+  practice: the backend moves records it cannot read aside as it starts, so this
+  is one that became unreadable afterwards.
 
 The tool **changes nothing**: it never writes a record, and never starts, stops
 or alters a target. Adding, editing, connecting and removing a remote all stay
 in the card UI.
 
-**A new or changed tool is not live until the conductor restarts** — it reads a
-plugin's manifest at discovery.
+**A new or changed tool is not live until the conductor restarts.** Same
+mechanism as every other stale-plugin-state surprise — see
+[`.wiki/gotchas/host-environment.md`](../.wiki/gotchas/host-environment.md).
 
 ## A card shows two things, and they disagree routinely
 
