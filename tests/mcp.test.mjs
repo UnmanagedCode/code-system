@@ -421,8 +421,7 @@ test('the target is read from the kind registry, not from a branch on the kind n
 // ── No field can forge a line ────────────────────────────────
 
 // Every character of the escape class, PLANTED. A rule with no fixture behind
-// it is not pinned, only described — the previous version's widened regex
-// could never fire, because nothing reached for the characters it named.
+// it is not pinned, only described.
 const RAW = ['A', '\\', '"', '\n', '\r', '\u0085', '\u2028', '\u2029', '\u000b', '\t', 'Z'];
 const ESCAPED = ['A', String.raw`\\`, String.raw`\"`, String.raw`\n`,
   String.raw`\r`, String.raw`\u0085`, String.raw`\u2028`, String.raw`\u2029`,
@@ -578,8 +577,8 @@ test('an inherited Object.prototype member is an unknown tool, not a handler', a
 // PINS THE ESCAPE CLASS AS A CLASS — the one thing the per-character fixtures
 // above cannot do. `assert.doesNotMatch(line, BREAKS)` can only fire for a
 // character actually PRESENT in the output, so every member no fixture plants
-// is a member that could be dropped in silence. That is exactly how the
-// previous version shipped with NEL raw.
+// is a member that could be dropped in silence — which is why this test pins
+// the class rather than one more character.
 //
 // Every code point below U+00A0 — C0, DEL and C1 together — plus the two
 // Unicode separators, in each of the five interpolated positions at once.

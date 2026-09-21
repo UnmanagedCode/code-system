@@ -43,8 +43,7 @@ function statusOf(card) {
 // a class: the backslash first, so the result is unambiguous, then everything
 // Unicode treats as a control or a line boundary — C0 (CR and LF among them),
 // DEL, C1 (which includes U+0085 NEL, a mandatory break under UAX #14), and the
-// U+2028 / U+2029 separators. Chasing characters one fixture at a time is how
-// the previous version shipped with NEL raw.
+// U+2028 / U+2029 separators.
 //
 // NOT VALIDATION AT THE STORE'S FRONT DOOR: that would change a REST contract,
 // and would still leave every already-stored record dangerous.
