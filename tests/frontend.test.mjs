@@ -69,11 +69,3 @@ test('cardState.mjs touches no browser global', async () => {
   // as an argument precisely so this module never reads it.
   assert.equal(js.includes('location.'), false);
 });
-
-// PINS THE LOCKED "no MCP surface in v1" DECISION, from both directions.
-test('the plugin declares no MCP surface', async () => {
-  const manifest = JSON.parse(await fs.readFile(path.join(REPO, 'conductor.plugin.json'), 'utf8'));
-  assert.equal('mcp' in manifest, false, 'no mcp key in the manifest');
-  assert.equal(JSON.stringify(manifest).toLowerCase().includes('mcp'), false,
-    'and no route path mentions mcp either');
-});

@@ -46,6 +46,10 @@ export const DOCKER_ENV = 'CODE_SYSTEM_DOCKER';
 // below accepts; tests/kindmeta.test.mjs pins the two together.
 export const KIND_META = {
   label: 'Docker containers',
+  // WHICH FIELD NAMES THE TARGET. One field per kind, read by
+  // `identityFieldFor` so a surface that has to say what a remote points AT
+  // resolves it from the kind rather than from a docker-shaped branch.
+  identityField: 'container',
   configFields: [
     {
       name: 'container',

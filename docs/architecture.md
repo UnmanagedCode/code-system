@@ -31,7 +31,9 @@ an absolute path — which is what forces the store location below.
 | `src/migrate.mjs` | the one-shot idempotent startup migration |
 | `src/registration.mjs` | auto-registration of the two cc System rows |
 | `src/baseline.mjs` | the tooling-baseline probe and its fingerprint cache |
+| `src/cards.mjs` | the card view — a record plus a live reachability, composed once for both read surfaces |
 | `src/api.mjs` | the REST surface (`docs/protocol.md` has the routes) |
+| `src/mcp.mjs` | the MCP tool catalog and the `list_remotes` rendering |
 | `src/launcher/protocol.mjs` | NDJSON codec, spec-fixed constants, stderr→code table |
 | `src/launcher/session.mjs` | the frame loop: handshake, routing, exec lifecycle, shutdown |
 | `src/launcher/fileops.mjs` | `readFile`/`writeFile`, derived over `exec`, once for every kind |
@@ -571,6 +573,15 @@ cc System row, so the name in cc and the name on a card cannot drift.
 `tests/kindmeta.test.mjs` pins `configFields` against what each kind's
 `validateConfig` actually accepts — same field names, and every `required` flag
 really required — because that drift would fail only in a browser.
+
+`KIND_META` also names the kind's **`identityField`** — the config field that
+identifies its *target* (`container` for docker, `host` for ssh) — read through
+`identityFieldFor()` beside `kindDescriptors()`, and throwing the same way for a
+kind that lacks one. `src/mcp.mjs`'s listing resolves what a remote points at
+through it, so that rendering has no per-kind branch. It is **deliberately not**
+on `kindDescriptors()`'s return value: that is the `GET /api/kinds` wire shape,
+which this does not change, and `kindDescriptors` builds its object field by
+field so a new `KIND_META` key cannot leak into it.
 
 A field may carry **`advanced: true`**. It is a **rendering flag only** —
 `kindDescriptors()` passes `configFields` through by reference, the card form
@@ -1150,6 +1161,10 @@ global.
   (`systems-protocol-conformance.test.mjs` → "process-group signalling").
 - **Scripted fake cc** (`tests/helpers.mjs` → `fakeConductor`) for registration,
   asserted on the recorded request log, never on timing.
+- **The backend over HTTP** (`tests/helpers.mjs` → `withApi`): a real ephemeral
+  port over a fresh temp store, with `CODE_SYSTEM_DOCKER`/`CODE_SYSTEM_SSH`
+  pinned to invocations that cannot exist, so a card render answers the same on
+  a machine with docker and on one without. Both HTTP surfaces drive it.
 - **Real docker, self-skipping** (`tests/dockerFixture.mjs`,
   `tests/docker-live.test.mjs`). Every such test calls `skipUnlessDocker(t)` and
   returns, so `npm test` stays green with no daemon and each skip prints a reason

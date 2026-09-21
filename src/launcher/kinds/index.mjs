@@ -157,6 +157,27 @@ export function kindDescriptors(kinds = REGISTERED_KINDS) {
   });
 }
 
+/**
+ * The name of the config field that identifies a kind's TARGET — docker's
+ * container, ssh's host. A surface rendering "what does this remote point at"
+ * reads it from the kind instead of branching on the kind name.
+ *
+ * THROWS for a kind with no KIND_META or no `identityField`, for the same
+ * reason `kindDescriptors` does: adding a kind is one file plus one line, and
+ * this is what stops that line being added without an identifying field.
+ *
+ * DELIBERATELY NOT part of `kindDescriptors()`'s return value — that is the
+ * `GET /api/kinds` wire shape, which this does not change.
+ */
+export function identityFieldFor(kind) {
+  const field = METAS[kind]?.identityField;
+  if (!field) {
+    throw new Error(`kind '${kind}' has no KIND_META.identityField — every registered kind needs the name`
+      + ' of the config field that identifies its target');
+  }
+  return field;
+}
+
 export function isKnownKind(kind) {
   return Object.hasOwn(FACTORIES, kind);
 }

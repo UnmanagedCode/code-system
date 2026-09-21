@@ -1,12 +1,14 @@
-// PINS THE KIND SEAM'S TWO NEW OBLIGATIONS, both of which exist so that adding
-// a kind cannot ship something half-wired:
+// PINS THE KIND SEAM'S OBLIGATIONS, each of which exists so that adding a kind
+// cannot ship something half-wired:
 //
 //  1. every registered kind implements `connect`/`disconnect`, because those are
 //     the OPERATOR GATE's per-kind side effect and not a multiplexing feature —
 //     a kind with nothing to open still has to say so;
 //  2. every registered kind has a KIND_META, so the card UI can render a form
 //     for it, and that form's fields cannot drift from what `validateConfig`
-//     actually accepts.
+//     actually accepts;
+//  3. that meta names the config field identifying the kind's TARGET, so a
+//     surface listing remotes can say what each one points at.
 //
 // `KIND_META` is also the SINGLE SOURCE OF TRUTH for a kind's human label: the
 // cc System row's label and the card's kind badge both read it.
@@ -14,7 +16,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  REGISTERED_KINDS, createTransport, kindDescriptors,
+  REGISTERED_KINDS, createTransport, identityFieldFor, kindDescriptors,
 } from '../src/launcher/kinds/index.mjs';
 import { stubDockerCli } from './helpers.mjs';
 
@@ -75,6 +77,25 @@ test('kindDescriptors throws for a kind with no KIND_META', () => {
     'adding a kind must not be able to ship a form-less card');
   // The production set is complete, which is the same guard from the other side.
   assert.doesNotThrow(() => kindDescriptors());
+});
+
+// PINS THE THIRD OBLIGATION: every registered kind names the config field that
+// identifies its TARGET, and that name is a REQUIRED field of its own form. A
+// kind could otherwise ship a card whose listing says nothing about what the
+// remote points at, or point at a field an operator may leave blank — and both
+// fail only on a surface that renders the target, never in the kind's own
+// tests.
+test('every registered kind identifies its target with a required config field', () => {
+  for (const d of kindDescriptors()) {
+    const field = identityFieldFor(d.kind);
+    const entry = d.configFields.find(f => f.name === field);
+    assert.ok(entry, `${d.kind}.identityField '${field}' names no entry in its own configFields`);
+    assert.equal(entry.required, true,
+      `${d.kind}.${field} identifies the target, so it cannot be optional`);
+  }
+  // The other side of the same guard: a kind with no meta at all has no
+  // identity field either, and says so rather than answering undefined.
+  assert.throws(() => identityFieldFor('host'), /host/);
 });
 
 // PINS THE DESCRIPTOR ↔ VALIDATOR CONTRACT. The card's form is generated from

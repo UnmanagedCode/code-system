@@ -71,6 +71,29 @@ would break the gate, not merely slow it.
 - **`reap` is not gated**, deliberately: it does not pass through `lookup`, and
   gating it would abandon far-side processes at shutdown.
 
+## The one surface that DOES collapse them, and how
+
+The `list_remotes` MCP tool (`src/mcp.mjs` → `renderRemotes`) has one column for
+both facts, because a catalog line a model reads cannot carry a table. It is a
+FOLD, not a collapse, and three rules keep it honest:
+
+1. **The gate wins.** `enabled !== true` renders `disabled` whatever the target
+   is doing — a gate-off remote refuses every command, so its target's state is
+   not something the caller can act on.
+2. **The gate-off branch runs no probe at all.** It returns before a transport
+   is built, so there is no `docker inspect` and no `ssh -O check`
+   (`cardFor`'s `reachability: 'gated'` option, `src/cards.mjs`). `tests/mcp.test.mjs`
+   asserts that by COUNT on a stub's argv log, which is the only way to tell
+   "probed and ignored" from "not probed".
+3. **`disabled` borrows no form of "connect"**, which is the glossary
+   reservation below discharged as an assertion rather than a comment. The other
+   three words — `connected`, `not connected`, `not readable` — are probe
+   results and say so.
+
+`GET /api/remotes` deliberately does the opposite and probes a switched-off
+remote anyway: a card has room for two elements, and a switched-off card must
+still show reality. The two surfaces differ in exactly that one option.
+
 Related: `docs/features.md` owns the user-facing wording,
 `docs/protocol.md` owns the `ENOREMOTE` argument and the wire shape, and
 [[refusal-message-errno-tokens]] owns what the refusal's text may not contain.

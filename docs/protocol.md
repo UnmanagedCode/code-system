@@ -2,7 +2,7 @@
 
 What this plugin puts on the wire: the `hello` each kind sends, the `remoteId`
 routing rules, the derived file-operation scripts, the auto-registration
-exchange, and the backend REST surface.
+exchange, and the backend's two HTTP surfaces — REST and MCP.
 
 The wire contract itself is code-conductor's `docs/systems-protocol.md`; this
 page records only **our** side of it.
@@ -742,6 +742,7 @@ only and re-derived at every start.
 | `POST /api/remotes/:id/connect` | 200 `{remote}` — the kind's `connect` **first**, then the gate. 404 absent / 409 unreadable / **502** `{error, remote}` on a transport refusal |
 | `POST /api/remotes/:id/disconnect` | 200 `{remote, warning?}` — the gate **first**, then the kind's `disconnect`. 404 / 409 as above |
 | `DELETE /api/remotes/:id` | delete, **warning** when any cc project still names this `remoteId` |
+| `POST /api/mcp` | the MCP surface — one read-only tool. Its own contract is **MCP surface** below |
 | *(router tail)* | every response is JSON, including express's own body-parser refusals — the client reads `{error}` off every status |
 
 **The two gate routes are deliberately asymmetric**, because enabling and
@@ -816,3 +817,81 @@ a filename stem and the entire hand-off contract to a cc project's *Remote*
 field, so it must be human-typable and is **never renamed** once created — which
 is why the delete route warns: cc has no `listRemotes` frame, so nothing else
 would tell the user which projects they just stranded.
+
+## MCP surface
+
+`POST /api/mcp`, declared by the manifest's `mcp` block. The conductor forwards
+a call here and renders what comes back; the tool is `list_remotes`, and it is
+**read-only** — it writes nothing to the store and starts, stops and changes
+nothing on any target.
+
+### The envelope
+
+Request body: `{tool, arguments, caller}`. `caller` is accepted and unused —
+nothing scopes a plugin's tools, so there is no caller-dependent answer to give.
+`arguments` is ignored by `list_remotes`, which declares no properties; the
+conductor's own `validateArgs` refuses an unknown argument before forwarding.
+
+| Outcome | Status | Body |
+|---|---|---|
+| success | 200 | `{text}` |
+| unknown tool name | 200 | `{error: "unknown tool: <name>"}` |
+| the tool itself failed | 200 | `{error: <message>}` |
+| `tool` missing or not a string | **400** | `{error}` |
+| a body express itself refused (malformed JSON, over the 256kb limit) | **400** | `{error}`, from the router tail |
+
+**A malformed envelope is the only non-200.** An unknown tool name and a
+tool-level failure are normal outcomes for the calling model to read and recover
+from, not transport failures.
+
+**The success channel is `text`, never `result`.** The conductor's bridge
+unwraps `{text}` into raw, **unescaped** text blocks; a `{result}` body is
+JSON-stringified into one block, which would escape every newline of the
+rendering. `meta` is omitted, and the consequence is visible to a caller: the
+conductor emits a literal `null` metadata block as `content[0]` and the
+rendering as `content[1]`. A single bare text block is not reachable from a
+plugin. See [`.wiki/gotchas/plugin-mcp-surface.md`](../.wiki/gotchas/plugin-mcp-surface.md).
+
+No `timeoutMs` is declared, so the conductor's default of 30000 ms applies.
+
+### `list_remotes`
+
+One line per remote, in the store's own order, joined by `\n` with **no
+trailing newline**. An empty store renders the single line
+`no remotes are registered`.
+
+```
+connected  app-ctr  docker  container=app  "App container"
+not connected  buildbox  ssh  host=my-box  "Build box"
+disabled  db  docker  container=pg  "Postgres"
+not readable  bad-rec
+```
+
+**Five fields, separated by two spaces, and nothing else** — no `mirror`, no
+`baseline`, no docker `user`, no `schema`, no timestamps, no `fingerprint`:
+
+| Field | What it is |
+|---|---|
+| status | one of the four words below |
+| `remoteId` | what a cc project's *Remote* field takes |
+| kind | the raw token (`docker` / `ssh`) — what `POST /api/remotes` accepts, not `KIND_META.label` |
+| target | `<field>=<value>`, the field named by the kind's `KIND_META.identityField` (`container` for docker, `host` for ssh) |
+| label | in double quotes |
+
+A `not readable` line carries the `remoteId` **and nothing more**: the record
+did not parse, so no other field of it is known.
+
+**The status word folds a remote's two states into one**, and the gate wins:
+
+| Condition | Word |
+|---|---|
+| the stored record could not be read | `not readable` |
+| `enabled !== true` | `disabled` — **and the target is not probed** |
+| `enabled === true`, `reachability.connected === true` | `connected` |
+| `enabled === true`, otherwise | `not connected` |
+
+`disabled` borrows no form of "connect": the gate is never called connected
+(`.wiki/gotchas/gate-versus-probe.md`). The gate-off branch renders no probe
+result, so it **computes** none — no `docker inspect`, no `ssh -O check`. This
+is the one place the two read surfaces differ deliberately: `GET /api/remotes`
+probes a switched-off remote anyway, because a card must still show reality.
