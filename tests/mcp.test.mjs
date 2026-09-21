@@ -407,36 +407,103 @@ test('a record whose kind is unregistered is a line, and the catalog is still co
 // `container=undefined` for a kind that has no identifying field at all.
 test('the target is read from the kind registry, not from a branch on the kind name', async (t) => {
   const { call, store } = await withApi(t);
-  await plant(store, remoteRecord('h', { kind: 'host', label: 'H', config: {}, enabled: false }));
+  // `config` CARRIES a `container`, deliberately: the hardcoded-ternary mutant
+  // would read it and fabricate `container=ghost` — a target for a kind that has
+  // none. Against an empty config it would emit a bare `container=`, which only
+  // the equality assertion catches, and the second assertion would be vacuous.
+  await plant(store, remoteRecord('h', { kind: 'host', label: 'H', config: { container: 'ghost' }, enabled: false }));
   const { body } = await listRemotes(call);
   assert.equal(body.text, 'disabled  h  host  [unregistered kind]  "H"');
-  assert.equal(body.text.includes('undefined'), false,
-    'a hardcoded field name fabricates `container=undefined` here');
+  assert.equal(body.text.includes('ghost'), false,
+    'a hardcoded field name fabricates a target for a kind that has none');
 });
 
-// ── A label cannot forge a line ──────────────────────────────────────
+// ── No field can forge a line ────────────────────────────────
 
-// PINS THE ONE-LINE-PER-REMOTE CONTRACT AGAINST ITS OWN DATA. `label` is
-// operator-supplied and unvalidated — `POST`/`PATCH` accept any string — so a
-// label carrying a newline would emit a SECOND line indistinguishable from a
-// genuine row, in output an agent parses. The renderer owns the contract, so
-// the neutralisation is the renderer's.
-test('a label carrying newlines cannot forge a second line', async (t) => {
+// Every character of the escape class, PLANTED. A rule with no fixture behind
+// it is not pinned, only described — the previous version's widened regex
+// could never fire, because nothing reached for the characters it named.
+const RAW = ['A', '\\', '"', '\n', '\r', '\u0085', '\u2028', '\u2029', '\u000b', '\t', 'Z'];
+const ESCAPED = ['A', String.raw`\\`, String.raw`\"`, String.raw`\n`,
+  String.raw`\r`, String.raw`\u0085`, String.raw`\u2028`, String.raw`\u2029`,
+  String.raw`\u000b`, String.raw`\t`, 'Z'];
+
+// Nothing a reader could break a line on, whichever definition of "line" they
+// use: C0 (CR and LF among them), DEL, C1 (U+0085 NEL is a mandatory break
+// under UAX #14), and the two Unicode separators.
+const BREAKS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+
+// PINS THE ONE-LINE-PER-REMOTE CONTRACT for the label, across the whole class
+// rather than the characters one fixture happened to reach for.
+test('a label cannot forge a line, for any character in the escape class', async (t) => {
   const { call, store } = await withApi(t);
   await plant(store,
-    remoteRecord('one', { label: 'A\nnot readable  forged', enabled: false }),
-    remoteRecord('two', { label: 'B\r\ndisabled  also-forged  docker  container=x  "X"', enabled: false }));
+    remoteRecord('one', { label: RAW.join(''), enabled: false }),
+    remoteRecord('two', { label: 'B\nnot readable  forged', enabled: false }));
 
   const { body } = await listRemotes(call);
-  const lines = body.text.split('\n');
-  assert.equal(lines.length, 2, 'two remotes, two lines — whatever the labels contain');
-  assert.equal(body.text.includes('forged'), true, 'the label text itself is still shown');
-  assert.deepEqual(lines, [
-    'disabled  one  docker  container=app  "A\\nnot readable  forged"',
-    'disabled  two  docker  container=app  "B\\r\\ndisabled  also-forged  docker  container=x  \\"X\\""',
+  assert.deepEqual(body.text.split('\n'), [
+    `disabled  one  docker  container=app  "${ESCAPED.join('')}"`,
+    String.raw`disabled  two  docker  container=app  "B\nnot readable  forged"`,
   ]);
-  // No raw line terminator of any kind survives into the rendering.
-  assert.doesNotMatch(body.text, /[\r\u2028\u2029]/);
+  assert.equal(body.text.includes('forged'), true, 'the label text itself is still shown');
+  // PER LINE: the only newline in the rendering is the one JOINING two rows,
+  // which this renderer emits itself. No field may contribute another.
+  for (const line of body.text.split('\n')) assert.doesNotMatch(line, BREAKS);
+});
+
+// PINS THE SAME CONTRACT FOR A CONFIG VALUE, end to end through the PUBLIC API
+// and with no filesystem access — which is what makes it reachable by anyone
+// who can reach the REST surface, not only by a hand-written record.
+// `operand()` trims a value and refuses a leading `-`; it checks nothing else,
+// so the store really does accept a container name carrying a line break. The
+// forged row's remoteId is exactly the token a user pastes into a project's
+// Remote field.
+test('a config value the REST route accepts cannot forge a line', async (t) => {
+  const { call } = await withApi(t);
+  const forged = 'not connected  ghost  ssh  host=attacker-box  "Trust me"';
+
+  const made = await call('POST', '/remotes', {
+    remoteId: 'evilctr', kind: 'docker', label: 'innocent',
+    config: { container: `plain\n${forged}` },
+  });
+  assert.equal(made.status, 201, "the store accepts it — this test's premise, not its claim");
+
+  const { body } = await listRemotes(call);
+  assert.equal(body.text.split('\n').length, 1, 'one remote, one line');
+  assert.equal(body.text,
+    String.raw`disabled  evilctr  docker  container=plain\nnot connected  ghost  ssh  host=attacker-box  "Trust me"  "innocent"`);
+  assert.doesNotMatch(body.text, BREAKS);
+});
+
+// PINS THE BROKEN BRANCH'S remoteId, which is NOT a validated one: `listRemotes`
+// hands `cardFor` the FILENAME STEM of a record `readRemote` has refused, so the
+// charset check never ran on it. One unreadable file would otherwise emit two
+// rows.
+test('a filename stem cannot forge a line on the broken branch', async (t) => {
+  const { call, store } = await withApi(t);
+  await plantBroken(store, 'a\nnot readable  forged');
+
+  const { body } = await listRemotes(call);
+  assert.equal(body.text.split('\n').length, 1, 'one record, one line');
+  assert.equal(body.text, String.raw`not readable  a\nnot readable  forged`);
+});
+
+// PINS `kind` ON A RECORD READ OFF DISK. The enum check is on `POST` only and
+// nothing re-validates a stored record, so a hand-written one carries whatever
+// it likes here — and `targetOf` cannot help, because the injected text sits
+// BEFORE the target token.
+test('an unvalidated kind cannot forge a line', async (t) => {
+  const { call, store } = await withApi(t);
+  await plant(store, remoteRecord('k', {
+    kind: 'docker\nnot connected  ghost  ssh  host=attacker-box  "Trust me"',
+    label: 'K', enabled: false,
+  }));
+
+  const { body } = await listRemotes(call);
+  assert.equal(body.text.split('\n').length, 1, 'one remote, one line');
+  assert.equal(body.text,
+    String.raw`disabled  k  docker\nnot connected  ghost  ssh  host=attacker-box  "Trust me"  [unregistered kind]  "K"`);
 });
 
 // ── The gate predicate is STRICT ─────────────────────────────────────
@@ -456,6 +523,14 @@ test('a record with no `enabled` key is disabled, and its target is not probed',
   assert.equal(body.text, 'disabled  absent  docker  container=app  "Absent"');
   assert.deepEqual(await stub.argv(), [],
     'an absent gate is an off gate, so the target is never contacted');
+
+  // SELF-VALIDATING: the same stub, reached through the same env override, IS
+  // invoked once a gate is on. Without this arm a broken override would satisfy
+  // both assertions above while proving nothing.
+  await plant(store, remoteRecord('on', { label: 'On', enabled: true }));
+  await listRemotes(call);
+  assert.ok((await stub.argv()).includes('inspect'),
+    'the stub is reachable — the zero above is the gate\'s doing');
 });
 
 // ── A failure that IS the tool\'s ─────────────────────────────────────
@@ -470,7 +545,8 @@ test('a store that cannot be listed is a 200 error body, not a crash', async (t)
 
   const res = await listRemotes(call);
   assert.equal(res.status, 200, 'a tool-level failure is never a non-200');
-  assert.ok(res.body.error, 'and it says what went wrong');
+  assert.match(res.body.error, /not a directory/,
+    'the real readdir failure, surfaced — not a message this test arranged');
   assert.equal('text' in res.body, false);
 });
 

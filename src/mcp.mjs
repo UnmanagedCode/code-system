@@ -28,20 +28,38 @@ function statusOf(card) {
   return card.reachability?.connected === true ? 'connected' : 'not connected';
 }
 
-// THE LABEL IS OPERATOR-SUPPLIED AND UNVALIDATED — `POST`/`PATCH` accept any
-// string — so it is the one field that could break the one-line-per-remote
-// contract this renderer owns. A label carrying a newline would emit a SECOND
-// line indistinguishable from a genuine row, in output an agent parses.
+// ONE LINE PER REMOTE, AND THE RULE THAT KEEPS IT TRUE.
 //
-// JSON string quoting is the whole answer: it supplies the surrounding quotes
-// and escapes every C0 control character, the double quote and the backslash,
-// in one rule a reader can state. The two line separators JSON leaves raw are
-// escaped after it. Validating at the store's front door instead would change a
-// REST contract AND leave every already-stored label dangerous.
+// EVERY field below is interpolated from data an operator supplies, and none
+// of it is checked for this: `label` is accepted verbatim by `POST`/`PATCH`;
+// `operand()` trims a config value and refuses a leading `-` and nothing else;
+// and a record read off disk has its `kind` re-validated nowhere, while the
+// broken branch's `remoteId` is a FILENAME STEM the charset check already
+// refused. Any of them carrying a line break would emit a SECOND row — with an
+// attacker-chosen status, remoteId, kind and target — that a reader splitting
+// on a newline cannot tell from a genuine one.
+//
+// SO THE RULE IS APPLIED TO THE FIELDS AS A CLASS, and the class is escaped as
+// a class: the backslash first, so the result is unambiguous, then everything
+// Unicode treats as a control or a line boundary — C0 (CR and LF among them),
+// DEL, C1 (which includes U+0085 NEL, a mandatory break under UAX #14), and the
+// U+2028 / U+2029 separators. Chasing characters one fixture at a time is how
+// the previous version shipped with NEL raw.
+//
+// NOT VALIDATION AT THE STORE'S FRONT DOOR: that would change a REST contract,
+// and would still leave every already-stored record dangerous.
+const SHORT = { '\\': '\\\\', '\n': '\\n', '\r': '\\r', '\t': '\\t' };
+const UNSAFE = /[\\\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
+
+function lineSafe(value) {
+  return String(value ?? '').replace(UNSAFE, (ch) =>
+    SHORT[ch] ?? `\\u${ch.codePointAt(0).toString(16).padStart(4, '0')}`);
+}
+
+// The label is the one field that carries quotes, so a reader can find where
+// free-form text ends — which means the double quote inside it is escaped too.
 function quotedLabel(label) {
-  return JSON.stringify(String(label ?? ''))
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029');
+  return `"${lineSafe(label).replace(/"/g, '\\"')}"`;
 }
 
 // The kind's identifying target, or NO_TARGET for a kind that has none.
@@ -56,7 +74,7 @@ function targetOf(card) {
   let field;
   try { field = identityFieldFor(card.kind); }
   catch { return NO_TARGET; }
-  return `${field}=${card.config?.[field] ?? ''}`;
+  return `${field}=${lineSafe(card.config?.[field])}`;
 }
 
 /**
@@ -76,11 +94,11 @@ export function renderRemotes(cards) {
     const status = statusOf(card);
     // A record that did not parse yields its remoteId and nothing else: no
     // other field of it is known.
-    if (card.broken) return `${status}  ${card.remoteId}`;
+    if (card.broken) return `${status}  ${lineSafe(card.remoteId)}`;
     return [
       status,
-      card.remoteId,
-      card.kind,
+      lineSafe(card.remoteId),
+      lineSafe(card.kind),
       targetOf(card),
       quotedLabel(card.label),
     ].join('  ');

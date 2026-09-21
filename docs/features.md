@@ -46,9 +46,7 @@ the gate wins:
 - **`connected` / `not connected`** — the gate is on, and this is a fresh probe
   of the target, asked while answering.
 - **`not readable`** — the stored record could not be read. The line carries the
-  `remoteId` and nothing else, because nothing else about it is known. Rare in
-  practice: the backend moves records it cannot read aside as it starts, so this
-  is one that became unreadable afterwards.
+  `remoteId` and nothing else, because nothing else about it is known.
 
 The tool **changes nothing**: it never writes a record, and never starts, stops
 or alters a target. Adding, editing, connecting and removing a remote all stay
