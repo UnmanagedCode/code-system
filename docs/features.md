@@ -5,10 +5,14 @@ What the plugin does for a user.
 ## Remotes are cards
 
 Each **remote** — one Docker container, or one SSH host — is one card. The card
-UI is where a remote is added, edited and removed, and it is the **only** catalog
-of remotes: cc's protocol has no `listRemotes` frame, so cc never knows what
-remotes exist. It only knows the `remoteId` string a project's *Remote* field is
-set to.
+UI is where a remote is added, edited and removed, and this plugin is the
+**only** catalog of remotes: cc's protocol has no `listRemotes` frame, so cc
+never knows what remotes exist. It only knows the `remoteId` string a project's
+*Remote* field is set to.
+
+The catalog has **two read surfaces** — the cards, and the `list_remotes` MCP
+tool below — and one writer: adding, editing and removing a remote happens in
+the card UI and nowhere else.
 
 That makes `remoteId` a hand-off contract:
 
@@ -17,6 +21,40 @@ That makes `remoteId` a hand-off contract:
 - it is **never renamed** once created — everything else on a card is editable;
 - **deleting a remote warns** when cc projects still name it, listing them.
   Nothing else would tell you which projects you just stranded.
+
+## An agent can list the remotes
+
+The `list_remotes` MCP tool answers "what remotes exist, and can I use them" as
+plain text — one line per remote:
+
+```
+connected  app-ctr  docker  container=app  "App container"
+not connected  buildbox  ssh  host=my-box  "Build box"
+disabled  db  docker  container=pg  "Postgres"
+not readable  bad-rec
+```
+
+Each line carries the status, the `remoteId` to paste into a project's *Remote*
+field, the kind, what that kind points at, and the label. Nothing else — it is a
+catalog, not a card.
+
+**The status is one word for the two facts a card keeps apart** (see below), and
+the gate wins:
+
+- **`disabled`** — the gate is off. The remote refuses every command, so its
+  target is **not contacted at all** and the line says nothing about it.
+- **`connected` / `not connected`** — the gate is on, and this is a fresh probe
+  of the target, asked while answering.
+- **`not readable`** — the stored record could not be read. The line carries the
+  `remoteId` and nothing else, because nothing else about it is known.
+
+The tool **changes nothing**: it never writes a record, and never starts, stops
+or alters a target. Adding, editing, connecting and removing a remote all stay
+in the card UI.
+
+**A new or changed tool is not live until the conductor restarts.** Same
+mechanism as every other stale-plugin-state surprise — see
+[`.wiki/gotchas/host-environment.md`](../.wiki/gotchas/host-environment.md).
 
 ## A card shows two things, and they disagree routinely
 

@@ -47,6 +47,7 @@ export const SSH_ENV = 'CODE_SYSTEM_SSH';
 // — see the same block in kinds/docker.mjs.
 export const KIND_META = {
   label: 'SSH hosts',
+  identityField: 'host',
   configFields: [
     {
       name: 'host',

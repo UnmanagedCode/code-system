@@ -66,7 +66,8 @@ CODE_SYSTEM_DOCKER='["sudo","-n","docker"]' npm test
 | **Launcher** (`src/launcher/`) | the System protocol: frames, ids, routing, chunking, error codes, timeouts, killing children |
 | **Config store** (`src/store.mjs`) | per-`remoteId` connection config, one JSON file per remote |
 | **Backend** (`server.mjs`, `src/api.mjs`) | the REST API, the card UI, auto-registration, the tooling-baseline probe |
-| `conductor.plugin.json` | the plugin manifest (`backend` + `frontend`, deliberately no `mcp` block) |
+| **MCP surface** (`src/mcp.mjs`) | one read-only tool, `list_remotes`, rendering the remote catalog as plain text |
+| `conductor.plugin.json` | the plugin manifest: `backend`, `frontend` and `mcp` |
 
 The launcher and the backend share **no in-memory state**: the launcher reads the store fresh on every request frame, and the backend is the only writer.
 
@@ -74,16 +75,16 @@ The launcher and the backend share **no in-memory state**: the launcher reads th
 
 See [`.wiki/decisions/architecture-shape.md`](.wiki/decisions/architecture-shape.md) for the source of truth and rationale.
 
-- **One cc System row per provider KIND, not per remote.** Two rows total — `docker` and `ssh` — each advertising `remotes:true` **and `remoteDescriptors:true`**, always. cc has no `listRemotes` frame, so this plugin's own UI is the only catalog of remotes.
+- **One cc System row per provider KIND, not per remote.** Two rows total — `docker` and `ssh` — each advertising `remotes:true` **and `remoteDescriptors:true`**, always. cc has no `listRemotes` frame, so this plugin is the only catalog of remotes ([`.wiki/gotchas/no-remote-discovery.md`](.wiki/gotchas/no-remote-discovery.md)).
 - **System is a transport, not the remote system.** The cc System row is just how cc reaches a target. The real unit of identity is the remote/`remoteId`, and config is stored per `remoteId`.
 - **Ownership split:** the **launcher** owns execution; the **backend** owns config storage and the UI.
 - **Attach-only connect toggle.** Connecting to a remote never starts or stops a container.
-- **No MCP surface in v1.**
+- **The MCP surface is read-only.** One tool, `list_remotes`; see [`.wiki/decisions/architecture-shape.md`](.wiki/decisions/architecture-shape.md) for what that forbids.
 
 ### Docs
 
 - [`docs/features.md`](docs/features.md) — user-facing behaviour: cards, the baseline verdict, registration states.
-- [`docs/protocol.md`](docs/protocol.md) — interface contracts: the handshake per kind, `remoteId` routing, the derived file operations, registration, the REST surface.
+- [`docs/protocol.md`](docs/protocol.md) — interface contracts: the handshake per kind, `remoteId` routing, the derived file operations, registration, the REST surface, the MCP surface.
 - [`docs/architecture.md`](docs/architecture.md) — internals: the `Transport` seam and how to add a kind, the store and its startup pass, the shutdown/reap contract, test patterns.
 - [`.wiki/`](.wiki/index.md) — durable gotchas and decisions, reviewed and merged like code.
 

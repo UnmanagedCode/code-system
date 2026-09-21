@@ -6,6 +6,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import express from 'express';
+import { createApi } from '../src/api.mjs';
 import { NdjsonDecoder, encodeFrame } from '../src/launcher/protocol.mjs';
 import { SCHEMA } from '../src/store.mjs';
 
@@ -135,6 +137,53 @@ export async function fakeConductor(handler) {
     requests,
     async close() { await new Promise(r => server.close(r)); },
   };
+}
+
+// The backend under test, on a real ephemeral port, over a fresh temp store.
+// SHARED because every HTTP surface the backend serves needs the same
+// fixture: the same store isolation, and the same CLI pinning that keeps a
+// card render off any real docker or ssh on the machine running the suite.
+export async function withApi(t, deps = {}, env = {}) {
+  const store = await tempStore();
+  const set = {
+    CODE_SYSTEM_STORE: store.dir,
+    // A card render asks each remote's kind for LIVE reachability, and `docker`'s
+    // now really runs `docker inspect`. Pointed at an invocation that cannot
+    // exist, so a suite answers the same on a machine with docker and on one
+    // without — and never touches a real container that happens to share a name.
+    CODE_SYSTEM_DOCKER: '["/definitely-not-docker-xyz"]',
+    // Same for ssh: no test may reach a real host. A test that wants a stub
+    // overrides these two through `env`.
+    CODE_SYSTEM_SSH: '["/definitely-not-ssh-xyz"]',
+    // ssh's ControlPath lives under TMPDIR, and `connect` creates that
+    // directory. Per-test so two runs cannot share a socket path.
+    TMPDIR: store.dir,
+    ...env,
+  };
+  const prior = {};
+  for (const [k, v] of Object.entries(set)) { prior[k] = process.env[k]; process.env[k] = v; }
+  const app = express();
+  app.use('/api', createApi(deps));
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise(r => server.once('listening', r));
+  const base = `http://127.0.0.1:${server.address().port}/api`;
+  t.after(async () => {
+    for (const [k, v] of Object.entries(prior)) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+    await new Promise(r => server.close(r));
+    await store.cleanup();
+  });
+  const call = async (method, url, body) => {
+    const res = await fetch(`${base}${url}`, {
+      method,
+      ...(body ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}),
+    });
+    return { status: res.status, body: await res.json() };
+  };
+  // A raw fetch, for the paths where the point is that the body IS json.
+  const raw = (url, init) => fetch(`${base}${url}`, init);
+  return { call, raw, store, base };
 }
 
 // ── The stub CLIs, shared by the kind suites and the API suite ───────

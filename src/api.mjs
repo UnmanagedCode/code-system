@@ -1,51 +1,14 @@
-// The backend REST surface the card UI renders.
-//
-// A card carries TWO INDEPENDENT FACTS and this file is where both are
-// answered:
-//
-//   the GATE  — `record.enabled`, what the operator SET. The only thing that
-//               decides whether an operation runs. Moved by connect/disconnect.
-//   the PROBE — `reachability`, what is TRUE right now. Re-asked on every GET,
-//               never cached, never gated — which is how a switched-off card
-//               still shows reality.
-//
-// They disagree routinely, and one word for two facts is exactly the confusion
-// this surface must not create (.wiki/gotchas/gate-versus-probe.md).
+// The backend REST surface the card UI renders. `src/cards.mjs` composes a
+// card — the gate and the probe both — for this surface and for the MCP one.
 
 import express from 'express';
-import { refreshBaseline, unknownBaseline } from './baseline.mjs';
+import { unknownBaseline } from './baseline.mjs';
+import { cardFor, remoteCards } from './cards.mjs';
 import { REGISTERED_KINDS, createTransport, isKnownKind, kindDescriptors } from './launcher/kinds/index.mjs';
+import { handle } from './mcp.mjs';
 import { DEFAULT_MIRROR, validateMirror } from './mirror.mjs';
 import { REQUEST_TIMEOUT_MS, readCapped, registrationState, runRegistration } from './registration.mjs';
-import { deleteRemote, isValidRemoteId, listRemotes, makeRecord, readRemote, writeRemote } from './store.mjs';
-
-// One remote's card view: the stored record, a LIVE reachability answer, and a
-// baseline verdict re-probed only when the fingerprint moved.
-async function cardFor(entry, { probe = true } = {}) {
-  if (!entry.ok) {
-    return {
-      remoteId: entry.remoteId,
-      broken: { reason: entry.reason, message: entry.message },
-    };
-  }
-  const record = entry.record;
-  const transport = createTransport(record.kind);
-  if (!transport) {
-    return { ...record, reachability: { connected: false, detail: `unknown kind '${record.kind}'`, fingerprint: null } };
-  }
-  let reach;
-  try { reach = await transport.reachability(record.config ?? {}); }
-  catch (e) { reach = { connected: false, detail: e instanceof Error ? e.message : String(e), fingerprint: null }; }
-
-  // The probe is one round trip INTO the target, so it is gated on the target
-  // being reachable and on the fingerprint having moved. A target that gets
-  // fixed clears itself on the next refresh with no restart.
-  const { record: out, probed } = probe
-    ? await refreshBaseline(transport, record, reach)
-    : { record, probed: false };
-  if (probed) await writeRemote(out);
-  return { ...out, reachability: reach };
-}
+import { deleteRemote, isValidRemoteId, makeRecord, readRemote, writeRemote } from './store.mjs';
 
 // Did the config actually CHANGE? Both sides are the canonical post-validation
 // shape a kind's `validateConfig` produces, so this compares like with like:
@@ -113,9 +76,7 @@ export function createApi(deps = {}) {
 
   r.get('/remotes', async (_req, res, next) => {
     try {
-      const entries = await listRemotes();
-      const remotes = [];
-      for (const e of entries) remotes.push(await cardFor(e));
+      const remotes = await remoteCards();
       res.json({ remotes, kinds: kindDescriptors(), mirrorDefaults: DEFAULT_MIRROR });
     } catch (e) { next(e); }
   });
@@ -300,6 +261,14 @@ export function createApi(deps = {}) {
         ...(warning ? { warning } : {}),
       });
     } catch (e) { next(e); }
+  });
+
+  // THE MCP SURFACE, read-only. No try/catch: `handle` turns every tool-level
+  // failure into a 200 body, and the router tail below answers express's own
+  // body-parser refusals.
+  r.post('/mcp', async (req, res) => {
+    const { status, body } = await handle(req.body);
+    res.status(status).json(body);
   });
 
   // THE ROUTER TAIL. Without it express answers its own HTML error page, and

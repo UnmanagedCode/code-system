@@ -71,6 +71,36 @@ would break the gate, not merely slow it.
 - **`reap` is not gated**, deliberately: it does not pass through `lookup`, and
   gating it would abandon far-side processes at shutdown.
 
+## The one surface that FOLDS them into one word, and how
+
+The `list_remotes` MCP tool (`src/mcp.mjs` → `renderRemotes`) has one column for
+both facts, because a catalog line a model reads cannot carry a table. It is a
+FOLD, not a collapse, and three rules keep it honest:
+
+1. **The gate wins.** `enabled !== true` renders `disabled` whatever the target
+   is doing — a gate-off remote refuses every command, so its target's state is
+   not something the caller can act on.
+2. **The gate-off branch runs no probe at all.** It returns before a transport
+   is built, so there is no `docker inspect` and no `ssh -O check`
+   (`cardFor`'s `reachability: 'gated'` option, `src/cards.mjs`). `tests/mcp.test.mjs`
+   asserts that by COUNT on a stub's argv log, which is the only way to tell
+   "probed and ignored" from "not probed".
+3. **`disabled` borrows no form of "connect"**, which is the glossary
+   reservation below discharged as an assertion rather than a comment.
+   `connected` and `not connected` are the probe's answers and say so.
+
+**The fourth word, `not readable`, is NEITHER fact.** `statusOf` tests the
+broken-record branch first and returns before the gate or a probe is consulted:
+the store could not produce a record, so there is no `enabled` to read and
+nothing to probe. Do not reason about it as a probe result.
+
+`GET /api/remotes` deliberately does the opposite of rule 2 and probes a
+switched-off remote anyway: a card has room for two elements, and a switched-off
+card must still show reality. That is one of **two** deliberate differences
+between the surfaces — the other is the baseline refresh, which the card path
+runs and persists and the tool path skips entirely, and it is the one that makes
+the tool read-only. `docs/protocol.md` tabulates both.
+
 Related: `docs/features.md` owns the user-facing wording,
 `docs/protocol.md` owns the `ENOREMOTE` argument and the wire shape, and
 [[refusal-message-errno-tokens]] owns what the refusal's text may not contain.
