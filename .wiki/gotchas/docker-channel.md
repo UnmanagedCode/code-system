@@ -11,7 +11,11 @@ per-op path this replaces), [kill-relay.md](kill-relay.md) (the relay this keeps
 working), [file-ops-over-exec.md](file-ops-over-exec.md) (the `readFile` /
 `writeFile` scripts that now ride it),
 [no-persistent-shell.md](no-persistent-shell.md) (why cc still has no
-long-lived shell even though the provider holds one).
+long-lived shell even though the provider holds one),
+[../decisions/provider-family-per-op-cost.md](../decisions/provider-family-per-op-cost.md)
+(why the spawn cost matters, bounded by op count),
+[../decisions/channel-admission-is-proof.md](../decisions/channel-admission-is-proof.md)
+(why admission is an exact-argv proof and not a marker).
 
 ## 1. The cost is the SPAWN, not the command
 
