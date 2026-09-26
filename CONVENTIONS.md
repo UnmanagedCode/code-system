@@ -1,4 +1,4 @@
-<!-- cc:conventions design-guidelines,testing-guidelines,documentation-guidelines,migration-guidelines,code-kanban/reporting,code-karpathy-wiki/project-wiki -->
+<!-- cc:conventions design-guidelines,testing-guidelines,documentation-guidelines,migration-guidelines,code-kanban/reporting,code-wiki/project-wiki -->
 
 # Workspace conventions
 
