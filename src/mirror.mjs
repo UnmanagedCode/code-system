@@ -25,7 +25,8 @@ import { MIRROR_EXCLUDE_MAX, MIRROR_PATH_MAX } from './launcher/protocol.mjs';
 // cc's §11 `remoteDescriptors` row, verbatim: `/` to let a worker read and edit
 // anywhere on the target, minus the target's pseudo-filesystems. SERVED OVER
 // REST (GET /api/kinds, GET /api/remotes) rather than restated in the frontend,
-// so the form's prefill and this list cannot drift.
+// so the form's prefill and this list cannot drift. `POST /api/remotes` stores it
+// for a kind whose `KIND_META.mirrorByDefault` is set, when the request omits `mirror`.
 //
 // `/sys/fs/cgroup` is NOT here: containment is path.posix.relative, so a
 // descendant of an excluded prefix is already excluded. `/run` and `/tmp` are

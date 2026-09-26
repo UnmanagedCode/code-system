@@ -153,8 +153,23 @@ export function kindDescriptors(kinds = REGISTERED_KINDS) {
       throw new Error(`kind '${kind}' has no KIND_META — every registered kind needs a label and`
         + ' configFields, or the card UI cannot render a form for it');
     }
-    return { kind, label: meta.label, configFields: meta.configFields };
+    return {
+      kind, label: meta.label, configFields: meta.configFields, mirrorByDefault: meta.mirrorByDefault === true,
+    };
   });
+}
+
+/**
+ * Whether a NEW remote of this kind starts advertising `DEFAULT_MIRROR`
+ * (src/mirror.mjs) when its registration omits `mirror`. Read by
+ * `POST /api/remotes` only: a stored record is never re-defaulted, because a
+ * stored `null` cannot tell "chose off" from "never chose".
+ *
+ * NEVER THROWS, unlike `identityFieldFor`: a kind with no flag, or no meta, is
+ * simply opted out.
+ */
+export function mirrorsByDefault(kind) {
+  return METAS[kind]?.mirrorByDefault === true;
 }
 
 /**

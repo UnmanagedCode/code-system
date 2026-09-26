@@ -50,6 +50,9 @@ export const KIND_META = {
   // `identityFieldFor` so a surface that has to say what a remote points AT
   // resolves it from the kind rather than from a docker-shaped branch.
   identityField: 'container',
+  // A container's filesystem belongs to the workload, so imaging all of it is
+  // the useful default. Applied AT REGISTRATION ONLY (`mirrorsByDefault`).
+  mirrorByDefault: true,
   configFields: [
     {
       name: 'container',

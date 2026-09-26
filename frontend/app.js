@@ -205,7 +205,13 @@ function formFor(mode) {
       el('label', { for: 'f-kind' }, 'Kind'),
       el('select', {
         id: 'f-kind',
-        onchange: (e) => { draft.kind = e.target.value; draft.config = {}; render(); },
+        onchange: (e) => {
+          draft.kind = e.target.value;
+          draft.config = {};
+          // The new kind's own mirror default, written before render() reads it.
+          draft.mirror = mirrorDraft(null, draft.kind);
+          render();
+        },
       }, ...state.kinds.map(k => el('option', { value: k.kind, selected: k.kind === draft.kind }, k.label))),
     ));
   }
@@ -255,10 +261,11 @@ function formFor(mode) {
       + ' value unchanged, or editing only the label or the mirror settings below, does not.'));
   }
 
-  // THE ADVANCED GROUP, collapsed by default: the mirror is off for every remote
-  // that has not opted in, and `<details>` is closed unless `open` is set. An
-  // already-mirrored remote opens it, so an operator editing one sees what is
-  // stored without hunting for it.
+  // THE ADVANCED GROUP opens exactly when the draft's box is ticked:
+  // `<details>` is closed unless `open` is set. An already-mirrored remote opens
+  // it, so an operator editing one sees what is stored without hunting for it —
+  // and so does a create form for a kind with `mirrorByDefault`, so the operator
+  // sees the advertisement they are about to register.
   //
   // THE MIRROR HALF is absent entirely until GET /api/remotes has served
   // `mirrorDefaults` — see `mirrorDraft`. Offering that form with no defaults
@@ -321,11 +328,16 @@ function formFor(mode) {
 // textarea text, and `cardState.mirrorPayload` is what turns it back. An
 // opted-out remote still gets the served defaults, so ticking the box offers
 // them rather than an empty form.
-function mirrorDraft(remote) {
+//
+// The box starts ticked for a NEW remote (`remote == null`) of a kind whose
+// descriptor sets `mirrorByDefault`. An existing remote shows what is stored: a
+// stored `null` is unticked whatever the kind, because the default applies at
+// registration only.
+function mirrorDraft(remote, kind) {
   const d = state.mirrorDefaults;
-  // No defaults yet ⇒ no group to draft for. `mirrorPayload(null)` is `null`, so
-  // a form submitted in this state sends the same "advertise nothing" a
-  // stored-null remote already has.
+  // No defaults yet ⇒ no group to draft for. `mirrorPayload(null)` is
+  // `undefined`, so a form submitted in this state omits `mirror`: a POST takes
+  // the backend's kind default and a PATCH keeps what is stored.
   if (!d) return null;
   const m = remote?.mirror;
   if (m && typeof m === 'object') {
@@ -338,7 +350,11 @@ function mirrorDraft(remote) {
       exclude: Array.isArray(m.exclude) ? m.exclude.join('\n') : '',
     };
   }
-  return { on: false, root: String(d.root ?? '/'), exclude: (d.exclude ?? []).join('\n') };
+  return {
+    on: remote == null && descriptorFor(kind)?.mirrorByDefault === true,
+    root: String(d.root ?? '/'),
+    exclude: (d.exclude ?? []).join('\n'),
+  };
 }
 
 // A busy key for the create form, which has no remoteId yet. Leading space, so
@@ -362,9 +378,10 @@ async function submit(mode) {
         mirror: mirrorPayload(draft.mirror),
       });
     } else {
-      // ALWAYS SENT, like `config`: the form has no dirty-tracking. Safe because
-      // the backend keeps `mirror` outside `sameConfig`, so re-sending it
-      // unchanged cannot reset the gate.
+      // SENT WHENEVER THE MIRROR HALF IS RENDERED, like `config`: the form has no
+      // dirty-tracking. Safe because the backend keeps `mirror` outside
+      // `sameConfig`, so re-sending it unchanged cannot reset the gate. With no
+      // mirror half, `mirrorPayload` is `undefined` and the stored value stays.
       await api('PATCH', `api/remotes/${encodeURIComponent(draft.remoteId)}`,
         { label: draft.label, config, mirror: mirrorPayload(draft.mirror) });
     }
@@ -410,7 +427,7 @@ function controls(remote) {
           kind: remote.kind,
           label: remote.label ?? '',
           config: { ...remote.config },
-          mirror: mirrorDraft(remote),
+          mirror: mirrorDraft(remote, remote.kind),
         };
         go({ view: 'edit', remoteId: remote.remoteId });
       },
@@ -563,9 +580,8 @@ function render() {
 
 document.getElementById('refresh').addEventListener('click', () => refresh());
 document.getElementById('add').addEventListener('click', () => {
-  state.draft = {
-    remoteId: '', kind: state.kinds[0]?.kind ?? 'docker', label: '', config: {}, mirror: mirrorDraft(null),
-  };
+  const kind = state.kinds[0]?.kind ?? 'docker';
+  state.draft = { remoteId: '', kind, label: '', config: {}, mirror: mirrorDraft(null, kind) };
   go({ view: 'add' });
 });
 

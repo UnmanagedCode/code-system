@@ -136,13 +136,17 @@ export function baselineNotice(remote) {
 // a rendering. So it lives here, pure and tested.
 
 /**
- * @param {{on:boolean, root:string, exclude:string}} formMirror
- * @returns {null|{root:string, exclude:string[]}}
+ * @param {{on:boolean, root:string, exclude:string}|null|undefined} formMirror
+ * @returns {undefined|null|{root:string, exclude:string[]}}
  */
 export function mirrorPayload(formMirror) {
+  // NO FORM OBJECT IS `undefined`: no mirror group was rendered, so the operator
+  // made no choice. `JSON.stringify` drops the key, so a POST takes the backend's
+  // kind default and a PATCH keeps what is stored.
+  if (!formMirror) return undefined;
   // UNTICKED IS `null`, whatever else the form holds. A half-typed root behind a
   // closed checkbox is not an advertisement.
-  if (!formMirror?.on) return null;
+  if (!formMirror.on) return null;
   // NEWLINE-SEPARATED ONLY. A path may legally contain a comma or a space, so
   // splitting on either would silently cut one in half.
   const exclude = String(formMirror.exclude ?? '')
