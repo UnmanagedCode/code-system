@@ -214,25 +214,39 @@ differently on save:
 
 ### What a worker can see: the mirror root
 
-By default a worker on a docker or ssh remote sees **the project directory and
+A remote that advertises no mirror gives its worker **the project directory and
 nothing else**: code-conductor's session root images the project root, and that
-is the whole geometry.
+is the whole geometry. What a new remote advertises depends on its kind:
 
-Each card's **Advanced** group changes that, per remote. Tick *"Advertise a
-mirror root to code-conductor"* and cc is told how much of the target the session
-root is the local image of.
+| Kind | A new remote advertises |
+|---|---|
+| **docker** | `/`, minus `DEFAULT_MIRROR`'s excludes (`src/mirror.mjs`) — the create form opens the Advanced group with the box ticked |
+| **ssh** | nothing — the box starts unticked |
+
+- **The kind default applies at registration only.** `POST /api/remotes` applies
+  it when the request omits `mirror`. A stored record is never re-defaulted: a
+  remote whose stored mirror is `null` keeps advertising nothing until an
+  operator ticks the box, and a `PATCH` keeps what is stored.
+- **Untick the box on the create form** to register a docker remote without a
+  mirror — the form sends an explicit `mirror: null`.
+
+Each card's **Advanced** group sets the mirror per remote. With *"Advertise a
+mirror root to code-conductor"* ticked, cc is told how much of the target the
+session root is the local image of.
 
 | Field | Means |
 |---|---|
 | **Mirror root** | the path cc's session root becomes the image of, so a worker can read and edit anywhere under it. Defaults to `/` — the whole target |
 | **Excluded paths** | prefixes cc never carries across, one absolute path per line. Defaults to the target's pseudo-filesystems (`/proc`, `/dev`, `/sys`) — the exact list is `DEFAULT_MIRROR` in `src/mirror.mjs`, served to the form over `GET /api/remotes` |
 
-- **The group is collapsed unless the remote already advertises a mirror**, and
-  a remote that has never opted in advertises nothing — exactly the behaviour
-  from before this existed. **These three fields are absent entirely** until the
-  card list's first fetch returns, since the defaults they prefill from are
-  served by the backend and the form holds no copy of them — the Advanced group
-  itself still renders, carrying **Run as**.
+- **The group opens exactly when the box is ticked**: on edit, when the remote
+  already advertises a mirror; on create, when the chosen kind mirrors by default
+  (docker). Changing the create form's **Kind** re-applies that kind's default.
+  **These three fields are absent entirely** until the card list's first fetch
+  returns, since the defaults they prefill from are served by the backend and the
+  form holds no copy of them — the Advanced group itself still renders, carrying
+  **Run as**, and a remote created in that state omits `mirror`, so it gets its
+  kind's default.
 - **Paths must be absolute and already in normal form.** `/app/`, `/a/./b` and
   `/a/../b` are refused in the form, because code-conductor refuses to normalise
   a provider's claim about its own layout. An exclude covering the mirror root is

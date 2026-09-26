@@ -539,7 +539,12 @@ the moment it does, the seam is gone.
 
 The mirror prefill comes from the `mirrorDefaults` on `GET /api/remotes`, so the
 frontend holds no second copy of the default list — and the **mirror half alone**
-is absent until that answer lands. The group itself is not: an advanced config
+is absent until that answer lands. The create draft's checkbox comes from the
+kind descriptor's `mirrorByDefault` (`mirrorDraft(null, kind)`), and the Kind
+`<select>` re-derives it; an edit draft reflects only the stored record. With no
+mirror half rendered, `mirrorPayload` returns `undefined`, so the key is omitted
+from the body: a POST takes the backend's kind default (`mirrorsByDefault`,
+`src/launcher/kinds/index.mjs`) and a PATCH keeps what is stored. The group itself is not: an advanced config
 field comes from the descriptor and has nothing to prefill from, so gating the
 whole `<details>` on the defaults would hide a stored value with no error
 anywhere (`tests/render.test.mjs`). There is no per-field

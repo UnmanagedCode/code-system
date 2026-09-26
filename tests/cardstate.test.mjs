@@ -186,13 +186,15 @@ test('the form route round-trips through the query string', () => {
 // exclude text so that unticking and re-ticking does not lose what was typed —
 // which is exactly why an unticked box must still send `null` rather than
 // whatever those fields happen to hold.
-test('mirrorPayload is null when the box is unticked, whatever else the form holds', () => {
+test('mirrorPayload is null when unticked, and undefined when there is no form object (no choice)', () => {
   for (const over of [{}, { root: '/srv', exclude: '/proc\n/dev' }, { root: '', exclude: '' }]) {
     assert.equal(mirrorPayload({ on: false, root: '/', exclude: '', ...over }), null);
   }
-  // A missing form object is opted out too, not a crash.
-  assert.equal(mirrorPayload(undefined), null);
-  assert.equal(mirrorPayload(null), null);
+  // No form object means no mirror group was rendered, so the operator made no
+  // choice: `undefined` drops the key from the JSON body, and the backend's kind
+  // default (POST) or the stored value (PATCH) applies. Not a crash, and not `null`.
+  assert.equal(mirrorPayload(undefined), undefined);
+  assert.equal(mirrorPayload(null), undefined);
 });
 
 // PINS THE TEXTAREA → WIRE RULE. NEWLINES ONLY: a path may legally contain a

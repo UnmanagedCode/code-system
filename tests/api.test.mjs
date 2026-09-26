@@ -608,19 +608,67 @@ test('a malformed identity is refused 400 on POST and PATCH, and writes nothing'
 
 const MIRROR = { root: '/', exclude: ['/proc', '/dev', '/sys'] };
 
-// PINS: opting in stores exactly what was sent, and opting out stores the
-// explicit `null` cc reads as "I advertise nothing".
-test('POST stores a mirror, and stores null when none is sent', async (t) => {
+// PINS THE DOCKER DEFAULT: a registration that OMITS `mirror` is the one place
+// "the operator made no choice" is knowable, and for a kind whose KIND_META sets
+// `mirrorByDefault` it stores DEFAULT_MIRROR — in the answer and on disk.
+test('POST of a docker remote that omits mirror stores DEFAULT_MIRROR', async (t) => {
+  const { call, store } = await withApi(t);
+  const expected = { root: DEFAULT_MIRROR.root, exclude: [...DEFAULT_MIRROR.exclude] };
+  const made = await call('POST', '/remotes', { remoteId: 'dflt', kind: 'docker', config: { container: 'a' } });
+  assert.equal(made.status, 201);
+  assert.deepEqual(made.body.remote.mirror, expected);
+  assert.deepEqual((await stored(store, 'dflt')).mirror, expected, 'and it is what landed on disk');
+});
+
+// PINS: only an ABSENT `mirror` is defaulted. An explicit `null` is the
+// operator's "advertise nothing", and it wins over the kind's default.
+test('POST with mirror: null stores null (explicit off wins over the docker default)', async (t) => {
   const { call, store } = await withApi(t);
   const made = await call('POST', '/remotes', {
-    remoteId: 'with', kind: 'docker', config: { container: 'a' }, mirror: MIRROR,
+    remoteId: 'off', kind: 'docker', config: { container: 'a' }, mirror: null,
   });
   assert.equal(made.status, 201);
-  assert.deepEqual(made.body.remote.mirror, MIRROR);
-  assert.deepEqual((await stored(store, 'with')).mirror, MIRROR, 'and it is what landed on disk');
+  assert.equal(made.body.remote.mirror, null);
+  assert.equal((await stored(store, 'off')).mirror, null);
+});
 
-  await call('POST', '/remotes', { remoteId: 'without', kind: 'docker', config: { container: 'b' } });
-  assert.equal((await stored(store, 'without')).mirror, null);
+// PINS: an explicit advertisement is stored exactly as sent — the default never
+// merges into it, neither a custom root nor a shortened exclude list.
+test('POST with a custom root or custom excludes stores exactly that', async (t) => {
+  const { call, store } = await withApi(t);
+  const cases = [
+    ['with', MIRROR],
+    ['srv', { root: '/srv/app', exclude: [] }],
+    ['proc', { root: '/', exclude: ['/proc'] }],
+  ];
+  for (const [remoteId, mirror] of cases) {
+    const made = await call('POST', '/remotes', { remoteId, kind: 'docker', config: { container: 'a' }, mirror });
+    assert.equal(made.status, 201);
+    assert.deepEqual(made.body.remote.mirror, mirror);
+    assert.deepEqual((await stored(store, remoteId)).mirror, mirror, `${remoteId}: what landed on disk`);
+  }
+});
+
+// PINS THE OPT-IN: a kind without `mirrorByDefault` (ssh) still advertises
+// nothing when the registration omits `mirror`.
+test('POST of an ssh remote that omits mirror still stores null', async (t) => {
+  const { call, store } = await withApi(t);
+  const made = await call('POST', '/remotes', { remoteId: 'box', kind: 'ssh', config: { host: 'box' } });
+  assert.equal(made.status, 201);
+  assert.equal(made.body.remote.mirror, null);
+  assert.equal((await stored(store, 'box')).mirror, null);
+});
+
+// PINS REGISTRATION-ONLY: the default is never re-applied to a stored record. A
+// docker remote registered with the box unticked keeps its `null` through a
+// PATCH that omits `mirror`.
+test('a PATCH that omits mirror never re-defaults a stored null on docker', async (t) => {
+  const { call, store } = await withApi(t);
+  await call('POST', '/remotes', { remoteId: 'app', kind: 'docker', config: { container: 'a' }, mirror: null });
+  const patched = await call('PATCH', '/remotes/app', { label: 'Renamed' });
+  assert.equal(patched.status, 200);
+  assert.equal(patched.body.remote.mirror, null);
+  assert.equal((await stored(store, 'app')).mirror, null);
 });
 
 // PINS: an invalid advertisement is a 400 IN THE FORM, quoting the offending

@@ -16,7 +16,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  REGISTERED_KINDS, createTransport, identityFieldFor, kindDescriptors,
+  REGISTERED_KINDS, createTransport, identityFieldFor, kindDescriptors, mirrorsByDefault,
 } from '../src/launcher/kinds/index.mjs';
 import { stubDockerCli } from './helpers.mjs';
 
@@ -96,6 +96,19 @@ test('every registered kind identifies its target with a required config field',
   // The other side of the same guard: a kind with no meta at all has no
   // identity field either, and says so rather than answering undefined.
   assert.throws(() => identityFieldFor('host'), /host/);
+});
+
+// PINS WHICH KINDS START MIRRORED, from both readers of the one flag: the
+// descriptor the form reads (always a boolean on the wire) and the predicate
+// POST /api/remotes reads. A kind with no flag — or no meta at all — is opted
+// out, never an error.
+test('docker mirrors by default and ssh does not', () => {
+  const byKind = Object.fromEntries(kindDescriptors().map(d => [d.kind, d]));
+  assert.equal(byKind.docker.mirrorByDefault, true);
+  assert.equal(byKind.ssh.mirrorByDefault, false);
+  assert.equal(mirrorsByDefault('docker'), true);
+  assert.equal(mirrorsByDefault('ssh'), false);
+  assert.equal(mirrorsByDefault('host'), false);
 });
 
 // PINS THE DESCRIPTOR ↔ VALIDATOR CONTRACT. The card's form is generated from

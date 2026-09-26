@@ -4,7 +4,9 @@
 import express from 'express';
 import { unknownBaseline } from './baseline.mjs';
 import { cardFor, remoteCards } from './cards.mjs';
-import { REGISTERED_KINDS, createTransport, isKnownKind, kindDescriptors } from './launcher/kinds/index.mjs';
+import {
+  REGISTERED_KINDS, createTransport, isKnownKind, kindDescriptors, mirrorsByDefault,
+} from './launcher/kinds/index.mjs';
 import { handle } from './mcp.mjs';
 import { DEFAULT_MIRROR, validateMirror } from './mirror.mjs';
 import { REQUEST_TIMEOUT_MS, readCapped, registrationState, runRegistration } from './registration.mjs';
@@ -101,7 +103,13 @@ export function createApi(deps = {}) {
       // the backend is the only writer, and refusing here is a 400 in the
       // operator's form instead of cc's MIRROR_ADVERTISEMENT_INVALID (502) at
       // session start. Before any write, like the config guard above.
-      const m = validateMirror(mirror);
+      //
+      // An ABSENT `mirror` takes the kind's default (`mirrorsByDefault`); an
+      // explicit `null` is the operator's "advertise nothing" and stays off.
+      // Registration is the only place "no choice" is knowable, so PATCH never
+      // defaults. The default is validated too: `validateMirror` builds a fresh
+      // exclude array, so the frozen constant is never what gets stored.
+      const m = validateMirror(mirror === undefined && mirrorsByDefault(kind) ? DEFAULT_MIRROR : mirror);
       if (!m.ok) return res.status(400).json({ error: m.error });
 
       // SWITCHED OFF ON CREATION. An ssh remote genuinely has no master until
@@ -134,8 +142,9 @@ export function createApi(deps = {}) {
       // OUTSIDE the `config` branch below: a mirror change names the SAME
       // target, so it must not reset the gate or the baseline the way a changed
       // config does. The form has no dirty-tracking and PATCHes `mirror` on
-      // every save, so treating it as a target change would switch the remote
-      // off on every edit.
+      // every save that renders its mirror half, so treating it as a target
+      // change would switch the remote off on every edit. An omitted `mirror`
+      // keeps what is stored — a stored `null` is never re-defaulted.
       let mirrorField = record.mirror ?? null;
       if (mirror !== undefined) {
         const m = validateMirror(mirror);

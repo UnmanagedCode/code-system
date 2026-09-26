@@ -88,6 +88,8 @@ const KINDS = [
   {
     kind: 'docker',
     label: 'Docker containers',
+    // Served as a boolean on every descriptor: a new docker remote starts ticked.
+    mirrorByDefault: true,
     configFields: [
       { name: 'container', label: 'Container', required: true, placeholder: 'my-app', hint: 'the container' },
       // `advanced: true` is the descriptor's routing signal: the form must draw
@@ -95,7 +97,7 @@ const KINDS = [
       { name: 'user', label: 'Run as', required: false, advanced: true, placeholder: 'node', hint: 'the identity' },
     ],
   },
-  { kind: 'ssh', label: 'SSH hosts', configFields: [{ name: 'host', label: 'Host', required: true, placeholder: 'my-box', hint: 'a Host alias' }, { name: 'user', label: 'User', required: false, placeholder: '', hint: 'optional' }] },
+  { kind: 'ssh', label: 'SSH hosts', mirrorByDefault: false, configFields: [{ name: 'host', label: 'Host', required: true, placeholder: 'my-box', hint: 'a Host alias' }, { name: 'user', label: 'User', required: false, placeholder: '', hint: 'optional' }] },
 ];
 
 // Served by the backend from src/mirror.mjs; the Advanced group's MIRROR FIELDS
@@ -480,23 +482,46 @@ const inputById = (root, id) => root.all(e => e.tagName === 'input' && e.attrs.i
 const detailsOf = root => root.all(e => e.tagName === 'details')[0];
 const textareaOf = root => root.all(e => e.tagName === 'textarea')[0];
 
-// PINS: a new remote does not advertise anything, the group is out of the way,
-// and the fields carry the DEFAULTS SERVED BY THE BACKEND — so ticking the box
-// offers a usable advertisement rather than an empty form.
-test('the add form renders the Advanced group collapsed, unticked, prefilled from the served defaults', async () => {
+// PINS: a new docker remote (the first kind, so the add form's default) starts
+// with the kind's `mirrorByDefault` — the group OPEN, the box ticked, the fields
+// enabled — so the operator sees the advertisement they are about to register,
+// and it carries the DEFAULTS SERVED BY THE BACKEND rather than a frontend copy.
+test('the add form for docker renders the Advanced group open, ticked, prefilled from the served defaults', async () => {
   const { byId, cards } = await mount();
   byId.get('add').click();
   const tile = cards().at(-1);
 
   const details = detailsOf(tile);
   assert.notEqual(details, undefined, 'the group is rendered');
-  assert.equal('open' in details.attrs, false, 'and collapsed: nothing is advertised yet');
-  assert.equal('checked' in inputById(tile, 'f-mirror-on').attrs, false);
+  assert.equal('open' in details.attrs, true, 'and open: the default is visible before Create');
+  assert.equal('checked' in inputById(tile, 'f-mirror-on').attrs, true);
   assert.equal(inputById(tile, 'f-mirror-root').attrs.value, MIRROR_DEFAULTS.root);
   assert.equal(textareaOf(tile).text, MIRROR_DEFAULTS.exclude.join('\n'),
     'the three pseudo-filesystems, one per line');
-  assert.equal('disabled' in inputById(tile, 'f-mirror-root').attrs, true,
-    'and the fields are disabled while the box is unticked');
+  assert.equal('disabled' in inputById(tile, 'f-mirror-root').attrs, false,
+    'and the fields are enabled while the box is ticked');
+});
+
+// PINS THE KIND <select> WIRING for the mirror half: switching kind re-derives
+// the draft from the NEW kind's descriptor, before the re-render reads it. ssh
+// does not mirror by default; switching back to docker ticks the box again.
+test('switching the add form\'s kind re-derives the mirror default', async () => {
+  const { byId, cards } = await mount();
+  byId.get('add').click();
+  const choose = (kind) => {
+    const select = cards().at(-1).all(e => e.tagName === 'select')[0];
+    for (const fn of select.handlers.change ?? []) fn({ target: { value: kind } });
+    return cards().at(-1);
+  };
+
+  const ssh = choose('ssh');
+  assert.equal('open' in detailsOf(ssh).attrs, false, 'ssh: collapsed');
+  assert.equal('checked' in inputById(ssh, 'f-mirror-on').attrs, false, 'ssh: unticked');
+  assert.equal('disabled' in inputById(ssh, 'f-mirror-root').attrs, true, 'ssh: fields disabled');
+
+  const docker = choose('docker');
+  assert.equal('checked' in inputById(docker, 'f-mirror-on').attrs, true, 'docker: ticked again');
+  assert.equal('open' in detailsOf(docker).attrs, true);
 });
 
 // PINS: an operator editing an already-mirrored remote SEES what is stored,
@@ -513,9 +538,10 @@ test('the edit form for a mirrored remote opens the group, ticked and pre-filled
   assert.equal('disabled' in inputById(edited, 'f-mirror-root').attrs, false, 'and editable');
 });
 
-// PINS THE OTHER HALF: a remote that opted out gets the same collapsed,
-// unticked group on edit — the form must not imply an advertisement that is not
-// stored.
+// PINS THE OTHER HALF: a remote that opted out gets a collapsed, unticked group
+// on edit — the form must not imply an advertisement that is not stored. `off-up`
+// is a DOCKER remote, so this also pins that the kind's `mirrorByDefault` applies
+// to the create form only: a stored `null` is never re-defaulted in the UI.
 test('the edit form for an unmirrored remote leaves the group collapsed and unticked', async () => {
   const { cards } = await mount();
   cardFor(cards(), 'off-up').all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
@@ -527,38 +553,44 @@ test('the edit form for an unmirrored remote leaves the group collapsed and unti
     'and ticking it would offer the defaults, not an empty root');
 });
 
-// PINS THE CHECKBOX WIRING: it writes the draft and re-renders, so the disabled
-// fields become editable. A handler that re-rendered before writing would leave
-// them disabled for a frame and lose the click.
-test('ticking the box re-renders with the mirror fields enabled', async () => {
+// PINS THE CHECKBOX WIRING, both directions: it writes the draft and
+// re-renders, so the fields follow the box. A handler that re-rendered before
+// writing would leave them in the old state for a frame and lose the click.
+// Driven from ssh (unticked) for the tick, and from docker (ticked) for the untick.
+test('the box re-renders the mirror fields enabled when ticked, disabled when unticked', async () => {
   const { byId, cards } = await mount();
   byId.get('add').click();
-  const box = inputById(cards().at(-1), 'f-mirror-on');
-  for (const fn of box.handlers.change ?? []) fn({ target: { checked: true } });
+  const toggle = (checked) => {
+    const box = inputById(cards().at(-1), 'f-mirror-on');
+    for (const fn of box.handlers.change ?? []) fn({ target: { checked } });
+    return cards().at(-1);
+  };
 
-  const after = cards().at(-1);
-  assert.equal('checked' in inputById(after, 'f-mirror-on').attrs, true);
-  assert.equal('disabled' in inputById(after, 'f-mirror-root').attrs, false);
-  assert.equal('disabled' in textareaOf(after).attrs, false);
-  assert.equal('open' in detailsOf(after).attrs, true, 'and the group stays open across the re-render');
+  const unticked = toggle(false);
+  assert.equal('checked' in inputById(unticked, 'f-mirror-on').attrs, false);
+  assert.equal('disabled' in inputById(unticked, 'f-mirror-root').attrs, true);
+  assert.equal('disabled' in textareaOf(unticked).attrs, true);
+
+  const select = unticked.all(e => e.tagName === 'select')[0];
+  for (const fn of select.handlers.change ?? []) fn({ target: { value: 'ssh' } });
+  const ticked = toggle(true);
+  assert.equal('checked' in inputById(ticked, 'f-mirror-on').attrs, true);
+  assert.equal('disabled' in inputById(ticked, 'f-mirror-root').attrs, false);
+  assert.equal('disabled' in textareaOf(ticked).attrs, false);
+  assert.equal('open' in detailsOf(ticked).attrs, true, 'and the group stays open across the re-render');
 });
 
-// PINS THAT THE VALUE ACTUALLY LEAVES. No test in this file asserted a submitted
-// POST body at all before this one — the form could have rendered perfectly and
-// sent nothing.
-test('Create posts the mirror: null when unticked, the typed advertisement when ticked', async () => {
-  const posted = async (tick) => {
+// PINS THAT THE VALUE ACTUALLY LEAVES, in all three docker shapes: the
+// untouched default, an explicit untick, and a typed advertisement. The form
+// could otherwise render perfectly and send nothing, or send the default as
+// `null`.
+test('Create posts the docker default untouched, mirror: null unticked, the typed advertisement when edited', async () => {
+  const posted = async (edit) => {
     const { byId, cards, calls } = await mount({ remotes: [] });
     byId.get('add').click();
     const tile = cards().at(-1);
     for (const fn of inputById(tile, 'f-id').handlers.input ?? []) fn({ target: { value: 'app' } });
-    if (tick) {
-      const box = inputById(tile, 'f-mirror-on');
-      for (const fn of box.handlers.change ?? []) fn({ target: { checked: true } });
-      const open = cards().at(-1);
-      for (const fn of inputById(open, 'f-mirror-root').handlers.input ?? []) fn({ target: { value: '/srv/app' } });
-      for (const fn of textareaOf(open).handlers.input ?? []) fn({ target: { value: '/proc\n/dev\n' } });
-    }
+    edit?.(tile);
     const form = cards().at(-1);
     form.all(e => e.tagName === 'button' && e.text === 'Create')[0].click();
     await new Promise(r => setImmediate(r));
@@ -566,12 +598,21 @@ test('Create posts the mirror: null when unticked, the typed advertisement when 
     return calls.find(c => c.method === 'POST' && c.path === 'api/remotes')?.body;
   };
 
-  const off = await posted(false);
-  assert.notEqual(off, undefined, 'the POST really happened');
+  const untouched = await posted(null);
+  assert.notEqual(untouched, undefined, 'the POST really happened');
+  assert.deepEqual(untouched.mirror, { root: '/', exclude: ['/proc', '/dev', '/sys'] },
+    'an untouched docker form sends the served default it showed');
+
+  const off = await posted((tile) => {
+    for (const fn of inputById(tile, 'f-mirror-on').handlers.change ?? []) fn({ target: { checked: false } });
+  });
   assert.equal(off.mirror, null, 'an unticked box sends the explicit "advertise nothing"');
 
-  const on = await posted(true);
-  assert.deepEqual(on.mirror, { root: '/srv/app', exclude: ['/proc', '/dev'] },
+  const typed = await posted((tile) => {
+    for (const fn of inputById(tile, 'f-mirror-root').handlers.input ?? []) fn({ target: { value: '/srv/app' } });
+    for (const fn of textareaOf(tile).handlers.input ?? []) fn({ target: { value: '/proc\n/dev\n' } });
+  });
+  assert.deepEqual(typed.mirror, { root: '/srv/app', exclude: ['/proc', '/dev'] },
     'the typed root, and the lines as entries — the trailing newline is not one');
 });
 
@@ -595,10 +636,11 @@ test('a hand-edited mirror does not crash the edit form', async () => {
 // PINS ITEM 9: the defaults have ONE source, the backend. Before that answer
 // lands there is nothing truthful to prefill — offering root `/` with an empty
 // exclude list would contradict the form's own copy — so the mirror fields are
-// absent rather than wrong, and a form submitted in that state advertises
-// nothing. The `<details>` around them still renders, for the kind's own
-// advanced config fields; its sibling row below pins that half.
-test('with no served defaults the mirror half is absent, and Create still posts mirror:null', async () => {
+// absent rather than wrong, and a form submitted in that state OMITS `mirror` —
+// the operator made no choice, so the backend's kind default applies rather than
+// an explicit "advertise nothing". The `<details>` around them still renders,
+// for the kind's own advanced config fields; its sibling row below pins that half.
+test('with no served defaults the mirror half is absent, and Create omits the mirror key', async () => {
   const { byId, cards, calls } = await mount({ remotes: [], mirrorDefaults: null });
   byId.get('add').click();
   const tile = cards().at(-1);
@@ -615,7 +657,7 @@ test('with no served defaults the mirror half is absent, and Create still posts 
 
   const body = calls.find(c => c.method === 'POST' && c.path === 'api/remotes')?.body;
   assert.notEqual(body, undefined, 'the POST really happened');
-  assert.equal(body.mirror, null, 'and it advertises nothing, explicitly');
+  assert.equal('mirror' in body, false, 'and it leaves the mirror to the backend\'s kind default');
 });
 
 // ── the Advanced group: an advanced CONFIG field ─────────────────────

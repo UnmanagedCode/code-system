@@ -69,6 +69,18 @@ Do not assume parity when reading one against the other.
 - The **defaults** (`/`, and `/proc` `/dev` `/sys`) come from §11's
   `remoteDescriptors` row, not from us. They live once in `DEFAULT_MIRROR`
   (`src/mirror.mjs`) and are served to the form over REST.
+- **docker registers mirrored; ssh does not.** The switch is
+  `KIND_META.mirrorByDefault` (`src/launcher/kinds/docker.mjs`), read by
+  `mirrorsByDefault` for `POST /api/remotes` and served on the kind descriptor
+  for the create form. It applies **at registration only**, and only when the
+  body OMITS `mirror`; an explicit `mirror: null` registers without a mirror.
+  A stored record is never re-defaulted — `PATCH` keeps what is stored — because
+  a stored `null` is ambiguous: deliberate off, never chosen, and the schema 1→2
+  upgrade's write (`upgradeToSchema2`, `src/migrate.mjs`) all look the same. A
+  migration or a read-time default would override deliberate opt-outs, and the
+  migration guidelines forbid read-time defaults. The frontend keeps the same
+  distinction: `mirrorPayload` answers `undefined` (key omitted) when no mirror
+  half is rendered, and `null` only for an unticked box.
 - A mirror root is a **path claim cc consumes for path arithmetic**, never argv
   and never a shell string — which is why it does not fall under the "no command
   line in a card field" rule in `docs/features.md` → *Operator settings*.
