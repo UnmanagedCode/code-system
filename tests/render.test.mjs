@@ -149,9 +149,10 @@ const REGISTRATION = { state: 'ok', rows: [{ id: 'docker', state: 'ok', message:
 // `reply` lets a test script one non-GET route's answer — which is how the
 // action handlers, not just the render path, get put under test.
 // `mirrorDefaults` is overridable — including to `null` — because "the backend
-// has not served them yet" is a real state the form has to render in.
+// has not served them yet" is a real state the form has to render in. `kinds` is
+// overridable so the served ORDER can vary: the add form defaults to the first.
 function installFetch({
-  remotes = REMOTES, registration = REGISTRATION, reply = null, mirrorDefaults = MIRROR_DEFAULTS,
+  remotes = REMOTES, registration = REGISTRATION, reply = null, mirrorDefaults = MIRROR_DEFAULTS, kinds = KINDS,
 } = {}) {
   const calls = [];
   Object.defineProperty(globalThis, 'fetch', {
@@ -166,7 +167,7 @@ function installFetch({
       const scripted = reply?.(path, init.method ?? 'GET');
       if (scripted) return { ok: scripted.ok !== false, status: scripted.status ?? 200, json: async () => scripted.body ?? {} };
       const body = path === 'api/remotes'
-        ? { remotes, kinds: KINDS, ...(mirrorDefaults ? { mirrorDefaults } : {}) }
+        ? { remotes, kinds, ...(mirrorDefaults ? { mirrorDefaults } : {}) }
         : path === 'api/registration' ? registration
           : {};
       return { ok: true, status: 200, json: async () => body };
@@ -502,6 +503,18 @@ test('the add form for docker renders the Advanced group open, ticked, prefilled
     'and the fields are enabled while the box is ticked');
 });
 
+// PINS THAT THE ADD BUTTON DRAFTS THE MIRROR FOR THE FIRST SERVED KIND, not for
+// a hardcoded docker: with ssh served first, the fresh add form opens unticked.
+test('the add form drafts the mirror for the first served kind, so ssh-first opens unticked', async () => {
+  const { byId, cards } = await mount({ remotes: [], kinds: [KINDS[1], KINDS[0]] });
+  byId.get('add').click();
+  const tile = cards().at(-1);
+
+  assert.notEqual(inputById(tile, 'f-host'), undefined, 'the form is ssh\'s');
+  assert.equal('checked' in inputById(tile, 'f-mirror-on').attrs, false, 'unticked: ssh does not mirror by default');
+  assert.equal('open' in detailsOf(tile).attrs, false, 'and collapsed');
+});
+
 // PINS THE KIND <select> WIRING for the mirror half: switching kind re-derives
 // the draft from the NEW kind's descriptor, before the re-render reads it. ssh
 // does not mirror by default; switching back to docker ticks the box again.
@@ -696,7 +709,7 @@ test('the Advanced group renders even before mirrorDefaults arrive', async () =>
   assert.notEqual(details, undefined, 'the group is still there');
   assert.notEqual(inputById(details, 'f-user'), undefined, 'carrying the advanced config field');
   assert.equal(inputById(details, 'f-mirror-on'), undefined, 'but not a mirror form it cannot prefill');
-  assert.equal('open' in details.attrs, false, 'and collapsed: nothing is advertised or configured yet');
+  assert.equal('open' in details.attrs, false, 'and collapsed: with no mirror form drafted, nothing is ticked to open it');
 });
 
 // PINS THAT THE TYPED IDENTITY ACTUALLY LEAVES. The field could render

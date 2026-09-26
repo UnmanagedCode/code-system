@@ -736,8 +736,9 @@ test('a config change still resets the gate, and carries the stored mirror throu
 
 // PINS THE makeRecord FIELD-LIST HAZARD: makeRecord rebuilds from a fixed list,
 // so a field the PATCH handler does not carry through EXPLICITLY is silently
-// dropped. The form always sends `mirror`, but a rename from any other client
-// must not erase it.
+// dropped. The form itself omits `mirror` when it has no mirror half to render
+// (before GET /api/remotes serves the defaults), and so may any other client;
+// neither may erase what is stored.
 test('a PATCH that omits mirror preserves the stored one', async (t) => {
   const { call, store } = await withApi(t);
   await call('POST', '/remotes', {

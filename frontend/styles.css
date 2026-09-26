@@ -148,8 +148,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .field.check input { width: auto; flex: 0 0 auto; }
 .field.check label { font-size: 13px; color: var(--text); }
 
-/* The mirror advertisement: collapsed unless the remote has opted in. The first
-   and only <details> in this UI. */
+/* The Advanced group: open exactly when the mirror box is ticked — a stored
+   mirror on edit, or a fresh create form for a kind that mirrors by default.
+   The first and only <details> in this UI. */
 details.advanced {
   border-top: 1px solid var(--border); padding-top: 8px;
   display: flex; flex-direction: column; gap: 8px;

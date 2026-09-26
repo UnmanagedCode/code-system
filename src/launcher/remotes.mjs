@@ -142,9 +142,10 @@ export class StoreRemoteSource {
   }
 
   // THE PER-REMOTE ADVERTISEMENT, read fresh off the record like everything
-  // else this source answers. `record.mirror` is null for a remote the operator
-  // did not opt in, and the empty advertisement is what cc reads as "I advertise
-  // nothing" — the same path a provider without the capability takes.
+  // else this source answers. A `null` `record.mirror` means no advertisement —
+  // an explicit off at registration or edit, or a kind with no mirror default —
+  // and the empty advertisement is what cc reads as "I advertise nothing", the
+  // same path a provider without the capability takes.
   //
   // PASSED THROUGH UNVALIDATED, exactly as `config` is: src/mirror.mjs validates
   // at the store's front door, where the backend is the only writer. A
@@ -160,7 +161,7 @@ export class StoreRemoteSource {
     if (!r.ok || r.record?.kind !== this.#kind) return { mirrorRoot: null, exclude: [] };
     const m = r.record.mirror;
     // `null` IS THE ONLY SHAPE WE ANSWER FOR — it is what the backend writes for
-    // a remote that opted out. Everything else is forwarded as it was stored.
+    // a remote with no advertisement. Everything else is forwarded as it was stored.
     if (m === null || m === undefined) return { mirrorRoot: null, exclude: [] };
     // A NON-OBJECT HAS NO FIELDS TO PROJECT, and projecting it anyway is a
     // laundering hole: `m.root` on a string, a number, a boolean or an array is
