@@ -28,6 +28,7 @@ Durable knowledge about this project: gotchas, decisions, glossary. Read this fi
 
 - [decisions/architecture-shape.md](decisions/architecture-shape.md) — the locked architecture decisions for this plugin (System-vs-remote split, ownership boundaries, v1 scope)
 - [decisions/channel-admission-is-proof.md](decisions/channel-admission-is-proof.md) — channel admission is an exact-argv PROOF, not a cc-stamped marker; a marker retires no boundedness guard (`removeTree`, watchdog, retirement, `ETRANSPORT`) and its only win is replacing the `derivationShaped` sniff; frame `env` is the wrong carrier; name the new trust before making admission self-attested
+- [decisions/host-palette.md](decisions/host-palette.md) — the UI copies code-conductor's shell tokens by VALUE (the host injects none); status is `--green`/`--amber`/`--red`, never `--accent`; the accent FILL is a form's submit only, a switch-on action is a quiet green-tinted button; disabled copies the host; kind hues are categorical tokens; `--accent-bar` is script-set and exempted from the guard
 - [decisions/provider-family-per-op-cost.md](decisions/provider-family-per-op-cost.md) — inside-the-remote (cc's reference provider) vs outside (`docker`/`ssh`) families trade remote deps against per-op spawn cost; the cost is bounded by ops-per-TURN, not RTT, and enumeration breaks it; typed frames buy ~3 % against ~96 % transport; ask per family (SFTP vs tar-granular docker)
 
 ## Glossary

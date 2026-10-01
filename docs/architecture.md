@@ -510,7 +510,7 @@ layout.
 | File | Owns |
 |---|---|
 | `index.html` | the static shell |
-| `styles.css` | all styling. cc injects **no CSS and no tokens** across the iframe and hard-codes `#plugin-frame { background: #fff }` while its own shell is dark, so the token block is load-bearing, not decoration |
+| `styles.css` | all styling. cc injects **no CSS and no tokens** across the iframe and hard-codes `#plugin-frame { background: #fff }` while its own shell is dark, so the token block is load-bearing, not decoration. Its `:root` values are copied from the `:root` block of code-conductor's shell stylesheet (`public/styles.css`); `tests/frontend-styles.test.mjs` pins the token contract |
 | `app.js` | fetch, poll, state, `render()` — **DOM only** |
 | `cardState.mjs` | **pure, DOM-free**: the gate/probe vocabulary, the alerts, the routing, and the mirror form↔wire conversion |
 
@@ -519,7 +519,11 @@ layout.
 (`tests/cardstate.test.mjs`); `app.js` is wiring. `tests/frontend.test.mjs`
 additionally reads the files off disk for the compliance items that fail only
 once mounted under cc, and asserts `cardState.mjs` touches no browser global —
-the moment it does, the seam is gone.
+the moment it does, the seam is gone. `tests/frontend-styles.test.mjs` reads
+`styles.css` as text and pins the palette contract: dark-only, the host's token
+names on `:root`, status on `--green`/`--amber`/`--red` and never `--accent`, the
+accent fill on a form's submit only, the host's control radius and disabled
+treatment, and no raw colour functions.
 
 **The Advanced group** (`formFor`, `frontend/app.js`) is the first and only
 `<details>` in this UI, and it holds **two kinds of member**:
