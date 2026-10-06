@@ -160,6 +160,46 @@ export function kindDescriptors(kinds = REGISTERED_KINDS) {
 }
 
 /**
+ * The names of a kind's secret config fields — declared once, as `secret: true`
+ * on its `KIND_META.configFields` entry.
+ */
+export function secretFieldsFor(kind) {
+  return (METAS[kind]?.configFields ?? []).filter(f => f.secret === true).map(f => f.name);
+}
+
+/**
+ * A config as every API response shows it: secret values omitted, their names
+ * listed in `storedSecrets` instead (only those actually stored).
+ */
+export function redactConfig(kind, config) {
+  const secrets = secretFieldsFor(kind);
+  const out = { ...(config ?? {}) };
+  const storedSecrets = [];
+  for (const name of secrets) {
+    if (Object.hasOwn(out, name)) { storedSecrets.push(name); delete out[name]; }
+  }
+  return { config: out, storedSecrets };
+}
+
+/**
+ * The PATCH rule for a secret field: omitted keeps the stored value, `null`
+ * clears it, a non-empty string sets it, `''` is refused.
+ *
+ * @throws {Error} on an empty-string secret
+ */
+export function mergeSecrets(kind, incoming, stored) {
+  const out = { ...(incoming ?? {}) };
+  for (const name of secretFieldsFor(kind)) {
+    if (out[name] === '') {
+      throw new Error(`'${name}' must not be empty — omit it to keep the stored value, or send null to clear it`);
+    }
+    if (out[name] === null) delete out[name];
+    else if (out[name] === undefined && stored?.[name] !== undefined) out[name] = stored[name];
+  }
+  return out;
+}
+
+/**
  * Whether a NEW remote of this kind starts advertising `DEFAULT_MIRROR`
  * (src/mirror.mjs) when its registration omits `mirror`. Read by
  * `POST /api/remotes` only: a stored record is never re-defaulted, because a

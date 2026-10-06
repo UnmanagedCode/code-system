@@ -22,7 +22,12 @@ import { stubDockerCli } from './helpers.mjs';
 
 // A plausible value per descriptor field, so a form can be filled in from the
 // descriptor alone. Never option-shaped — a leading `-` is refused by design.
-const SAMPLE = { container: 'app', host: 'box', user: 'me' };
+const SAMPLE = {
+  container: 'app', host: 'box', user: 'me', password: 'pw with spaces ', identityFile: '/home/me/.ssh/id_ed25519',
+};
+// A field a kind refuses to accept together with another one: the "full" config
+// leaves the key out and a second pass swaps it in for its counterpart.
+const EXCLUSIVE = { identityFile: 'password' };
 
 // PINS: the gate's per-kind seam is REQUIRED, not optional. Before the gate,
 // `connect`/`disconnect` were an ssh-only multiplexing detail and `docker` had
@@ -125,7 +130,9 @@ test('every descriptor\'s fields are exactly what its validateConfig accepts', (
     assert.ok(d.configFields.length > 0, `${d.kind}: at least one field`);
 
     const validate = createTransport(d.kind).validateConfig.bind(createTransport(d.kind));
-    const full = Object.fromEntries(d.configFields.map(f => [f.name, SAMPLE[f.name]]));
+    const full = Object.fromEntries(d.configFields
+      .filter(f => !(f.name in EXCLUSIVE && d.configFields.some(g => g.name === EXCLUSIVE[f.name])))
+      .map(f => [f.name, SAMPLE[f.name]]));
     for (const f of d.configFields) {
       assert.ok(SAMPLE[f.name] !== undefined,
         `${d.kind}.${f.name}: this test needs a sample value for every field`);
@@ -134,13 +141,22 @@ test('every descriptor\'s fields are exactly what its validateConfig accepts', (
 
     const v = validate(full);
     assert.equal(v.ok, true, `${d.kind}: a config built from the descriptor alone is accepted`);
-    assert.deepEqual(Object.keys(v.config).sort(), d.configFields.map(f => f.name).sort(),
+    assert.deepEqual(Object.keys(v.config).sort(), Object.keys(full).sort(),
       `${d.kind}: the accepted config is exactly the descriptor's fields — no hidden field, no dead one`);
+    // The alternative of each exclusive pair, validated in its counterpart's place.
+    for (const [alt, instead] of Object.entries(EXCLUSIVE)) {
+      if (!d.configFields.some(f => f.name === alt)) continue;
+      const swapped = { ...full, [alt]: SAMPLE[alt] };
+      delete swapped[instead];
+      const sv = validate(swapped);
+      assert.equal(sv.ok, true, `${d.kind}.${alt}: ${sv.error}`);
+      assert.deepEqual(Object.keys(sv.config).sort(), Object.keys(swapped).sort());
+    }
 
     // Each `required: true` must REALLY be required, and each optional one
     // really optional. A form that marks the wrong field either blocks a valid
     // remote or lets an invalid one reach the store's front door.
-    for (const f of d.configFields) {
+    for (const f of d.configFields.filter(g => g.name in full)) {
       const without = { ...full };
       delete without[f.name];
       assert.equal(validate(without).ok, !f.required,
@@ -163,10 +179,25 @@ test('an advanced config field is still a real config field', () => {
     assert.equal(field.advanced, true);
     const validate = createTransport(kind).validateConfig.bind(createTransport(kind));
     const full = Object.fromEntries(
-      kindDescriptors().find(d => d.kind === kind).configFields.map(f => [f.name, SAMPLE[f.name]]));
+      kindDescriptors().find(d => d.kind === kind).configFields
+        .filter(f => !(f.name in EXCLUSIVE)).map(f => [f.name, SAMPLE[f.name]]));
     const v = validate(full);
     assert.equal(v.ok, true, `${kind}.${field.name}: ${v.error}`);
     assert.equal(v.config[field.name], SAMPLE[field.name],
       `${kind}.${field.name}: an advanced field is stored like any other`);
   }
+});
+
+// PINS THE ONE DECLARATION OF SECRECY: a field is secret iff its descriptor says
+// `secret: true`, and the redaction helpers read nothing else — so a kind cannot
+// grow a secret that the API forgets to hide.
+test('ssh declares its password secret, and the redaction helpers follow the descriptor', async () => {
+  const { secretFieldsFor, redactConfig } = await import('../src/launcher/kinds/index.mjs');
+  const ssh = kindDescriptors().find(d => d.kind === 'ssh');
+  assert.deepEqual(ssh.configFields.filter(f => f.secret === true).map(f => f.name), ['password']);
+  assert.deepEqual(secretFieldsFor('ssh'), ['password']);
+  assert.deepEqual(secretFieldsFor('docker'), []);
+  assert.deepEqual(redactConfig('ssh', { host: 'h', password: 'x' }),
+    { config: { host: 'h' }, storedSecrets: ['password'] });
+  assert.deepEqual(redactConfig('ssh', { host: 'h' }), { config: { host: 'h' }, storedSecrets: [] });
 });

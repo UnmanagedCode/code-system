@@ -349,3 +349,39 @@ test('a quarantine move that fails is logged, and the rest of the store is still
       'the record AFTER the failure was still processed: one bad file is not a dead pass');
   });
 });
+
+// PINS that the records directory ends up private even when it already existed
+// with looser bits (mkdir's mode applies only on creation), since records can
+// hold a password.
+test('writeRemote tightens a pre-existing records directory to 0700', async (t) => {
+  await withStore(t, async () => {
+    await fs.mkdir(remotesDir(), { recursive: true, mode: 0o755 });
+    await fs.chmod(remotesDir(), 0o755);
+    assert.equal((await fs.stat(remotesDir())).mode & 0o777, 0o755, 'precondition: it starts loose');
+    await writeRemote(makeRecord({ remoteId: 'a', kind: 'docker', config: { container: 'c' }, enabled: false }));
+    assert.equal((await fs.stat(remotesDir())).mode & 0o777, 0o700);
+    // And the startup pass does the same for a directory no write has touched.
+    await fs.chmod(remotesDir(), 0o755);
+    await migrate();
+    assert.equal((await fs.stat(remotesDir())).mode & 0o777, 0o700);
+  });
+});
+
+// PINS that a tightening chmod the store cannot perform is a logged warning, not
+// a rejection — `migrate()` runs at backend boot and must not stop it starting —
+// while the records dir stays usable. (chmod is made to fail by a stub: a real
+// failure needs a foreign-owned directory or a mode-less filesystem.)
+test('a records-dir chmod that fails warns and carries on', async (t) => {
+  await withStore(t, async () => {
+    await fs.mkdir(remotesDir(), { recursive: true, mode: 0o755 });
+    await fs.chmod(remotesDir(), 0o755);
+    const warnings = [];
+    t.mock.method(console, 'warn', (m) => warnings.push(String(m)));
+    t.mock.method(fs, 'chmod', async () => { throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' }); });
+    await migrate();
+    await writeRemote(makeRecord({ remoteId: 'a', kind: 'docker', config: { container: 'c' }, enabled: false }));
+    assert.equal(warnings.length, 1, 'warned once for the directory, not per write');
+    assert.match(warnings[0], /could not be made private/);
+    assert.equal((await readRemote('a')).ok, true, 'the write still landed');
+  });
+});

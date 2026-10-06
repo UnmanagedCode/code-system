@@ -10,7 +10,7 @@
 // under code-conductor.
 
 import {
-  GATE_COPY, baselineNotice, cardAlert, gateStatus, mirrorPayload,
+  GATE_COPY, baselineNotice, cardAlert, configPayload, gateStatus, mirrorPayload,
   mirrorSummary, probeStatus, routeFromSearch, searchForRoute,
 } from './cardState.mjs';
 
@@ -228,14 +228,28 @@ function formFor(mode) {
   // `advanced` in the kind's descriptor goes into the <details> below instead of
   // the connection block, and nothing else about it differs — same draft key,
   // same wire shape, same validator.
-  const configField = f => el('div', { class: 'field' },
-    el('label', { for: `f-${f.name}` }, `${f.label}${f.required ? '' : ' (optional)'}`),
-    el('input', {
-      id: `f-${f.name}`, value: draft.config[f.name] ?? '', placeholder: f.placeholder ?? '',
-      oninput: e => { draft.config[f.name] = e.target.value; },
-    }),
-    f.hint ? el('span', { class: 'hint' }, f.hint) : null,
-  );
+  //
+  // A SECRET field is a password input, never prefilled (the API never returns
+  // its value). When one is stored, the form says so and offers to clear it:
+  // blank keeps it, the checkbox removes it.
+  const configField = f => {
+    const stored = f.secret === true && mode === 'edit' && (draft.storedSecrets ?? []).includes(f.name);
+    return el('div', { class: 'field' },
+      el('label', { for: `f-${f.name}` }, `${f.label}${f.required ? '' : ' (optional)'}`),
+      el('input', {
+        id: `f-${f.name}`, value: f.secret === true ? undefined : (draft.config[f.name] ?? ''),
+        placeholder: stored ? 'stored — leave blank to keep' : (f.placeholder ?? ''),
+        ...(f.secret === true ? { type: 'password', autocomplete: 'new-password' } : {}),
+        oninput: e => { draft.config[f.name] = e.target.value; },
+      }),
+      stored ? el('label', { class: 'hint' },
+        el('input', {
+          type: 'checkbox', checked: draft.clear?.[f.name] === true,
+          onchange: e => { (draft.clear ??= {})[f.name] = e.target.checked; },
+        }), ` Clear stored ${f.label.toLowerCase()}`) : null,
+      f.hint ? el('span', { class: 'hint' }, f.hint) : null,
+    );
+  };
 
   const advancedFields = (desc?.configFields ?? []).filter(f => f.advanced === true);
   for (const f of desc?.configFields ?? []) {
@@ -256,7 +270,7 @@ function formFor(mode) {
   // baseline as the new user.
   if (mode === 'edit') {
     fields.push(el('div', { class: 'note' },
-      'Changing a connection value — including Run as — switches this remote off: a different'
+      'Changing a connection value — including a password, a key file or Run as — switches this remote off: a different'
       + ' config may point at a different target, or run as a different user. Saving with every'
       + ' value unchanged, or editing only the label or the mirror settings below, does not.'));
   }
@@ -366,8 +380,8 @@ async function submit(mode) {
   // An empty optional field is OMITTED rather than sent as ''. The kind's
   // validator treats an absent operand as absent; sending '' would be the form
   // inventing a value the user did not type.
-  const config = Object.fromEntries(
-    Object.entries(draft.config).filter(([, v]) => String(v ?? '').trim() !== ''));
+  const secretNames = (descriptorFor(draft.kind)?.configFields ?? []).filter(f => f.secret === true).map(f => f.name);
+  const config = configPayload(draft.config, draft.clear, secretNames);
   await action(mode === 'create' ? NEW_KEY : draft.remoteId, async () => {
     if (mode === 'create') {
       await api('POST', 'api/remotes', {
@@ -427,6 +441,8 @@ function controls(remote) {
           kind: remote.kind,
           label: remote.label ?? '',
           config: { ...remote.config },
+          storedSecrets: [...(remote.storedSecrets ?? [])],
+          clear: {},
           mirror: mirrorDraft(remote, remote.kind),
         };
         go({ view: 'edit', remoteId: remote.remoteId });

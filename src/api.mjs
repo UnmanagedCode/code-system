@@ -3,9 +3,9 @@
 
 import express from 'express';
 import { unknownBaseline } from './baseline.mjs';
-import { cardFor, remoteCards } from './cards.mjs';
+import { cardFor, publicRecord, remoteCards } from './cards.mjs';
 import {
-  REGISTERED_KINDS, createTransport, isKnownKind, kindDescriptors, mirrorsByDefault,
+  REGISTERED_KINDS, createTransport, isKnownKind, kindDescriptors, mergeSecrets, mirrorsByDefault,
 } from './launcher/kinds/index.mjs';
 import { handle } from './mcp.mjs';
 import { DEFAULT_MIRROR, validateMirror } from './mirror.mjs';
@@ -96,7 +96,10 @@ export function createApi(deps = {}) {
       if (existing.ok) return res.status(409).json({ error: `remote '${remoteId}' already exists` });
 
       // The kind owns its own config shape; the store never inspects it.
-      const v = createTransport(kind).validateConfig(config);
+      // A `null` secret is "none": drop it so the kind sees the field absent.
+      let v;
+      try { v = createTransport(kind).validateConfig(mergeSecrets(kind, config, null)); }
+      catch (e) { return res.status(400).json({ error: e.message }); }
       if (!v.ok) return res.status(400).json({ error: v.error });
 
       // THE STORE'S FRONT DOOR IS THE ONLY VALIDATOR of a mirror advertisement:
@@ -119,7 +122,7 @@ export function createApi(deps = {}) {
         remoteId, kind, label, config: v.config, enabled: false, mirror: m.mirror, baseline: unknownBaseline(),
       });
       await writeRemote(record);
-      res.status(201).json({ remote: record });
+      res.status(201).json({ remote: publicRecord(record) });
     } catch (e) { next(e); }
   });
 
@@ -152,7 +155,11 @@ export function createApi(deps = {}) {
         mirrorField = m.mirror;
       }
       if (config !== undefined) {
-        const v = createTransport(record.kind).validateConfig(config);
+        // BEFORE validation, so `sameConfig` sees a kept secret as unchanged and a
+        // new one as a change (which resets the gate).
+        let v;
+        try { v = createTransport(record.kind).validateConfig(mergeSecrets(record.kind, config, record.config)); }
+        catch (e) { return res.status(400).json({ error: e.message }); }
         if (!v.ok) return res.status(400).json({ error: v.error });
         nextConfig = v.config;
         // A config that really CHANGED may point at a different target
@@ -179,7 +186,7 @@ export function createApi(deps = {}) {
         createdAt: record.createdAt,
       });
       await writeRemote(updated);
-      res.json({ remote: updated });
+      res.json({ remote: publicRecord(updated) });
     } catch (e) { next(e); }
   });
 

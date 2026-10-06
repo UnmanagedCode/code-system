@@ -13,7 +13,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { kindDescriptors } from '../src/launcher/kinds/index.mjs';
 import {
-  GATE_COPY, baselineNotice, cardAlert, gateStatus, mirrorPayload,
+  GATE_COPY, baselineNotice, cardAlert, configPayload, gateStatus, mirrorPayload,
   mirrorSummary, probeStatus, routeFromSearch, searchForRoute,
 } from '../frontend/cardState.mjs';
 
@@ -219,4 +219,17 @@ test('mirrorSummary is null for an opted-out remote and names the root otherwise
   assert.equal(mirrorSummary(remote({ mirror: null })), null);
   assert.equal(mirrorSummary(remote({ mirror: { root: '/srv/app', exclude: ['/proc'] } })), 'mirror /srv/app');
   assert.equal(mirrorSummary(remote({ mirror: { root: '/', exclude: [] } })), 'mirror /');
+});
+
+// PINS the form's config payload: blank fields are omitted (never ''), a secret
+// is never trimmed, and a stored secret the operator cleared goes as null —
+// the backend's keep/clear protocol.
+test('configPayload omits blanks, never trims a secret, and sends null for a cleared one', () => {
+  const secrets = ['password'];
+  assert.deepEqual(configPayload({ host: 'box', user: '  ', password: '' }, {}, secrets), { host: 'box' });
+  assert.deepEqual(configPayload({ host: 'box', password: ' sp ace ' }, {}, secrets), { host: 'box', password: ' sp ace ' });
+  assert.deepEqual(configPayload({ host: 'box' }, { password: true }, secrets), { host: 'box', password: null });
+  assert.deepEqual(configPayload({ host: 'box', password: 'new' }, { password: true }, secrets),
+    { host: 'box', password: 'new' }, 'a typed replacement wins over a clear tick');
+  assert.deepEqual(configPayload({ host: 'box' }, { password: false }, secrets), { host: 'box' });
 });

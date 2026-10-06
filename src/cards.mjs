@@ -12,8 +12,17 @@
 // a surface built on this must not create (.wiki/gotchas/gate-versus-probe.md).
 
 import { refreshBaseline } from './baseline.mjs';
-import { createTransport } from './launcher/kinds/index.mjs';
+import { createTransport, redactConfig } from './launcher/kinds/index.mjs';
 import { listRemotes, writeRemote } from './store.mjs';
+
+/**
+ * A record as an API response carries it: its config redacted and the names of
+ * the stored secrets alongside. Internal writes keep the full record.
+ */
+export function publicRecord(record) {
+  const { config, storedSecrets } = redactConfig(record.kind, record.config);
+  return { ...record, config, storedSecrets };
+}
 
 /**
  * @param {{ok:boolean, record?:object, remoteId?:string, reason?:string, message?:string}} entry
@@ -38,11 +47,11 @@ export async function cardFor(entry, { baseline = true, reachability = 'always' 
   // THE GATE WINS, AND IT WINS BEFORE ANY I/O: no transport is built, so no
   // `docker inspect` and no `ssh -O check` runs for a remote the caller has
   // said it will not report a probe for.
-  if (reachability === 'gated' && record.enabled !== true) return { ...record };
+  if (reachability === 'gated' && record.enabled !== true) return publicRecord(record);
 
   const transport = createTransport(record.kind);
   if (!transport) {
-    return { ...record, reachability: { connected: false, detail: `unknown kind '${record.kind}'`, fingerprint: null } };
+    return { ...publicRecord(record), reachability: { connected: false, detail: `unknown kind '${record.kind}'`, fingerprint: null } };
   }
   let reach;
   try { reach = await transport.reachability(record.config ?? {}); }
@@ -55,7 +64,7 @@ export async function cardFor(entry, { baseline = true, reachability = 'always' 
     ? await refreshBaseline(transport, record, reach)
     : { record, probed: false };
   if (probed) await writeRemote(out);
-  return { ...out, reachability: reach };
+  return { ...publicRecord(out), reachability: reach };
 }
 
 // Every stored remote as a card, in the store's own order.

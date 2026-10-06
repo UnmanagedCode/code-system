@@ -18,6 +18,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { remoteCards } from '../src/cards.mjs';
 import { renderRemotes } from '../src/mcp.mjs';
 import { SCHEMA } from '../src/store.mjs';
 import { stubDockerCli, withApi } from './helpers.mjs';
@@ -616,4 +617,29 @@ test('renderRemotes is a pure function of the cards it is given', () => {
   assert.equal(
     renderRemotes([{ remoteId: 'z', kind: 'host', label: 'a"b\nc', config: {}, enabled: false }]),
     'disabled  z  host  [unregistered kind]  "a\\"b\\nc"');
+});
+
+// PINS that the cards the catalog is rendered FROM never carry a stored
+// password, on every path `cardFor` can return by: the gated early return (gate
+// off), the gated full path (gate on), and the ungated one. The renderer prints
+// only the identity field, so asserting on its text alone would pass with the
+// redaction removed — the card objects are what must be clean.
+test('the cards behind list_remotes never carry an ssh password, on every cardFor path', async (t) => {
+  const { call, store } = await withApi(t);
+  await plant(store,
+    remoteRecord('off', { kind: 'ssh', enabled: false, config: { host: '10.0.0.5', user: 'dev', password: 'hunter2 secret' } }),
+    remoteRecord('on', { kind: 'ssh', enabled: true, config: { host: '10.0.0.6', user: 'dev', password: 'hunter2 secret' } }));
+
+  for (const opts of [{ reachability: 'gated' }, { reachability: 'always' }, { reachability: 'gated', baseline: false }]) {
+    const cards = await remoteCards(opts);
+    assert.equal(cards.length, 2);
+    for (const card of cards) {
+      assert.equal(JSON.stringify(card).includes('hunter2'), false, `${card.remoteId} ${JSON.stringify(opts)}`);
+      assert.deepEqual(card.storedSecrets, ['password']);
+      assert.equal(card.config.password, undefined);
+    }
+  }
+  const res = await listRemotes(call);
+  assert.equal(JSON.stringify(res.body).includes('hunter2'), false);
+  assert.match(JSON.stringify(res.body), /10\.0\.0\.5/);
 });

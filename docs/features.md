@@ -355,6 +355,55 @@ Disconnect does both: it switches the remote off (which is what refuses
 commands) and closes the shared connection (which is only about multiplexing).
 Keeping those apart is why the card shows them as two separate things.
 
+### Explicit credentials: a password or a key file
+
+A card may carry its own credentials instead of relying on your ssh config. Fill
+in **host** (a plain hostname or IP works), **user**, and **one** of:
+
+| Mode | Card fields | What happens |
+|---|---|---|
+| Ambient (default) | host alias only | Your `~/.ssh/config` and agent supply the identity |
+| Password | `user` + **Password** | Each ssh call answers the password prompt itself; no ssh config or agent is needed |
+| Key file | `user` + **Private key file** | That key is offered **first**, with `IdentitiesOnly` and public-key auth only. Any `IdentityFile` your ssh config lists for a matching `Host` is **still offered after it** (see below) |
+
+A card cannot carry both a password and a key file — saving both is refused.
+
+- **OpenSSH 8.4 or later** is needed for password login. On an older client
+  **Connect** refuses with a message and the remote stays off.
+- **Key file**: an absolute path to an **unencrypted** key readable only by you
+  (no group or world bits). A missing or too-open file is refused on Connect.
+  **Passphrase-protected keys are not supported** — they fail immediately rather
+  than prompting.
+- **Host keys are still never accepted for you.** With a password, an unknown
+  host key fails with `Host key verification failed`; add the key to your
+  `known_hosts` first.
+- **A wrong password or key fails fast** (no retry loop) and the card names the
+  credential to fix.
+- **The password is stored unencrypted** in the remote's store file, which is
+  created readable only by its owner (mode 0600, in a 0700 directory). It is
+  readable by anyone with that user's access, by root, and by any backup of the
+  store. It is **never returned** by the API: cards show only that a password is
+  stored. When editing, leave the field blank to keep it, or tick **Clear stored
+  password** to remove it. Changing it switches the remote off, like any other
+  connection value.
+- **How it reaches ssh**: through the ssh child's environment
+  (`CODE_SYSTEM_SSH_PASSWORD`), never its command line. Only the same user or
+  root can read that environment. A `CODE_SYSTEM_SSH` override that clears the
+  environment (for example a `sudo` wrapper) breaks password login.
+- **Changing a password while a password connection is live**: Connect reuses
+  the live shared connection until it has been idle for 600 s, so the new
+  password is not tried until then. Disconnect first to test it immediately.
+- **A key file does not exclude your ssh config's identities.** ssh has no
+  per-invocation option that drops a config-listed `IdentityFile` without also
+  discarding the config (`-F`), which an alias host needs. So when the host
+  matches a `Host` entry that lists one, that key can authenticate even if the
+  card's key is unauthorized. `IdentitiesOnly` still keeps agent keys out unless
+  they are listed. For a login that only the card's key may perform, use a host
+  with no `IdentityFile` in your config.
+- A password or key file gets its own shared connection, separate from a
+  credential-less remote to the same user and host.
+- A non-standard ssh **port** still has to be set in an ssh config `Host` entry.
+
 ## Registration is automatic, and says why when it fails
 
 The plugin registers its two cc System rows — `docker` and `ssh` — on startup,

@@ -23,12 +23,17 @@ RUN apt-get update \
       'PermitRootLogin prohibit-password' \
       'UsePAM no' \
     > /etc/ssh/sshd_config.d/code-system.conf \
+ && useradd -m -s /bin/bash dev \
+ && passwd -l dev >/dev/null \
  && printf '%s\n' \
       '#!/bin/sh' \
       'set -e' \
       'if [ -n "$AUTHORIZED_KEY" ]; then' \
       '  printf "%s\n" "$AUTHORIZED_KEY" > /root/.ssh/authorized_keys' \
       '  chmod 600 /root/.ssh/authorized_keys' \
+      'fi' \
+      'if [ -n "$ALLOW_PASSWORD" ]; then' \
+      '  printf "%s\n" "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/00-password.conf' \
       'fi' \
       'ssh-keygen -A >/dev/null' \
       'exec /usr/sbin/sshd -D -e' \

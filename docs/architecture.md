@@ -1012,7 +1012,7 @@ re-asks the socket.
 independently (`kinds/ssh.mjs`):
 
 ```
-controlPathFor(config) → <os.tmpdir()>/code-system-ssh-<uid>/<sha256(user \0 host)[0..20]>
+controlPathFor(config) → <os.tmpdir()>/code-system-ssh-<uid>/<sha256(user \0 host [\0password | \0key:<identityFile>])[0..20]>
 ```
 
 - **Keyed on the resolved connection identity `(user, host)`, not on
@@ -1024,6 +1024,22 @@ controlPathFor(config) → <os.tmpdir()>/code-system-ssh-<uid>/<sha256(user \0 h
   The separator is a NUL because it is the one byte neither field can contain:
   with a joinable one, `('ab','c')` and `('a','bc')` would collide onto one
   master.
+- **A credential is part of the identity.** `identityHash` appends `\0password`
+  or `\0key:<path>` when the card carries one, so an ambient master is never
+  reused to "prove" a password or key; with no credentials the hash — and every
+  existing socket path — is unchanged. The password value is never hashed.
+- **Credentials ride one funnel, `sshAuth(config, baseEnv)`.** It returns the
+  extra argv and the child environment for a call; every ssh invocation
+  (`spawnPlan`, `checkMaster`, `connect`, `disconnect`, `reap`) takes both. The
+  password is carried by `SSH_ASKPASS` → `kinds/askpass.sh` (shipped, 0755,
+  resolved from `import.meta.url`) reading `CODE_SYSTEM_SSH_PASSWORD` from the
+  child environment. The factory takes `{cli, env}` so tests inject the base
+  environment. `sshpass` is not used: it adds a dependency and its own exit codes
+  would bypass `classifyFailure`.
+- **Secrecy is declared once**, as `secret: true` on a `KIND_META.configFields`
+  entry. `secretFieldsFor`, `redactConfig` and `mergeSecrets` in
+  `kinds/index.mjs` read it; `publicRecord` in `src/cards.mjs` is what every API
+  response passes through, while internal writes keep the full record.
 - **A 0700 per-uid directory, not a bare `/tmp` entry.** `/tmp` is
   world-writable and the path is derivable, so another local user could
   pre-create a socket there and have a slave attach *our* commands to *their*

@@ -324,6 +324,49 @@ does break it** (`/^ControlSocket .+ multiplexing$/` is `false` against the CRLF
 bytes). The stub in `tests/helpers.mjs` emits the CRLF form so the guard is
 always fed the real bytes rather than a convenient LF.
 
+## 13. Explicit credentials: askpass, `BatchMode`, and the wordings (OpenSSH_10.0p2)
+
+Measured with `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` against a sshd that
+allows password auth for a non-root user.
+
+- **`BatchMode=yes` refuses askpass outright.** The helper is never run and ssh
+  exits 255 with `<dest>: Permission denied (publickey,password).` — so only a
+  password remote may emit `BatchMode=no`; key and ambient remotes keep `yes`.
+- **A wrong password** (`NumberOfPasswordPrompts=1`) is exit 255, empty stdout,
+  stderr exactly `<user>@<ip>: Permission denied (publickey,password).` + CRLF.
+  There is NO `Permission denied, please try again.` line at one prompt, so
+  `SSH_PREAMBLE` gains nothing. The parenthesised list is the SERVER's method
+  list, so it varies (`(password)`, `(publickey)`): `AUTH_DENIED` accepts any list.
+- **An unauthorized key** and an **encrypted key under `BatchMode=yes`** print the
+  same `Permission denied (…)` line — a passphrase key fails fast, no prompt.
+- **An unknown host key on the askpass path**: ssh hands the helper the prompt
+  `The authenticity of host '<ip> (<ip>)' can't be established. … Are you sure you
+  want to continue connecting (yes/no/[fingerprint])?`; the helper exits 1, and
+  ssh fails with `Host key verification failed.` + CRLF. No hang.
+- **Prompts the helper sees**: `<user>@<ip>'s password: ` (matches `*[Pp]assword*`)
+  and the host-key one above (its body mentions no "password", and is declined).
+- **`-i` paths are expanded by ssh**: `-i '/d/%u'` opens `/d/<local user>` (a
+  login with the key at that path SUCCEEDS) and `${HOME}` becomes the
+  environment value, so `validateConfig` refuses `%` and `$` in an
+  `identityFile`. **The "not accessible" warning is no evidence either way**: it
+  prints the path LITERALLY, before expansion, so `-i /tmp/%u/key` over a missing
+  file warns with `%u` still in it — read the `debug1: identity file …` /
+  `Will attempt key:` lines under `-vvv` instead, which show the expanded path.
+  `~` is expanded too, but a relative path is refused anyway.
+- **`-i` does NOT pin the identity.** With a config `IdentityFile <authorized>`
+  for the host and `-i <unauthorized> -o IdentitiesOnly=yes`, ssh offers the `-i`
+  key first and then the config's, and authenticates with the config's. `-o
+  IdentityFile=none` (before or after `-i`) changes nothing — `-G` lists
+  `bad`, `none`, `good`. No per-invocation option found drops config identities
+  except `-F`, which would discard the alias config. A known limitation, stated in
+  `docs/features.md`.
+- **A key file with mode 0644** prints a multi-line `@@@ WARNING: UNPROTECTED
+  PRIVATE KEY FILE! @@@ … Permissions 0644 for '<path>' are too open.` banner
+  before the denial; `connect` stats the file and refuses first, in plain words.
+- **A missing key file** is `Warning: Identity file <p> not accessible: No such
+  file or directory.` (LF, not CRLF) followed by `Connection closed by <ip> port
+  22` — nothing classifiable, hence the `connect` pre-check.
+
 See also: [kill-relay.md](kill-relay.md),
 [exec-env-across-a-boundary.md](exec-env-across-a-boundary.md),
 [baseline-probe-two-tier.md](baseline-probe-two-tier.md),

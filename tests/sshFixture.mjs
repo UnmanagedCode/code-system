@@ -121,7 +121,9 @@ async function ensureImage(cli) {
  * written into a real known_hosts, so the provider's refusal to accept an
  * unknown key is never worked around by the fixture.
  */
-export async function withSshTarget(t, gate, { stem = 'box', alias = uniqueName('alias'), extraConfig = [] } = {}) {
+export async function withSshTarget(t, gate, {
+  stem = 'box', alias = uniqueName('alias'), extraConfig = [], allowPassword = false,
+} = {}) {
   // THE ALIAS IS UNIQUE PER TARGET BY DEFAULT, and that is not cosmetic:
   // `controlPathFor` keys on (user, host), so two targets sharing an alias
   // would share ONE master — and a test could silently multiplex onto the
@@ -137,7 +139,9 @@ export async function withSshTarget(t, gate, { stem = 'box', alias = uniqueName(
 
   const name = uniqueName(stem);
   // NOT `--rm`: a test that stops the container must leave it existing.
-  const started = await run([...cli, 'run', '-d', '--name', name, '-e', `AUTHORIZED_KEY=${pub}`, IMAGE]);
+  const started = await run([...cli, 'run', '-d', '--name', name, '-e', `AUTHORIZED_KEY=${pub}`,
+    // Lets sshd accept passwords (the image's entrypoint writes the drop-in).
+    ...(allowPassword ? ['-e', 'ALLOW_PASSWORD=1'] : []), IMAGE]);
   const config = { host: alias, user: 'root' };
 
   // Registered BEFORE the started-ok check, so a container that came up and
@@ -202,6 +206,28 @@ export async function withSshTarget(t, gate, { stem = 'box', alias = uniqueName(
     sshEnv: JSON.stringify([...gate.ssh, '-F', sshConfig]),
     transport: () => createSshTransport({ cli: [...gate.ssh, '-F', sshConfig] }),
   };
+}
+
+/**
+ * An ssh_config that can authenticate NOTHING: a known_hosts and no IdentityFile,
+ * no User, no agent. A test using it proves a card's own credential is what let
+ * the connection in. Keys never leak in from a forwarded agent.
+ */
+export async function bareSshConfig(dir, knownHosts) {
+  return writeSshConfig(path.join(dir, 'bare_ssh_config'), [
+    `UserKnownHostsFile ${knownHosts}`,
+    'IdentityAgent none',
+    'IdentitiesOnly yes',
+  ]);
+}
+
+/**
+ * Set a user's password in the target. The password goes on STDIN to
+ * `chpasswd`, so it is never in any argv — this host's /proc is not private.
+ */
+export async function setPassword(cli, name, user, password) {
+  const res = await run([...cli, 'exec', '-i', '--', name, 'chpasswd'], { stdin: `${user}:${password}\n` });
+  if (res.code !== 0) throw new Error(`chpasswd failed: ${res.stderr || res.stdout}`);
 }
 
 /** An ssh_config only its owner can read — ssh refuses a group-writable one. */
@@ -289,10 +315,10 @@ export async function controlPathProcs(controlPath) {
  * across N commands is what proves they shared one connection. Measured: one
  * `connect` + five execs → 1, and five execs with `ControlPath=none` → 5.
  */
-export async function authCount(cli, name) {
+export async function authCount(cli, name, method = '(?:publickey|password)') {
   const res = await run([...cli, 'logs', name]);
   const text = `${res.stdout}${res.stderr}`;
-  return (text.match(/Accepted publickey/g) ?? []).length;
+  return (text.match(new RegExp(`Accepted ${method}`, 'g')) ?? []).length;
 }
 
 export { run, settle, tempDir } from './dockerFixture.mjs';

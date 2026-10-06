@@ -71,7 +71,9 @@ export async function readRemote(id) {
   let raw;
   try { raw = JSON.parse(text); }
   catch (e) {
-    return { ok: false, reason: 'malformed', message: `remote '${id}' is not valid JSON: ${e?.message ?? e}` };
+    // THE PARSER'S OWN MESSAGE IS NOT ECHOED: Node quotes a snippet of the file in
+    // it, and a record can hold a password.
+    return { ok: false, reason: 'malformed', message: `remote '${id}' is not valid JSON` };
   }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { ok: false, reason: 'malformed', message: `remote '${id}' is not a JSON object` };
@@ -109,6 +111,33 @@ export async function listRemotes() {
   return out;
 }
 
+/**
+ * The records directory, private to this user. `mkdir`'s mode applies only on
+ * creation, so a directory that already exists (an older install, a hand-made
+ * one) has its group/other bits cleared too: records can hold a password. Only
+ * TIGHTENED — an owner's own stricter mode is left as the operator set it.
+ *
+ * A tightening the store cannot perform (a filesystem without unix modes, a
+ * directory owned by someone else) is a logged warning, once per directory, and
+ * not a failure: this runs inside the startup pass, and a backend that will not
+ * start cannot be used to repair anything. A failing `mkdir` still throws.
+ */
+const warnedLoose = new Set();
+export async function ensureRemotesDir() {
+  const dir = remotesDir();
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  const { mode } = await fs.stat(dir);
+  if ((mode & 0o077) === 0) return;
+  try { await fs.chmod(dir, mode & 0o700); }
+  catch (e) {
+    if (warnedLoose.has(dir)) return;
+    warnedLoose.add(dir);
+    console.warn(`code-system: the records directory '${dir}' is group- or world-accessible`
+      + ` (mode 0${(mode & 0o777).toString(8)}) and could not be made private: ${e?.message ?? e}`
+      + ' — it can hold an ssh password, so fix its mode by hand');
+  }
+}
+
 let tmpSeq = 0;
 
 // Atomic: a unique temp beside the target, fsync, rename over. The temp name is
@@ -119,7 +148,7 @@ export async function writeRemote(record) {
   if (!isValidRemoteId(record?.remoteId)) {
     throw new Error(`refusing to write a record with invalid remoteId ${JSON.stringify(record?.remoteId)}`);
   }
-  await fs.mkdir(remotesDir(), { recursive: true });
+  await ensureRemotesDir();
   const target = recordPath(record.remoteId);
   const tmp = `${target}.${process.pid}.${tmpSeq++}.tmp`;
   let fh;

@@ -27,6 +27,7 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { asObject, execEnv, operand } from './config.mjs';
 import { shellQuote } from '../fileops.mjs';
 // The kill relay's far-side script is SHARED with `docker`: identical
@@ -54,18 +55,45 @@ export const KIND_META = {
       label: 'Host',
       required: true,
       placeholder: 'my-box',
-      hint: 'A `Host` alias from the ssh config of whoever runs the plugin, not a hostname resolved here.'
-        + ' HostName, Port, User, IdentityFile and ProxyJump all live in that file.',
+      hint: 'A `Host` alias from the ssh config of whoever runs the plugin. HostName, Port, User,'
+        + ' IdentityFile and ProxyJump all live in that file. With a password or key file below, a plain'
+        + ' hostname or IP works too.',
     },
     {
       name: 'user',
       label: 'User',
       required: false,
       placeholder: '(from your ssh config)',
-      hint: 'Optional. Leave it blank to use whatever `User` your ssh config already sets for this Host.',
+      hint: 'Optional. Leave it blank to use whatever `User` your ssh config already sets for this Host.'
+        + ' Set it when you give a password or key file.',
+    },
+    {
+      name: 'password',
+      label: 'Password',
+      required: false,
+      secret: true,
+      hint: 'Optional. Stored unencrypted in this plugin\'s store file (readable only by its owner) and never'
+        + ' returned by the API. Needs OpenSSH 8.4 or later. Not combinable with a private key file.',
+    },
+    {
+      name: 'identityFile',
+      label: 'Private key file',
+      required: false,
+      placeholder: '/home/me/.ssh/id_ed25519',
+      hint: 'Optional. An absolute path to an unencrypted private key that is not group- or world-readable.'
+        + ' It is offered first; an IdentityFile your ssh config lists for this host may still be offered after it.'
+        + ' Not combinable with a password.',
     },
   ],
 };
+
+// The password helper ssh runs through SSH_ASKPASS. Shipped beside this file so
+// its path is absolute without any lookup; see askpass.sh for what it answers.
+export const ASKPASS_HELPER = fileURLToPath(new URL('./askpass.sh', import.meta.url));
+// The child-environment name the password rides in — never argv.
+export const PASSWORD_ENV = 'CODE_SYSTEM_SSH_PASSWORD';
+// SSH_ASKPASS_REQUIRE arrived in OpenSSH 8.4.
+const ASKPASS_MIN_VERSION = [8, 4];
 
 // THE SHIPPED DEFAULT IS BARE `ssh`: the operator's own ~/.ssh/config and
 // agent. That is what makes a remote's `host` a Host ALIAS — every identity,
@@ -144,10 +172,16 @@ export function controlDir() {
 function identityHash(config) {
   const user = String(config?.user ?? '');
   const host = String(config?.host ?? '');
+  // The credential, so an ambient master is never reused to "prove" a password
+  // or a key. Absent for no credentials, which keeps every pre-existing socket
+  // path. The password VALUE is never hashed in: a changed password reuses a
+  // live master until it idles out (docs/features.md).
+  const auth = config?.password ? '\0password'
+    : config?.identityFile ? `\0key:${config.identityFile}` : '';
   // A NUL separator, because it is the one byte no username or hostname can
   // contain: with a joinable separator, ('ab','c') and ('a','bc') would collide
   // onto one master.
-  return createHash('sha256').update(`${user}\0${host}`).digest('hex').slice(0, 20);
+  return createHash('sha256').update(`${user}\0${host}${auth}`).digest('hex').slice(0, 20);
 }
 
 /**
@@ -229,14 +263,21 @@ export async function ensureControlDir() {
  * fileops' `CCSTAT` header parse (src/launcher/fileops.mjs).
  *
  * NO CONFIG VALUE EVER BECOMES AN `-o`. Every value here is a provider-owned
- * constant or the provider-computed ControlPath.
+ * constant or the provider-computed ControlPath. The one config value that
+ * reaches argv at all is `identityFile`, as `-i`'s optarg in `sshAuth`, and
+ * `validateConfig` has already required it absolute.
+ *
+ * `BatchMode` IS THE ONE OPTION A CREDENTIAL CHANGES: `yes` disables password
+ * prompts, askpass included (measured, .wiki/gotchas/ssh-controlmaster-transport.md
+ * §13), so only a password remote gets `no`. This is the one place it is emitted.
  *
  * @param {'no'|'yes'} master
+ * @param {object} [config] the remote's stored config
  */
-export function sshBaseArgs(controlPath, { master }) {
+export function sshBaseArgs(controlPath, { master, config }) {
   return [
     '-T',
-    '-o', 'BatchMode=yes',
+    '-o', `BatchMode=${config?.password ? 'no' : 'yes'}`,
     '-o', `ConnectTimeout=${CONNECT_TIMEOUT_S}`,
     '-o', `ControlPath=${controlPath}`,
     '-o', `ControlMaster=${master}`,
@@ -251,6 +292,40 @@ const first = (s) => String(s ?? '').split('\n')[0].trim();
 // normalised. The streams reaching classifyFailure are already capped at 512
 // bytes by session.mjs and run.mjs, so there is no bound to add here.
 const allOf = (s) => String(s ?? '').replace(/\r/g, '').trim();
+
+/**
+ * The credential half of every ssh invocation: extra argv and the child
+ * environment that carries a password. ONE FUNNEL, so no call site can forget
+ * either half.
+ *
+ * The password rides in the CHILD'S ENVIRONMENT, never argv. `env` is
+ * `undefined` with no password, so a no-credentials remote spawns exactly as it
+ * always did.
+ *
+ * @returns {{args:string[], env:Record<string,string>|undefined}}
+ */
+export function sshAuth(config, baseEnv = process.env) {
+  if (config?.password) {
+    return {
+      // One attempt, and only password-shaped methods: a refused password fails
+      // once instead of looping, and nothing else can be offered.
+      args: ['-o', 'NumberOfPasswordPrompts=1', '-o', 'PreferredAuthentications=password,keyboard-interactive'],
+      env: {
+        ...baseEnv,
+        SSH_ASKPASS: ASKPASS_HELPER,
+        SSH_ASKPASS_REQUIRE: 'force',
+        [PASSWORD_ENV]: config.password,
+      },
+    };
+  }
+  if (config?.identityFile) {
+    return {
+      args: ['-i', config.identityFile, '-o', 'IdentitiesOnly=yes', '-o', 'PreferredAuthentications=publickey'],
+      env: undefined,
+    };
+  }
+  return { args: [], env: undefined };
+}
 
 function destFor(config) {
   const host = String(config?.host ?? '');
@@ -286,13 +361,13 @@ function destFor(config) {
  * @returns {Promise<{code:number|null, signal:string|null, stdout:string,
  *   stderr:string, error:Error|null}>}
  */
-function runSsh(cli, args, { timeoutMs }) {
+function runSsh(cli, args, { timeoutMs, env }) {
   return new Promise((resolve) => {
     let child;
     try {
       // detached so the timeout can kill the whole group: an operator's wrapper
       // invocation may put ssh a generation below us.
-      child = spawn(cli[0], [...cli.slice(1), ...args], { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+      child = spawn(cli[0], [...cli.slice(1), ...args], { stdio: ['ignore', 'pipe', 'pipe'], detached: true, env });
     } catch (e) { resolve({ code: null, signal: null, stdout: '', stderr: '', error: e }); return; }
     const out = [];
     const err = [];
@@ -329,9 +404,43 @@ function runSsh(cli, args, { timeoutMs }) {
  * Returns the RAW result: each caller owns its own interpretation of a non-zero
  * exit (`reachability` words it for a card, `connect` reads it as "no master").
  */
-function checkMaster(cli, controlPath, dest) {
-  return runSsh(cli, [...sshBaseArgs(controlPath, { master: 'no' }), '-O', 'check', '--', dest],
-    { timeoutMs: CHECK_TIMEOUT_MS });
+function checkMaster(cli, controlPath, config, env) {
+  const auth = sshAuth(config, env);
+  return runSsh(cli, [...sshBaseArgs(controlPath, { master: 'no', config }), ...auth.args, '-O', 'check', '--', destFor(config)],
+    { timeoutMs: CHECK_TIMEOUT_MS, env: auth.env });
+}
+
+/**
+ * A password remote needs `SSH_ASKPASS_REQUIRE`, which OpenSSH added in 8.4. An
+ * older client would ignore it and fail with no usable message, so `connect`
+ * refuses first and the gate stays off.
+ */
+async function requireAskpassCapableSsh(argv0, env) {
+  const res = await runSsh(argv0, ['-V'], { timeoutMs: CHECK_TIMEOUT_MS, env });
+  const m = /OpenSSH_(\d+)\.(\d+)/.exec(`${res.stderr}${res.stdout}`);
+  const [maj, min] = ASKPASS_MIN_VERSION;
+  const need = `OpenSSH ${maj}.${min} or later`;
+  if (!m) {
+    throw new Error(`password login needs ${need}, but '${argv0.join(' ')} -V' did not report an OpenSSH`
+      + ` version (${first(res.stderr || res.stdout) || res.error?.message || `exit ${res.code}`})`);
+  }
+  if (Number(m[1]) < maj || (Number(m[1]) === maj && Number(m[2]) < min)) {
+    throw new Error(`password login needs ${need}; this ssh is OpenSSH ${m[1]}.${m[2]}`);
+  }
+}
+
+/** A key file must exist and be private, or ssh's own message is a banner nobody can act on. */
+async function requireUsableKeyFile(file) {
+  let st;
+  try { st = await fs.stat(file); }
+  catch (e) { throw new Error(`the private key file '${file}' cannot be read: ${e?.code ?? e}`); }
+  if (!st.isFile()) throw new Error(`the private key file '${file}' is not a regular file`);
+  if ((st.mode & 0o077) !== 0) {
+    throw new Error(`the private key file '${file}' has mode 0${(st.mode & 0o7777).toString(8)}; ssh refuses a key`
+      + ' that is group- or world-accessible — chmod 600 it');
+  }
+  try { await fs.access(file, fs.constants.R_OK); }
+  catch (e) { throw new Error(`the private key file '${file}' cannot be read: ${e?.code ?? e}`); }
 }
 
 // ssh's own wordings, MEASURED against OpenSSH_10.0p2. Every one of these is
@@ -379,7 +488,7 @@ const BAD_HOSTNAME = 'hostname contains invalid characters';
 // own stderr, exiting non-zero with an empty stdout. Reporting that as OUR
 // transport failing swallows the command's own exit status and sends the
 // operator to fix their `~/.ssh/config` for somebody else's failure.
-const AUTH_DENIED = /^(\S+: )?Permission denied \(publickey/;
+const AUTH_DENIED = /^(\S+: )?Permission denied \([a-z,-]+\)/;
 const HOSTKEY_FAILED = /^Host key verification failed/;
 
 // The ONE multi-line preamble measured for the pair above. Deliberately not a
@@ -424,7 +533,17 @@ function sshOwnLine(stderr, pattern) {
 const ENV_PREFIX = 'env: ';
 const ENV_NEVER_STARTED_CODES = [127, 125];
 
-export function createSshTransport({ cli } = {}) {
+// What to fix when authentication is refused: the card's own credential when it
+// has one, the operator's ssh config otherwise.
+function authAdvice(config) {
+  if (config?.password) return 'Check the password stored on this remote\'s card';
+  if (config?.identityFile) {
+    return `Check that the key file '${config.identityFile}' is authorized for this user on the host`;
+  }
+  return `Fix it in the operator's own ~/.ssh/config or ssh agent (${SSH_ENV} sets the whole ssh invocation)`;
+}
+
+export function createSshTransport({ cli, env = process.env } = {}) {
   // No I/O here, deliberately: the factory runs on the handshake path and, in
   // the backend, once per remote per card render (src/api.mjs).
   const argv0 = cli ?? sshCliArgv();
@@ -458,7 +577,44 @@ export function createSshTransport({ cli } = {}) {
       if (!host.ok) return { ok: false, error: `ssh config: ${host.error}` };
       const user = operand(o.user, 'user', { required: false });
       if (!user.ok) return { ok: false, error: `ssh config: ${user.error}` };
-      return { ok: true, config: { host: host.value, ...(user.value ? { user: user.value } : {}) } };
+      const hasPassword = o.password !== undefined && o.password !== null;
+      const identityFile = typeof o.identityFile === 'string' ? o.identityFile.trim() : '';
+      if (hasPassword) {
+        // NOT trimmed: a password's edge spaces are part of it. One line only,
+        // because askpass answers with a single line.
+        if (typeof o.password !== 'string' || o.password === '') {
+          return { ok: false, error: "ssh config: 'password' must be a non-empty string" };
+        }
+        if (/[\0\r\n]/.test(o.password)) {
+          return { ok: false, error: "ssh config: 'password' must not contain a newline or NUL" };
+        }
+      }
+      if (identityFile) {
+        // ssh percent- and ${}-expands an identity path (measured, wiki §13), so
+        // a literal path may contain neither.
+        if (!path.isAbsolute(identityFile)) {
+          return { ok: false, error: `ssh config: 'identityFile' must be an absolute path (got ${JSON.stringify(identityFile)})` };
+        }
+        if (/[%$]/.test(identityFile)) {
+          return { ok: false, error: "ssh config: 'identityFile' must not contain '%' or '$' — ssh expands them in a key path" };
+        }
+        // eslint-disable-next-line no-control-regex
+        if (/[\x00-\x1f\x7f]/.test(identityFile)) {
+          return { ok: false, error: "ssh config: 'identityFile' must not contain control characters" };
+        }
+      }
+      if (hasPassword && identityFile) {
+        return { ok: false, error: "ssh config: give a 'password' or an 'identityFile', not both" };
+      }
+      return {
+        ok: true,
+        config: {
+          host: host.value,
+          ...(user.value ? { user: user.value } : {}),
+          ...(identityFile ? { identityFile } : {}),
+          ...(hasPassword ? { password: o.password } : {}),
+        },
+      };
     },
 
     // PURE. No I/O and no spawning — the core spawns what this returns, which
@@ -473,6 +629,7 @@ export function createSshTransport({ cli } = {}) {
     spawnPlan(config, req) {
       const dest = destFor(config);
       const controlPath = controlPathFor(config);
+      const auth = sshAuth(config, env);
 
       const command = req.shell !== null
         ? [SHELL_INTERPRETER, '-lc', req.shell]
@@ -523,7 +680,8 @@ export function createSshTransport({ cli } = {}) {
         file: argv0[0],
         args: [
           ...argv0.slice(1),
-          ...sshBaseArgs(controlPath, { master: 'no' }),
+          ...sshBaseArgs(controlPath, { master: 'no', config }),
+          ...auth.args,
           // TERMINATOR 1 — ssh's option section. Measured: WITH it, a
           // leading-dash host is refused by ssh itself (`hostname contains
           // invalid characters`); WITHOUT it, `-badhost true` makes ssh read
@@ -539,7 +697,8 @@ export function createSshTransport({ cli } = {}) {
         ],
         // `cwd` UNSET: the frame's cwd rides in the remote command, not as the
         // host client's working directory (see SpawnPlan's typedef).
-        env: undefined,
+        // `env` is set ONLY for a password remote: it carries the password.
+        env: auth.env,
         // NOT detached. session.#terminate reads `detached` as "a group kill
         // reached the far side"; for ssh it did not — the remote command is not
         // our OS descendant at all — so claiming it would make every terminated
@@ -570,7 +729,7 @@ export function createSshTransport({ cli } = {}) {
       try { controlPath = controlPathFor(config); }
       catch (e) { return no(e instanceof Error ? e.message : String(e)); }
 
-      const res = await checkMaster(argv0, controlPath, dest);
+      const res = await checkMaster(argv0, controlPath, config, env);
 
       if (res.error || res.code === null) {
         return no(`could not run '${argv0.join(' ')}': ${res.error?.message ?? 'no exit status'}`
@@ -630,9 +789,13 @@ export function createSshTransport({ cli } = {}) {
       // exactly where another local user can pre-create a socket at our
       // derivable path.
       await ensureControlDir();
+      // BEFORE ANY ssh DIAL: a credential the client cannot use is refused in
+      // plain words rather than as ssh's own banner or silence.
+      if (config?.password) await requireAskpassCapableSsh(argv0, env);
+      else if (config?.identityFile) await requireUsableKeyFile(config.identityFile);
 
       // ── (a) IS ONE ALREADY LIVE? ────────────────────────────────────
-      const pre = await checkMaster(argv0, controlPath, dest);
+      const pre = await checkMaster(argv0, controlPath, config, env);
       // A CHECK THAT DID NOT COMPLETE IS NOT A "NO". Any non-zero exit below is
       // read as "no master" and licenses the unlink at (b) — so a check that
       // could not run, or that was KILLED BEFORE IT ANSWERED, must never reach
@@ -686,9 +849,10 @@ export function createSshTransport({ cli } = {}) {
       }
 
       // ── (c) OPEN IT ─────────────────────────────────────────────────
+      const auth = sshAuth(config, env);
       const res = await runSsh(
-        argv0, [...sshBaseArgs(controlPath, { master: 'yes' }), '-N', '-f', '--', dest],
-        { timeoutMs: CONNECT_TIMEOUT_MS });
+        argv0, [...sshBaseArgs(controlPath, { master: 'yes', config }), ...auth.args, '-N', '-f', '--', dest],
+        { timeoutMs: CONNECT_TIMEOUT_MS, env: auth.env });
       if (res.code !== 0) {
         throw new Error(`ssh could not open a master connection to '${dest}': `
           + `${first(res.stderr) || res.error?.message
@@ -731,7 +895,7 @@ export function createSshTransport({ cli } = {}) {
         throw new Error(`ssh reported success opening a master to '${dest}' but created no control`
           + ` socket at '${controlPath}'`);
       }
-      const check = await checkMaster(argv0, controlPath, dest);
+      const check = await checkMaster(argv0, controlPath, config, env);
       if (check.code !== 0 || check.signal !== null) {
         // `exit ${code}` is the LAST resort, and it must not render `exit null`:
         // a check that could not run has no exit status to report, so say what
@@ -754,9 +918,10 @@ export function createSshTransport({ cli } = {}) {
     async disconnect(config) {
       const dest = destFor(config);
       const controlPath = controlPathFor(config);
+      const auth = sshAuth(config, env);
       const res = await runSsh(
-        argv0, [...sshBaseArgs(controlPath, { master: 'no' }), '-O', 'exit', '--', dest],
-        { timeoutMs: CHECK_TIMEOUT_MS });
+        argv0, [...sshBaseArgs(controlPath, { master: 'no', config }), ...auth.args, '-O', 'exit', '--', dest],
+        { timeoutMs: CHECK_TIMEOUT_MS, env: auth.env });
       if (res.code === 0) return;
       if (res.stderr.startsWith(NO_CONTROL_SOCKET)) return;
       throw new Error(`ssh could not disconnect the master for '${dest}' (control socket`
@@ -777,9 +942,10 @@ export function createSshTransport({ cli } = {}) {
       // The relay carries NO token in its own environment, so it cannot kill
       // itself — the token appears only inside the script it scans FOR.
       const remote = [REAP_SHELL, '-c', buildReapScript(handle.token)].map(shellQuote).join(' ');
+      const auth = sshAuth(config, env);
       const res = await runSsh(
-        argv0, [...sshBaseArgs(controlPath, { master: 'no' }), '--', dest, remote],
-        { timeoutMs: REAP_TIMEOUT_MS });
+        argv0, [...sshBaseArgs(controlPath, { master: 'no', config }), ...auth.args, '--', dest, remote],
+        { timeoutMs: REAP_TIMEOUT_MS, env: auth.env });
 
       // A REAP THAT COULD NOT RUN MUST NOT READ AS A REAP THAT FOUND NOTHING.
       // From here the two are identical — no kills, exit 0 — and the difference
@@ -843,8 +1009,7 @@ export function createSshTransport({ cli } = {}) {
           return {
             code: 'EUNKNOWN',
             message: `ssh could not authenticate to '${dest}' — the host is reachable but this`
-              + ' provider was refused. Fix it in the operator\'s own ~/.ssh/config or ssh agent'
-              + ` (${SSH_ENV} sets the whole ssh invocation): ${authLine}`,
+              + ` provider was refused. ${authAdvice(config)}: ${authLine}`,
             stderr: allOf(stderr),
           };
         }
