@@ -38,7 +38,7 @@ an absolute path — which is what forces the store location below.
 | `src/launcher/session.mjs` | the frame loop: handshake, routing, exec lifecycle, shutdown |
 | `src/launcher/fileops.mjs` | `readFile`/`writeFile`, derived over `exec`, once for every kind |
 | `src/launcher/run.mjs` | run one script on a target — shared by fileops and the probe |
-| `src/launcher/remotes.mjs` | `RemoteSource`: store-backed (production) and flag-backed (conformance) |
+| `src/launcher/remotes.mjs` | `RemoteSource`: store-backed (production) and flag-backed (conformance) — `lookup` resolves a named target, `list` answers its configured set (`listRemotes`), both from one configuration predicate |
 | `src/launcher/kinds/` | one file per kind, plus the registry and the kill-relay script (`reapscript.mjs`) shared by `docker` and `ssh` |
 
 ## The `Transport` seam
@@ -146,7 +146,7 @@ capability configurations. Three measurements at cc `8b7b10bf` refute it: `IS_RE
 reference provider and otherwise loops `TOGGLED_CAPABILITIES`, which derives to
 `processGroupSignal` alone, tolerating `remotes`/`remoteDescriptors` as a
 superset; and `CAPABILITY_CONFIGS` is **two** configurations, not three. `host`
-unlocks **zero** rows a bound `docker` would not — see the four skips below.
+unlocks **zero** rows a bound `docker` would not — see the skips below.
 
 **The guard, and a DEVIATION FROM THE PLAN.** The plan required **two**
 conditions: an env seam **and** at least one mandatory
@@ -212,6 +212,7 @@ future kind must not either.**
 | `processGroupSignal` | `true` unless `--no-process-group-signal` |
 | `remotes` | at least one `--remote` given |
 | `remoteDescriptors` | at least one `--mirror` or `--exclude` given |
+| `remoteListing` | follows `remotes` — derived in `src/launcher/main.mjs`, since `FlagRemoteSource` lists exactly the `--remote` ids it routes |
 
 This is the shape cc's own reference provider uses (`remotes:
 this.#opts.remotes.size > 0`, the hello capabilities block in
@@ -219,7 +220,7 @@ this.#opts.remotes.size > 0`, the hello capabilities block in
 *"the flags the provider was launched with are what it advertises"*. Bare `host`
 equals `CAPABILITY_CONFIGS[0].caps` verbatim and `--no-process-group-signal`
 equals `CAPABILITY_CONFIGS[1].caps` verbatim — because they are derived, not
-hardcoded. A kind that hardcoded any of the three would fail the deep-equal the
+hardcoded. A kind that hardcoded any of them would fail the deep-equal the
 reference-provider path makes.
 
 ### The launch surface the suite appends
@@ -234,7 +235,7 @@ What it obliges a provider being verified to do:
 | Flag / variable | The provider must |
 |---|---|
 | `--no-process-group-signal` | signal the direct child only |
-| `--remote <id>=<absolute root>` | **serve that target** — the id is its whole address; an unknown or absent id is an id-addressed `ENOREMOTE` |
+| `--remote <id>=<absolute root>` | **serve that target** — the id is its whole address; an unknown or absent id is an id-addressed `ENOREMOTE`. Advertising `remoteListing`, its `remoteList` is exactly the `--remote` ids. An id failing cc's `remoteIdDefect` is refused at launch (exit 2) |
 | `--mirror <[id=]absolute root>` | answer `describeRemote` with that `mirrorRoot` |
 | `--exclude <[id=]absolute path>` | add that path to the same descriptor's `exclude` |
 | `CC_REMOTE=<id>` | be in the environment of **every child an `exec` starts** |
@@ -256,7 +257,7 @@ be *refusable*, not because the battery demands it — and production
 
 ### What a third-party run does NOT verify
 
-Four rows skip for **any** third-party provider, all gated on
+These rows skip for **any** third-party provider, all gated on
 `IS_REFERENCE_PROVIDER`. They are identical for `host` and for a bound `docker`,
 and their printed reasons are the list of what the run does not check:
 
@@ -266,16 +267,19 @@ and their printed reasons are the list of what the run does not check:
 | `a provider without the capability advertises no mirror` | same |
 | `CC_CONFORMANCE_REMOTE_ID binds the fixture handle, and an explicit remoteId still wins` | `asserts the unset default` |
 | `every code in the taxonomy is produced by a real failure somewhere in this suite` | `counts producers across rows a third-party run skips` |
+| `a provider without remoteListing refuses listRemotes EUNSUPPORTED, id-addressed` | `a provider that does not advertise a capability may ignore its frame (§2); the reference provider refuses it` — `tests/hostkind.test.mjs` pins our absent behaviour instead |
 
-A **fifth** skip, or a different reason string, means the harness changed and
-this section needs re-checking.
+A skip not in this table, or a different reason string, means the harness
+changed and this section needs re-checking. The two `listRemotes` enumeration
+rows are **not** skipped on `host`: it advertises `remoteListing` whenever it is
+given `--remote`, which those rows pass.
 
 ### The bound conformance run
 
-`docker` and `ssh` always advertise `remotes:true` and `remoteDescriptors:true`.
-Since cc `8b7b10bf` that no longer bars them from the battery: `CC_CONFORMANCE_REMOTE_ID` binds every
+`docker` and `ssh` always advertise `remotes`, `remoteDescriptors` and
+`remoteListing`. That does not bar them from the battery: `CC_CONFORMANCE_REMOTE_ID` binds every
 fixture handle to one named target, and the third-party capability assertion
-tolerates `remotes`/`remoteDescriptors` as a **superset**. Card 2026-0014 landed
+tolerates `remotes`/`remoteDescriptors`/`remoteListing` as a **superset**. Card 2026-0014 landed
 the rig — `npm run conformance:docker` — so the shipped `docker` transport is
 **measured** under the battery's own fixtures rather than generalised to from
 `host`. Every measurement behind this section is in
@@ -342,10 +346,11 @@ the sweep is `docker ps -a --filter name=code-system-test-boundconf` plus
    a locked decision, argued below under "The `host` kind" and in
    `.wiki/gotchas/docker-exec-transport.md`. `CAPABILITY_CONFIGS[0]` passes no
    flags and requires `true`, and §10's third-party relaxation covers
-   `remotes`/`remoteDescriptors` only, so **two rows of that configuration fail
+   `remotes`/`remoteDescriptors`/`remoteListing` only, so **two rows of that configuration fail
    and neither is skipped**. §10 names our exact shape — a provider that accepts
    `--no-process-group-signal` and ignores it — as failing rather than skipping.
-2. **The six `--remote`/`--mirror`/`--exclude` rows.**
+2. **The `--remote`/`--mirror`/`--exclude` rows** — the two `listRemotes`
+   enumeration rows included, since they launch with `--remote`.
    `src/launcher/main.mjs` refuses those flags for a store-backed kind with exit
    2 before any frame, so the rows that launch their own provider with them never
    handshake. Deliberate, and not a gap to close: a flag-backed target source on
@@ -478,9 +483,13 @@ to the very next frame**, with no restart, no IPC and nothing to invalidate. The
 absence of a cache *is* the mechanism. `tests/gate.test.mjs` pins it end to end
 in one launcher process, both directions.
 
-**Where it is enforced: exactly one site.** `gateRefusal(rec)` in
-`StoreRemoteSource.lookup()` (`src/launcher/remotes.mjs`), which `session.mjs`
-calls once for all four REQUEST frames and nowhere else. Follow-on frames
+**Where it is enforced: exactly one site.** `gateRefusal(rec)` inside
+`StoreRemoteSource`'s private configuration predicate `#configured`
+(`src/launcher/remotes.mjs`), reached through `lookup()`, which `session.mjs`
+calls once for all four routed REQUEST frames and nowhere else. The same
+predicate is what `list()` filters with, so `listRemotes` **reports** the gate —
+a switched-off remote is out of the configured set — but never enforces it on
+an operation. Follow-on frames
 (`data`, `end`, `signal`, `close`) are addressed by an id already bound to a
 remote, so nothing slips past — a `writeFile` was gated when it opened. The wire
 shape and the `ENOREMOTE` argument are in `docs/protocol.md` → `remoteId`
@@ -1344,25 +1353,24 @@ naming the invocation explicitly, and a writable `<repo>/.conformance-tmp`
 inside a host bind. It skips cleanly and loudly without the first two, and it is
 **never part of `npm test`**. It seeds its own store and remote and removes both.
 
-**What it proves:** of the 63 rows, **41 reach the shipped `docker` transport and
-pass** under the battery's own fixtures. (48 pass in total; 7 of those exercise no
-provider of ours. Three further rows reach the transport and FAIL on its
-behaviour — buckets 3 and 4 below — so 44 reach it at all.)
+**What it proves:** every row that passes and launches a provider of ours
+reached the shipped `docker` transport under the battery's own fixtures. The
+rows that pass without exercising any provider of ours are named in
+`.wiki/gotchas/bound-conformance.md`; the run's own summary line gives the split.
 
-**And what the channel carried while doing it**, summed from the census lines of
-one arm — cc launches a provider per connection and each prints one at shutdown,
-**46 of them per run**: 111–114 of 139 admitted ops on 24–25 channels, with no
-admission-drift alarm. (Four runs; the session count was 46 in every one, the
-carried figure moved within that range.) The channel-off arm reports no census and produces the
-same 63-row outcome table.
+**And what the channel carried while doing it**: each launcher prints one census
+line at shutdown (cc launches a provider per connection), and the runner sums
+them per arm, with no admission-drift alarm. The channel-off arm reports no
+census and produces the same outcome table.
 
-**The 15 rows that do not pass, in four buckets:**
+**The rows that do not pass, in buckets** — each row is an `EXPECTED` entry in
+`tests/boundConformanceExpectations.mjs`, with its cause:
 
-1. **4 skips**, the `IS_REFERENCE_PROVIDER` set every third-party run skips.
-2. **8 structural failures** — the two capability rows and the six flag rows
-   above, whose causes are in the section that names them. These are the price of
-   decisions this tree has locked.
-3. **2 DEFECT failures**, and they are not a structural limit: both
+1. **Skips**, the `IS_REFERENCE_PROVIDER` set every third-party run skips.
+2. **Structural failures** — the capability rows and the flag rows above, whose
+   causes are in the section that names them. These are the price of decisions
+   this tree has locked.
+3. **DEFECT failures**, and they are not a structural limit: both
    `exec NEVER rejects — a command that cannot start is a spawnError, not a
    throw` rows, which the bound run FOUND (card 2026-0016) and `host` cannot
    reach. They go away when that card lands.
@@ -1372,8 +1380,13 @@ same 63-row outcome table.
    `processGroupSignal: false` promises it is not (card 2026-0019). Measured
    unsatisfiable in both capability configurations — see
    `.wiki/gotchas/bound-conformance.md`.
+5. **Frame-path DEFECT failures**, shared with `host`: both `a path that cannot
+   resolve is ENAMETOOLONG or ELOOP, on the derived and the frame path` rows.
+   `stat` passes (cc classifies the far side's own stderr), but `readFile`'s
+   script in `src/launcher/fileops.mjs` refuses `[ ! -e "$p" ]` as `ENOENT`,
+   which cannot tell a missing path from one that is too long or loops.
 
-All four are enforced by `tests/boundConformanceExpectations.mjs` — anything not
+All of them are enforced by `tests/boundConformanceExpectations.mjs` — anything not
 listed there must pass, a listed row that starts passing is red, and the run's
 total is pinned absolutely so a row vanishing from the suite is red too. A
 **fourth** guard reads a surface cc never shows: the launcher's own stderr, where

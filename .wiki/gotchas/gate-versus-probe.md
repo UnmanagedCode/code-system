@@ -9,13 +9,22 @@ collapsing them into one word is the single most likely way to misdiagnose it.
 | **probe** | what is TRUE right now | nowhere — re-asked every time | the target, or someone else's `docker stop` / `ssh -O exit` |
 
 **Only the gate decides whether an operation runs.** It is enforced at one site:
-`gateRefusal` in `StoreRemoteSource.lookup()` (`src/launcher/remotes.mjs:173`),
-which `src/launcher/session.mjs:118` calls for all four REQUEST frames and
-nowhere else.
+`gateRefusal`, inside `StoreRemoteSource`'s configuration predicate `#configured`
+(`src/launcher/remotes.mjs`), reached through `lookup()`, which `Session.handle`
+(`src/launcher/session.mjs`) calls for the routed REQUEST frames and nowhere
+else.
+
+**The gate is READ at a second site through the same predicate:** `list()`,
+which answers `listRemotes`. That one only *reports* it — a switched-off remote
+is out of the configured set — and enforces nothing. Sharing the predicate is
+what keeps the listing and the refusal from disagreeing
+([remote-catalog.md](remote-catalog.md)).
 
 **The probe gates nothing.** `Transport.reachability` is never consulted before
-running a command. It exists so a switched-off card still tells the truth about
-its target, and so the tooling probe can key its cache on a fingerprint.
+running a command, and **never consulted for the listing either**: an enabled
+remote whose container is stopped stays listed. It exists so a switched-off card
+still tells the truth about its target, and so the tooling probe can key its
+cache on a fingerprint.
 
 ## What a kind author owes
 

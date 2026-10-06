@@ -10,7 +10,7 @@ import path from 'node:path';
 import {
   BINARY_SNIFF_BYTES, CHUNK_BYTES, FS_ERROR_CODES, MAX_FILE_BYTES, MAX_LINE_BYTES,
   MIRROR_EXCLUDE_MAX, MIRROR_PATH_MAX, NdjsonDecoder, PROTOCOL_ERROR_CODES,
-  PROTOCOL_VERSION, classifyStderr, decodeFrame, isBase64,
+  PROTOCOL_VERSION, REMOTE_ID_MAX, classifyStderr, decodeFrame, isBase64, remoteIdDefect,
 } from '../src/launcher/protocol.mjs';
 import { CC_FILE_KILL_MS } from './ccCheckout.mjs';
 
@@ -26,6 +26,7 @@ test('the constants equal the documented values', () => {
   assert.equal(MAX_LINE_BYTES, 4 * 1024 * 1024);
   assert.equal(MIRROR_EXCLUDE_MAX, 64);
   assert.equal(MIRROR_PATH_MAX, 4096);
+  assert.equal(REMOTE_ID_MAX, 128);
   // Not a protocol constant — cc's per-file TEST hang guard, which the bound
   // conformance runner prints its wall-clock margin against
   // (tests/conformance-docker.mjs). Mirrored here for the same reason as the
@@ -39,8 +40,22 @@ test('the constants equal the documented values', () => {
   ], "cc's eight protocol-level codes, in cc's order");
   assert.deepEqual(FS_ERROR_CODES, [
     'ENOENT', 'EACCES', 'EEXIST', 'ENOTDIR', 'EISDIR', 'ENOSPC', 'ENOTEMPTY', 'EINVAL',
+    'ENAMETOOLONG', 'ELOOP',
     'EUNKNOWN',
-  ], "cc's nine filesystem codes, in cc's order");
+  ], "cc's filesystem codes, in cc's order");
+});
+
+// PINS THE REMOTE-ID RULE cc's Remote field and `readRemoteList` share. Every
+// id a `remoteList` carries must pass it, or cc refuses the whole enumeration.
+test('remoteIdDefect names the defect cc refuses a Remote for', () => {
+  assert.equal(remoteIdDefect(''), 'empty');
+  assert.equal(remoteIdDefect('x'.repeat(REMOTE_ID_MAX)), null, 'the ceiling itself is accepted');
+  assert.equal(remoteIdDefect('x'.repeat(REMOTE_ID_MAX + 1)), 'too-long');
+  for (const c of [' ', '\t', '\n', '\u0000', '\u001f', '\u007f', '\u00a0']) {
+    assert.equal(remoteIdDefect(`a${c}b`), 'invalid-char', JSON.stringify(c));
+  }
+  // `_`, `.`, `-` and upper case are legitimate in container names and hosts.
+  assert.equal(remoteIdDefect('Ctr_1.a-b'), null);
 });
 
 test('strict base64: a lenient decode is what turns a corrupt chunk into a silent truncation', () => {
@@ -86,6 +101,8 @@ test('the classifier matches the strerror TAIL, not a tool prefix', () => {
   assert.equal(classifyStderr('No space left on device'), 'ENOSPC');
   assert.equal(classifyStderr("rm: cannot remove '/d': Directory not empty"), 'ENOTEMPTY');
   assert.equal(classifyStderr('readlink: /p: Invalid argument'), 'EINVAL');
+  assert.equal(classifyStderr("stat: cannot statx '/p': File name too long"), 'ENAMETOOLONG');
+  assert.equal(classifyStderr("cat: /loop: Too many levels of symbolic links"), 'ELOOP');
   assert.equal(classifyStderr('busybox says something else entirely'), 'EUNKNOWN');
 });
 
@@ -112,6 +129,7 @@ test('our mirror matches cc\'s own protocol.ts', { skip: !process.env.CC_CHECKOU
   assert.equal(MAX_LINE_BYTES, num('MAX_LINE_BYTES'));
   assert.equal(MIRROR_EXCLUDE_MAX, num('MIRROR_EXCLUDE_MAX'));
   assert.equal(MIRROR_PATH_MAX, num('MIRROR_PATH_MAX'));
+  assert.equal(REMOTE_ID_MAX, num('REMOTE_ID_MAX'));
 
   const codes = (name) => {
     const m = new RegExp(`export const ${name}\\s*=\\s*\\[([\\s\\S]*?)\\]\\s*as const;`).exec(src);
@@ -120,7 +138,31 @@ test('our mirror matches cc\'s own protocol.ts', { skip: !process.env.CC_CHECKOU
   };
   assert.deepEqual(PROTOCOL_ERROR_CODES, codes('PROTOCOL_ERROR_CODES'));
   assert.deepEqual(FS_ERROR_CODES, codes('FS_ERROR_CODES'));
+
+  // THE SAME EXTRACTION OVER BOTH FILES, so the comparison is between two
+  // source texts rather than between cc's text and a value we typed.
+  const ours = await fs.readFile(new URL('../src/launcher/protocol.mjs', import.meta.url), 'utf8');
+  assert.equal(remoteIdCharClass(ours), remoteIdCharClass(src),
+    "remoteIdDefect's character class differs from cc's");
+  assert.deepEqual(stderrTable(ours), stderrTable(src), "STDERR_TABLE differs from cc's");
 });
+
+// The regex literal on remoteIdDefect's `invalid-char` line.
+function remoteIdCharClass(text) {
+  const m = /if \((\/\[[^\n]*?\]\/)\.test\(id\)\) return 'invalid-char';/.exec(text);
+  assert.ok(m, "no `if (/[…]/.test(id)) return 'invalid-char'` line");
+  return m[1];
+}
+
+// Every `['<needle>', '<CODE>']` pair of STDERR_TABLE, in order.
+function stderrTable(text) {
+  const m = /const STDERR_TABLE[^=]*=\s*\[([\s\S]*?)\n\];/.exec(text);
+  assert.ok(m, 'no STDERR_TABLE literal');
+  const pairs = [...m[1].matchAll(/\['([^']+)',\s*'([A-Z]+)'\]/g)].map(x => [x[1], x[2]]);
+  // Two empty parses would compare equal and prove nothing.
+  assert.ok(pairs.length > 0, 'STDERR_TABLE parsed to no rows — the literal format changed');
+  return pairs;
+}
 
 // The same drift check for the one constant that is NOT in protocol.ts. cc's
 // tests/hangGuardConfig.mjs is the single source for every hang-guard deadline,

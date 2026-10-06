@@ -6,11 +6,12 @@
 //   FlagRemoteSource  — `--remote id=root` on the argv, which is the shape cc's
 //                       conformance suite drives a provider in.
 //
-// A source answers three things: which targets exist, what a named one resolves
-// to, and what it advertises as a mirror.
+// A source answers: which targets exist, which ids it LISTS (its configured set,
+// systems-protocol.md §2.2), what a named one resolves to, and what it
+// advertises as a mirror.
 
 import path from 'node:path';
-import { readRemote } from '../store.mjs';
+import { listRemoteIds, readRemote } from '../store.mjs';
 
 /**
  * @typedef {{remoteId:string|null, config:object, root:string|null}} ResolvedRemote
@@ -51,6 +52,11 @@ export class FlagRemoteSource {
   hasRemotes() { return this.#remotes.size > 0; }
   hasMirrors() { return this.#mirrors.size > 0; }
   ids() { return [...this.#remotes.keys()]; }
+
+  // THE CONFIGURED SET IS THE FLAGS. `lookup` below refuses exactly the ids
+  // outside this map, and nothing else, so the two cannot disagree. `async`
+  // only so both sources present the same shape.
+  async list() { return this.ids(); }
 
   async lookup(remoteId) {
     // With no --remote flags this endpoint serves exactly ONE target and does
@@ -101,9 +107,41 @@ export class StoreRemoteSource {
   // are this source's stated interface, and the tests' doubles implement them.
   hasRemotes() { return true; }
   hasMirrors() { return true; }
-  ids() { return []; }
+
+  // THE CONFIGURED SET (systems-protocol.md §2.2, configured membership): every
+  // record stem `#configured` admits. A stem it refuses is one `lookup` refuses
+  // ENOREMOTE before any attempt, so leaving it out is exact, not partial. NO
+  // TRANSPORT METHOD IS CALLED — a stopped container stays listed, and its
+  // refusal is the operation's own. A directory that cannot be enumerated
+  // THROWS (`listRemoteIds`); the caller answers that as a failed enumeration.
+  async list() {
+    const out = [];
+    for (const id of await listRemoteIds()) {
+      if ((await this.#configured(id)).ok) out.push(id);
+    }
+    return out;
+  }
 
   async lookup(remoteId) {
+    const c = await this.#configured(remoteId);
+    if (!c.ok) return c;
+    const rec = c.record;
+    // AFTER configuration, and deliberately outside it: a baseline refusal is
+    // EUNKNOWN, an outcome on a target the configuration does route to.
+    const gate = baselineRefusal(rec);
+    if (gate) return gate;
+    return {
+      ok: true,
+      remote: { remoteId, config: rec.config ?? {}, root: null },
+    };
+  }
+
+  // THE CONFIGURATION PREDICATE, shared by `lookup` (which refuses with it) and
+  // `list` (which filters with it), so the listing and the configuration
+  // refusal cannot drift. Decided from the store alone: a readable record at
+  // the current schema, of this launcher's kind, switched on. Reachability and
+  // the tooling baseline are NOT part of it.
+  async #configured(remoteId) {
     if (remoteId === null) {
       return {
         ok: false,
@@ -133,12 +171,7 @@ export class StoreRemoteSource {
     // what they need to hear.
     const off = gateRefusal(rec);
     if (off) return off;
-    const gate = baselineRefusal(rec);
-    if (gate) return gate;
-    return {
-      ok: true,
-      remote: { remoteId, config: rec.config ?? {}, root: null },
-    };
+    return { ok: true, record: rec };
   }
 
   // THE PER-REMOTE ADVERTISEMENT, read fresh off the record like everything
@@ -184,12 +217,13 @@ export class StoreRemoteSource {
 
 // THE OPERATOR GATE, launcher side — the whole enforcement of `record.enabled`.
 //
-// It is checked on the RECORD, before any Transport method is reached, at the
-// single site `StoreRemoteSource.lookup()`. session.mjs calls that once, for
-// all four REQUEST frames, so no kind can bypass it and no operation escapes
-// it. Follow-on frames (`data`, `end`, `signal`, `close`) are addressed by an
-// id already bound to a remote, so they cannot slip past: a `writeFile` was
-// already gated when it opened.
+// It is checked on the RECORD, before any Transport method is reached, inside
+// `StoreRemoteSource`'s configuration predicate. session.mjs calls `lookup()`
+// once, for all four routed REQUEST frames, so no kind can bypass it and no
+// operation escapes it; `list()` reads the same predicate, so a switched-off
+// remote is also out of the configured set. Follow-on frames (`data`, `end`,
+// `signal`, `close`) are addressed by an id already bound to a remote, so they
+// cannot slip past: a `writeFile` was already gated when it opened.
 //
 // `reap` DELIBERATELY DOES NOT PASS THROUGH HERE, and must not — gating it
 // would abandon far-side processes at shutdown, which is the leak MUST 3

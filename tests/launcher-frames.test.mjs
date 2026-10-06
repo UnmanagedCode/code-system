@@ -442,7 +442,7 @@ async function driveExec(transport, frame) {
   const out = [];
   const session = new Session({
     transport,
-    source: { hasRemotes: () => true, ids: () => ['alpha'], mirrorFor: () => ({ mirrorRoot: null, exclude: [] }),
+    source: { hasRemotes: () => true, list: async () => ['alpha'], mirrorFor: () => ({ mirrorRoot: null, exclude: [] }),
       async lookup(id) { return { ok: true, remote: { remoteId: id, config: { container: 'app' }, root: null } }; } },
     capabilities: { processGroupSignal: false, remotes: true, remoteDescriptors: false },
     write: f => out.push(f),
@@ -555,7 +555,7 @@ test('a reap that could not be proved to have run is reported, and does not kill
   transport.reap = async () => { throw new Error('reap could not be proved to have run'); };
   const session = new Session({
     transport,
-    source: { hasRemotes: () => true, ids: () => ['alpha'], mirrorFor: () => ({ mirrorRoot: null, exclude: [] }),
+    source: { hasRemotes: () => true, list: async () => ['alpha'], mirrorFor: () => ({ mirrorRoot: null, exclude: [] }),
       async lookup(id) { return { ok: true, remote: { remoteId: id, config: {}, root: null } }; } },
     capabilities: { processGroupSignal: false, remotes: true, remoteDescriptors: false },
     write: f => out.push(f),

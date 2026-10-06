@@ -128,7 +128,7 @@ export function createApi(deps = {}) {
 
   // Everything except `remoteId`, which is NEVER renamed once created: it is
   // the whole hand-off contract to a cc project's Remote field
-  // (.wiki/gotchas/no-remote-discovery.md).
+  // (.wiki/gotchas/remote-catalog.md).
   r.patch('/remotes/:id', async (req, res, next) => {
     try {
       const cur = await readRemote(req.params.id);

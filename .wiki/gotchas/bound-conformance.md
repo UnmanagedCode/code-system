@@ -7,19 +7,27 @@ battery on `host`; that it carries every other kind is a *seam* argument
 (`protocol.mjs`, `session.mjs` and `fileops.mjs` are kind-agnostic and
 `spawnPlan` is pure). This run **measures the per-kind residue** instead of
 generalising to it. Design in `docs/architecture.md` → "The bound conformance
-run"; every number below was **re-measured against cc `5da5b292`** (branch
-`main`), daemon server 29.7.2, `sudo -n docker`, on both channel arms.
+run". The manifest, the reporter fixture and the hashes under "The pin" are
+taken at cc `b550d1a8847ddba36986051d0a35b79b9e89729e` (branch `main`); the
+outcome table is not restated here — it is the manifest. The timing and census
+figures are a separate measurement, taken at cc `5da5b292`, daemon server
+29.7.2, `sudo -n docker`, on both channel arms.
 
 ## The outcome, and the coverage it buys
 
-The battery is **63 test executions** (22 in-loop × 2 `CAPABILITY_CONFIGS` + 19
-out-of-loop). A bound `docker` run, **identical on both channel arms**:
+The battery's size is `EXPECTED_TOTAL` and every row a bound `docker` run does
+not pass is an `EXPECTED` entry, both in `tests/boundConformanceExpectations.mjs`;
+the runner prints the pass/fail/skip split, and it is **identical on both channel
+arms**. The non-passing rows, by cause:
 
-| | count |
+| Bucket | Rows |
 |---|---|
-| pass | **48** |
-| fail | **11** — 2 capability, 6 flag, 2 a real defect (below), 1 close's reap reach (card 2026-0019) |
-| skip | **4** — exactly the `IS_REFERENCE_PROVIDER` set in [host-kind-and-conformance.md](host-kind-and-conformance.md) |
+| skip | exactly the `IS_REFERENCE_PROVIDER` set in [host-kind-and-conformance.md](host-kind-and-conformance.md) |
+| capability | the `[all capabilities]` rows asserting `processGroupSignal: true` |
+| flag | every out-of-loop row that launches its own provider with `--remote`/`--mirror`/`--exclude` — the two `listRemotes` enumeration rows included |
+| transport defect | `exec NEVER rejects…`, both configurations (card 2026-0016, below) |
+| close reach | `[processGroupSignal:false] detach ends the operation…` (card 2026-0019) |
+| frame-path defect | `a path that cannot resolve is ENAMETOOLONG or ELOOP…`, both configurations — `host` fails them too, so it is not docker's: `readFile`'s script in `src/launcher/fileops.mjs` answers `ENOENT` |
 
 > **ONE ROW HAS BEEN SEEN TO FLAKE, on the SPAWN path under sustained load.**
 > `[all capabilities] detach ends the operation and kills nothing; close kills as
@@ -36,13 +44,12 @@ out-of-loop). A bound `docker` run, **identical on both channel arms**:
 
 **What the channel carried while producing that table.** Each launcher prints one
 census line at shutdown (`channel carried <n> of <m> admitted ops on <k>
-channels`), and cc launches a provider per connection, so **one arm's run
-produces 46 of them** — a figure that was 46 in every one of four runs. Summed
-per run: **111–114 of 139 admitted ops on 24–25 channels**, with no
-admission-drift alarm. The carried figure moves a little run to run — a channel
-retired mid-run sends the op that retired it down the spawn path — so read the
-range, not a single number. The channel-off arm builds no pool,
-reports no census, and produces the same 63-row table. That is what makes the
+channels`), and cc launches a provider per connection, so one arm's run
+produces one per connection, summed by the runner, with no admission-drift alarm.
+The carried figure moves a little run to run — a channel retired mid-run sends
+the op that retired it down the spawn path — so read a range across runs, not a
+single number. The channel-off arm builds no pool, reports no census, and
+produces the same outcome table. That is what makes the
 invariance claim a measurement rather than an inference from the seam — and it
 is only readable because the runner redirects the launcher's stderr to a file of
 its own (see [docker-channel.md](docker-channel.md)).
@@ -76,10 +83,9 @@ its own (see [docker-channel.md](docker-channel.md)).
 > `#reap`'s `CC_EXEC_TOKEN` scan does reach it. The green was an accident of the
 > kind, not conformance.
 
-**"41 rows exercise the transport" means 41 rows REACH IT AND PASS**, and the
-definition matters: of the 48 passes, **7 exercise no provider of ours**, leaving
-48 − 7 = **41**. Those seven are PASSES, and naming them beats describing them —
-one of the skips is easy to mistake for an eighth:
+**"Rows that exercise the transport" means rows that REACH IT AND PASS**: the
+passes minus the passes that exercise no provider of ours. Those are named here
+rather than counted — one of the skips is easy to mistake for another of them:
 
 1. `msFromNanos is pinned to LITERALS, because every other observation of it mutates with it`
 2. `msFromFindStamp parses two integers out of the stamp, never one float`
@@ -89,6 +95,8 @@ one of the skips is easy to mistake for an eighth:
 5. `an empty or blank CC_CONFORMANCE_REMOTE_ID is unbound, never bound to a nonsense target`
 6. `a bound run is refused at the handshake unless the provider serves that target`
 7. `the third-party capability assertion tolerates a superset but pins the toggle`
+8. `a provider that does not advertise remoteListing skips the enumeration rows, never fails them`
+   — drives cc's `remoteListingVerdict` directly
 
 The first three are unit rows over cc's own `find`-output parsing helpers and
 launch no provider at all.
@@ -97,12 +105,11 @@ launch no provider at all.
 explicit remoteId still wins` is a **skip**, already counted in the skip bucket —
 subtracting it here would double-count it.
 
-Three further rows REACH the transport and fail on its BEHAVIOUR — the two
-defect rows below, and the `close`-reach row (card 2026-0019) — so **44 reach it
-at all**. The two `[all capabilities]` capability rows reach it too and are
-deliberately NOT counted: they fail on the advertisement, not on anything the
-transport did. Before this gate either number was zero. `host` reaches and passes
-**52** by the same subtraction (59 pass / 0 fail / 4 skip of 63).
+Further rows REACH the transport and fail on its BEHAVIOUR — the transport-defect
+rows, the `close`-reach row (card 2026-0019) and the frame-path-defect rows. The
+`[all capabilities]` capability rows reach it too and are deliberately NOT
+counted: they fail on the advertisement, not on anything the transport did.
+`host` is read by the same subtraction over its own run.
 
 Wall clock, three runs per arm on one machine: **channel-on 16.2 – 17.2 s**,
 **channel-off 28.1 – 30.4 s**, against cc's 90 000 ms per-file hang guard and its
@@ -253,8 +260,8 @@ no env of its own"*. Do not "simplify" it into an env overlay.
 `assertNegotiatedCapabilities`'s third-party branch does
 `assert.equal(caps[cap], config.caps[cap])` for each. `CAPABILITY_CONFIGS[0]`
 passes no flags and expects `true`; `kinds/docker.mjs` hardcodes `false`.
-§10's relaxation is explicitly one axis (`remotes`/`remoteDescriptors` may be a
-**superset**), a narrowness the suite pins itself in *the third-party capability
+§10's relaxation is explicitly one axis (`remotes`/`remoteDescriptors`/`remoteListing`
+may be a **superset**), a narrowness the suite pins itself in *the third-party capability
 assertion tolerates a superset but pins the toggle*; and §10 names our exact
 shape — accepts `--no-process-group-signal` and ignores it — as failing, *"Neither
 is skipped."* Two rows, `[all capabilities]` only.
@@ -269,15 +276,15 @@ given happens to agree with a value we hardcode**, not because the flag works.
 > code-system defect. `ssh` hardcodes `false` too (`kinds/ssh.mjs`), so this
 > applies to it identically.
 
-**2. Six flag rows are unreachable, and deliberately.** `src/launcher/main.mjs`
+**2. The flag rows are unreachable, and deliberately.** `src/launcher/main.mjs`
 refuses `--remote`/`--mirror`/`--exclude` for `STORE_BACKED` kinds with **exit 2
-before any frame**, and six out-of-loop rows launch their own provider with them,
-so `sys.connect()` fails. No design satisfies both cc's fixtures and the
+before any frame**, and out-of-loop rows that launch their own provider with them
+fail at `sys.connect()` — the manifest's flag group names each. No design satisfies both cc's fixtures and the
 `StoreRemoteSource.lookup` gate: any flag-backed target source on a shipped
 store-backed kind is a **second remote path around the single `ENOREMOTE`
 chokepoint**. Recorded as a consequence, not a gap to close.
 
-Two of those six are the mirror rows, and they stay unreachable for the SAME
+The mirror rows among them stay unreachable for the SAME
 reason now that `docker`/`ssh` advertise `remoteDescriptors: true` (card
 2026-0017): the advertisement comes from `record.mirror` in the store, not from
 `--mirror`/`--exclude`. **Measured 2026-09-05, daemon 29.7.2: the flip moved no
@@ -285,6 +292,11 @@ manifest row** — the run before and after it is outcome-identical, row for row
 §10's third-party relaxation tolerates `remotes`/`remoteDescriptors` as a
 superset, and the two cc-side mirror rows skip on `IS_REFERENCE_PROVIDER`
 whatever the provider's shape.
+
+The two `listRemotes` enumeration rows are in this group for the same reason:
+`withRemotes` launches with `--remote`, and `docker`'s configured set is the
+store, not argv. They pass on `host`, and `tests/listing.test.mjs` holds the
+store-backed listing to the same membership rule with no docker.
 
 Related: §10 says *"`CC_CONFORMANCE_REMOTE_ID` presupposes `--remote`"*. Our
 bound run passes **no `--remote` at all** and clears the harness's bound-run
@@ -344,16 +356,24 @@ which is why the seam argument could never have surfaced this.
 
 **THE SUITE FILE MOVES; THE HARNESS DOES NOT** — and it is that distinction, not
 the commit sha, that says whether a recorded result still holds. At cc
-`5da5b292`:
+`b550d1a8847ddba36986051d0a35b79b9e89729e`, the pin `EXPECTED_TOTAL`, `EXPECTED`
+and `tests/fixtures/specReport.txt` were written against:
 
 | file | sha256 |
 |---|---|
-| `tests/systems-protocol-conformance.test.mjs` | `4935b5c316553466abedc476499805d073b8ceb1c1a50fe508afcbfab49f0d1b` |
-| `tests/referenceProviderHarness.mjs` | `50b5b2e1fd56a65951919c2b7de6a3f76553cbef0386da4c84e0ce4e38064313` |
+| `tests/systems-protocol-conformance.test.mjs` | `19d491823a56af3a4ee0d219b5d2cc4d40c1a3819aca461daf10a21e983620ae` |
+| `tests/referenceProviderHarness.mjs` | `0b5e18f3df198697c27f0a73a643b06a0a2651369eaf77f10c5203df518847da` |
 
-`referenceProviderHarness.mjs` has been **byte-identical across every pin this
-page has recorded**, so the capability matrix and the two config names have never
-moved; only the battery has. Re-take both hashes before trusting a recorded
+Take them with `git -C <cc> show <pin>:<file> | sha256sum`, which reads cc
+without touching its tree.
+
+**`referenceProviderHarness.mjs` DID move at this pin, and only additively.**
+Each `CAPABILITY_CONFIGS` entry's `caps` gained `remoteListing: false`, the
+third-party superset gained `remoteListing`, and it now exports the enumeration
+rows' gate (`VERIFY_LISTING`, `remoteListingVerdict`) and `listRemotesRaw`. The
+config names and the toggled axis (`processGroupSignal` alone) did not move, so
+the capability-row reasoning below still holds. A future harness change is not
+safe to assume additive — diff it. Re-take both hashes before trusting a recorded
 result, and re-take the battery's size with them — `EXPECTED_TOTAL` in
 `tests/boundConformanceExpectations.mjs` is pinned absolutely, so a grown suite
 aborts the run rather than quietly covering less.

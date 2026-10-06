@@ -18,7 +18,7 @@ Sent once, before any other frame, in answer to cc's `hello`.
 
 ```json
 {"type":"hello","protocol":1,"provider":"code-system-docker/0.1.0",
- "capabilities":{"processGroupSignal":false,"remotes":true,"remoteDescriptors":true}}
+ "capabilities":{"processGroupSignal":false,"remotes":true,"remoteDescriptors":true,"remoteListing":true}}
 ```
 
 | Capability | `docker` | `ssh` | `host` |
@@ -26,10 +26,11 @@ Sent once, before any other frame, in answer to cc's `hello`.
 | `processGroupSignal` | **`false`, final** — see below | **`false`, final** — same reason | `true` unless `--no-process-group-signal` |
 | `remotes` | `true` always | `true` always | at least one `--remote` |
 | `remoteDescriptors` | `true` always | `true` always | at least one `--mirror`/`--exclude` |
+| `remoteListing` | `true` always | `true` always | at least one `--remote` — derived from `remotes` in `src/launcher/main.mjs` |
 
-**Those three keys and no more.** They are cc's `Capabilities` interface
+**Those keys and no more.** They are cc's `Capabilities` interface
 verbatim (`src/systems/protocol.ts`); a missing key reads as `false` and an
-unknown key is ignored, so a fourth would be a field with no reader.
+unknown key is ignored, so any other key would be a field with no reader.
 
 **There is NO `system` descriptor**, and we send none. cc's
 `HelloProviderFrame` is `{type, protocol, provider, capabilities?}`. The
@@ -55,8 +56,8 @@ known position.
 signal fidelity, i.e. a `Transport.signal` seam relaying into the far host — and
 it is not restated here. `reap` SIGKILLs the far-side subtree either way.
 
-`docker` and `ssh` advertise `remotes:true` **and `remoteDescriptors:true`
-always**, never derived from what is in the store — cc memoises the handshake per
+`docker` and `ssh` advertise `remotes`, `remoteDescriptors` **and
+`remoteListing` as `true` always**, never derived from what is in the store — cc memoises the handshake per
 connection generation, so a capability that flapped as remotes were added, or as
 one gained or lost a mirror, would be memoised wrong. See
 `docs/architecture.md` for what that costs and why it is accepted.
@@ -91,10 +92,64 @@ through unvalidated, exactly as it does `config`, so cc's
 `MIRROR_ADVERTISEMENT_INVALID` (502) is reachable only by hand-editing a store
 file.
 
+### Remote enumeration (`listRemotes` → `remoteList`)
+
+`systems-protocol.md` §2.2, **configured membership**: the list is exactly the
+ids the configuration routes to, read when the answer is composed. Answered by
+`Session`'s `#listRemotes` (`src/launcher/session.mjs`) from the source's
+`list()` (`src/launcher/remotes.mjs`).
+
+```json
+{"type":"listRemotes","id":"l1"}
+{"type":"remoteList","id":"l1","remotes":[{"remoteId":"app-ctr"},{"remoteId":"build-box"}]}
+```
+
+**One predicate decides both the listing and the configuration refusal.**
+`StoreRemoteSource`'s private `#configured` is what `lookup` refuses
+`ENOREMOTE` with and what `list` filters with, so an id is listed exactly when a
+request naming it passes configuration.
+
+| Record (`docker`/`ssh`, one file under `<store>/remotes/`) | Listed? | A request naming it |
+|---|---|---|
+| readable, current `SCHEMA`, this launcher's `kind`, `enabled: true` | **yes** | served |
+| …and `baseline.state` is `unsupported` | **yes** — the baseline is not configuration | `EUNKNOWN` |
+| …and the target is unreachable (container stopped or gone, ssh exit 255) | **yes** — reachability is never consulted | `ENOREMOTE` from the transport (a reachability refusal) |
+| `enabled` not `true` | no | `ENOREMOTE` (the gate) |
+| another `kind` | no | `ENOREMOTE` |
+| another schema, malformed JSON, unreadable | no | `ENOREMOTE` |
+| stem that fails `isValidRemoteId` (`src/store.mjs`) | no | `ENOREMOTE` (`invalid-id`) |
+| not a `*.json` file (a `.tmp`, anything else) | no | — |
+
+| Situation | Answer |
+|---|---|
+| `remotes` directory absent, or no record passes | `{"type":"remoteList","id":…,"remotes":[]}` — a valid empty answer |
+| `remotes` directory cannot be enumerated (`readdir` fails with anything but `ENOENT`) | `EUNKNOWN`, **id-addressed**, `message` = `could not enumerate the remotes this provider serves: <reason>` — **never a partial list** |
+| `host` without `--remote` (no `remoteListing`) | `EUNSUPPORTED`, id-addressed |
+| `host` with `--remote` | exactly the `--remote` ids, in flag order |
+
+- **Never routed, never probes.** The frame names no remote, so it does not go
+  through `lookup` (which would refuse it `ENOREMOTE`), and composing the list
+  runs no transport method — no `docker`, no `ssh`.
+- **Each answer is a fresh store read**, so a gate toggle reaches the very next
+  `listRemotes` with no restart, exactly as it reaches the next request.
+- **Every listed id is one cc accepts as a Remote.** `REMOTE_ID_RE`
+  (`src/store.mjs`) is strictly inside cc's `remoteIdDefect` (mirrored in
+  `src/launcher/protocol.mjs`), pinned by `tests/store.test.mjs` → "every id
+  the store accepts is one cc accepts as a Remote". `host` refuses a `--remote`
+  id that fails `remoteIdDefect` at launch: stderr + exit 2, before any frame.
+- **The `EUNKNOWN` reason is passed verbatim**, errno token included. The
+  errno-token hazard (`.wiki/gotchas/refusal-message-errno-tokens.md`) is cc's
+  exec-path re-parsers, and no cc source sends `listRemotes`.
+- **No cc surface enumerates remotes yet.** cc carries the frame but nothing in
+  cc sends it, so the card UI and `list_remotes` remain the only catalog a user
+  reads — and they list **every** record, broken and switched-off ones
+  included, where `remoteList` carries only the configured set.
+
 ## `remoteId` routing
 
 Carried by the four **request** frames only — `exec`, `readFile`, `writeFile`,
-`describeRemote` — and by nothing else. An id is bound to one remote for its
+`describeRemote` — and by nothing else. `listRemotes` is a request frame that
+carries **none** and is not routed (above). An id is bound to one remote for its
 whole lifetime; `signal`, `close`, `detach`, `data` and `end` are addressed by
 `id` alone and we never look for a `remoteId` on them
 (`systems-protocol.md:329-333` enumerates exactly those five).
@@ -129,6 +184,7 @@ a torn write" for `atomic: true`.
 | `docker` record whose container **does not exist** | `ENOREMOTE`, id-addressed, naming the **configured** container |
 | path or non-placeholder `cwd` outside a fenced remote's root | `EACCES`, id-addressed |
 | `describeRemote` without `remoteDescriptors` | `EUNSUPPORTED`, id-addressed |
+| `listRemotes` | **not routed** — never `ENOREMOTE`; see "Remote enumeration" above |
 | `detach` for a live **`exec`** id | the operation ENDS: deadline cancelled, **no further frames** for it (`exit` included), the command and anything it backgrounded **left running**, and **nothing reaped** — here or at shutdown |
 | `detach` for a `readFile`/`writeFile` id, or an unknown one | **dropped** — `exec` ids only |
 | a frame for an unknown or already-settled id | **dropped**, not an error |
@@ -856,7 +912,7 @@ this document names the kind whenever it means one of them.
 `remoteId` charset: `^[a-z0-9][a-z0-9._-]{0,63}$`, never `.` or `..`. It is both
 a filename stem and the entire hand-off contract to a cc project's *Remote*
 field, so it must be human-typable and is **never renamed** once created — which
-is why the delete route warns: cc has no `listRemotes` frame, so nothing else
+is why the delete route warns: no cc surface enumerates remotes, so nothing else
 would tell the user which projects they just stranded.
 
 ## MCP surface

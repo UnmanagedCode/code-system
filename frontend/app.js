@@ -175,7 +175,7 @@ function credRow(remoteId) {
         },
       }, 'Copy'),
     ),
-    // THE HAND-OFF CONTRACT, made visible. cc has no listRemotes frame, so this
+    // THE HAND-OFF CONTRACT, made visible. No cc surface enumerates remotes, so this
     // string is the only thing connecting a project to this card.
     el('div', { class: 'cred-note' }, 'Paste this into a code-conductor project\'s Remote field.'),
   );

@@ -10,8 +10,9 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { migrate } from '../src/migrate.mjs';
 import { quarantineDir, remotesDir } from '../src/paths.mjs';
+import { remoteIdDefect } from '../src/launcher/protocol.mjs';
 import {
-  SCHEMA, deleteRemote, isValidRemoteId, listRemotes, makeRecord, readRemote, writeRemote,
+  SCHEMA, deleteRemote, isValidRemoteId, listRemoteIds, listRemotes, makeRecord, readRemote, writeRemote,
 } from '../src/store.mjs';
 import { tempStore } from './helpers.mjs';
 
@@ -49,6 +50,46 @@ test('the remoteId charset is enforced, and "." / ".." are refused', () => {
   ]) {
     assert.equal(isValidRemoteId(bad), false, `${JSON.stringify(bad)} should be refused`);
   }
+});
+
+// PINS THAT EVERY ID THE LAUNCHER CAN LIST IS ONE cc ACCEPTS BACK. A listed
+// id cc refuses fails the WHOLE `remoteList` (systems-protocol.md §2.2), and the
+// launcher lists only stems `readRemote` accepts — so the store's charset must
+// sit inside cc's `remoteIdDefect`. Widening REMOTE_ID_RE past cc's rule (a
+// space, a control character, more than REMOTE_ID_MAX characters) reds this.
+test('every id the store accepts is one cc accepts as a Remote', () => {
+  for (let cp = 0; cp <= 0xffff; cp++) {
+    const c = String.fromCharCode(cp);
+    for (const id of [c, `a${c}`, `a${c}b`]) {
+      if (isValidRemoteId(id)) {
+        assert.equal(remoteIdDefect(id), null, `the store accepts ${JSON.stringify(id)}, cc does not`);
+      }
+    }
+  }
+  for (let n = 1; n <= 300; n++) {
+    const id = 'a'.repeat(n);
+    if (isValidRemoteId(id)) assert.equal(remoteIdDefect(id), null, `length ${n}`);
+  }
+});
+
+// PINS the enumeration the launcher's listing reads: every `*.json` stem,
+// valid or not (deciding that is `readRemote`'s job), an absent directory as
+// "nothing configured", and any OTHER failure thrown rather than read as empty
+// — a store that cannot be enumerated must never pass for an empty one.
+test('listRemoteIds reads every .json stem, answers [] for an absent directory, and throws otherwise', async (t) => {
+  await withStore(t, async (dir) => {
+    assert.deepEqual(await listRemoteIds(), [], 'no remotes directory yet');
+
+    await fs.mkdir(path.join(dir, 'remotes'));
+    for (const name of ['b.json', 'a.json', 'Bad Name.json', 'notes.txt', 'c.json.123.0.tmp']) {
+      await fs.writeFile(path.join(dir, 'remotes', name), '{}');
+    }
+    assert.deepEqual(await listRemoteIds(), ['Bad Name', 'a', 'b']);
+
+    await fs.rm(path.join(dir, 'remotes'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'remotes'), 'not a directory');
+    await assert.rejects(() => listRemoteIds(), (e) => e.code === 'ENOTDIR');
+  });
 });
 
 test('writeRemote refuses an invalid remoteId rather than writing a file it cannot address', async (t) => {

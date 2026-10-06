@@ -2,7 +2,7 @@
 
 These are locked for this plugin. Implementation should conform to this shape, not re-derive it.
 
-- **One cc System row per provider KIND, not per remote.** Two rows total: `docker` and `ssh`. Each advertises `remotes:true` and `remoteDescriptors:true`. See [gotchas/no-remote-discovery.md](../gotchas/no-remote-discovery.md) for why the remote catalog lives entirely in this plugin instead.
+- **One cc System row per provider KIND, not per remote.** Two rows total: `docker` and `ssh`. Each advertises `remotes`, `remoteDescriptors` and `remoteListing` as `true`. See [gotchas/remote-catalog.md](../gotchas/remote-catalog.md) for why the catalog a user sees lives entirely in this plugin.
 - **System is a transport, not the remote system.** The cc System row is just how cc reaches a target; the actual remote/`remoteId` is the real unit of identity, configured per `remoteId`.
 - **Ownership split:** the launcher owns execution (spawning `docker exec`/`ssh`, relaying I/O, killing children — see [gotchas/kill-relay.md](../gotchas/kill-relay.md)); the backend owns config storage and the UI.
 - **Attach-only connect toggle.** Connecting to a remote in the UI never starts or stops a container — it only attaches to something already running.

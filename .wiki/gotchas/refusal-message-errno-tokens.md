@@ -12,11 +12,9 @@ Both drop `spawnErrorCode` and call `classifySpawnError`, which is
 
 ## The failure mode
 
-A refusal whose message contains a standalone FS errno token —
-
-    ENOENT  EACCES  EEXIST  ENOTDIR  EISDIR  ENOSPC  ENOTEMPTY  EINVAL
-
-— is **silently reclassified as the command's own failure**. An administrative
+A refusal whose message contains a standalone FS errno token — any code in
+`FS_ERROR_CODES` other than the catch-all `EUNKNOWN` (`src/launcher/protocol.mjs`,
+mirrored from cc's) — is **silently reclassified as the command's own failure**. An administrative
 refusal ("this remote is switched off", "this target fails the tooling
 baseline") renders as *git answered non-zero*, shown as git's own stderr, with
 **no system-level signal at all**. Nothing logs it. The operator sees a git
@@ -37,6 +35,12 @@ bare FS errno token.** That includes:
 
 If you need to convey one, spell it in prose ("no such file") or keep it inside
 a longer token the word boundary will not isolate.
+
+**The one deliberate exception is the `listRemotes` refusal** (`#listRemotes`,
+`src/launcher/session.mjs`): its `EUNKNOWN` passes the `readdir` reason through
+verbatim, errno token and all. The hazard lives on cc's exec path, and no cc
+source sends `listRemotes`, so no re-parser reads that message. Re-check this the
+day cc gains a sender.
 
 `tests/gate.test.mjs` pins this for the gate refusal, and builds its list from
 the shipped `FS_ERROR_CODES` rather than a hand-copied one, so a new FS code

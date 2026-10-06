@@ -1,12 +1,13 @@
-// PINS the per-kind advertised capabilities — the three booleans of cc's
+// PINS the per-kind advertised capabilities — the booleans of cc's
 // `Capabilities` interface, which it negotiates on and then MEMOISES for the
 // life of a connection generation, so a wrong one is not re-derived later.
 //
-// In particular: `docker` and `ssh` advertise `remotes:true` AND
-// `remoteDescriptors:true` ALWAYS, never derived from store contents, because a
+// In particular: `docker` and `ssh` advertise `remotes`, `remoteDescriptors`
+// AND `remoteListing` ALWAYS, never derived from store contents, because a
 // capability that flapped as remotes were added — or as one gained or lost a
 // mirror — would be memoised wrong. The PER-REMOTE mirror answer lives in the
-// `describeRemote` frame instead (tests/mirror-frames.test.mjs).
+// `describeRemote` frame instead (tests/mirror-frames.test.mjs), and the
+// configured set in the `remoteList` frame (tests/listing.test.mjs).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,10 +16,10 @@ import { createDockerTransport } from '../src/launcher/kinds/docker.mjs';
 import { createSshTransport } from '../src/launcher/kinds/ssh.mjs';
 import { FAKE_TRANSPORT, Launcher, tempStore } from './helpers.mjs';
 
-// cc's `Capabilities` interface, verbatim: processGroupSignal, remotes,
-// remoteDescriptors. A missing key is false; an unknown key is ignored — so a
-// fourth key would be a field with no reader.
-const CAPABILITY_KEYS = ['processGroupSignal', 'remoteDescriptors', 'remotes'];
+// cc's `Capabilities` interface, verbatim (`src/systems/protocol.ts`). A
+// missing key is false; an unknown key is ignored — so an extra key would be a
+// field with no reader.
+const CAPABILITY_KEYS = ['processGroupSignal', 'remoteDescriptors', 'remoteListing', 'remotes'];
 
 test('only docker and ssh are auto-registered — host is deliberately not', () => {
   assert.deepEqual(REGISTERED_KINDS, ['docker', 'ssh']);
@@ -27,7 +28,7 @@ test('only docker and ssh are auto-registered — host is deliberately not', () 
 });
 
 for (const kind of ['docker', 'ssh']) {
-  test(`${kind} advertises processGroupSignal:false, remotes:true and remoteDescriptors:true, on the wire`, async (t) => {
+  test(`${kind} advertises processGroupSignal:false, remotes:true, remoteDescriptors:true and remoteListing:true, on the wire`, async (t) => {
     const store = await tempStore();
     t.after(() => store.cleanup());
     const l = new Launcher(['--kind', kind], { CODE_SYSTEM_STORE: store.dir });
@@ -38,11 +39,12 @@ for (const kind of ['docker', 'ssh']) {
       processGroupSignal: false,
       remotes: true,
       remoteDescriptors: true,
+      remoteListing: true,
     });
     assert.match(hs.provider, new RegExp(`^code-system-${kind}/\\S+$`));
   });
 
-  test(`${kind} advertises remotes:true and remoteDescriptors:true even with an EMPTY store`, async (t) => {
+  test(`${kind} advertises remotes, remoteDescriptors and remoteListing even with an EMPTY store`, async (t) => {
     // The registration handshake happens with zero remotes configured, and cc
     // memoises the answer — so neither may depend on what is in the store. For
     // `remoteDescriptors` the store is empty of MIRRORS too, and the answer is
@@ -54,6 +56,8 @@ for (const kind of ['docker', 'ssh']) {
     const caps = (await l.hello()).capabilities;
     assert.equal(caps.remotes, true);
     assert.equal(caps.remoteDescriptors, true);
+    // An empty store is an empty configured set, which is still a listing.
+    assert.equal(caps.remoteListing, true);
   });
 }
 
@@ -185,8 +189,8 @@ test('host advertises what it was flagged with — createTransport does not hard
 // PINS THE SHAPE, across every kind at once: the capability key SET is cc's
 // `Capabilities` interface and nothing more, and no kind's hello carries a
 // `system` descriptor. The per-kind deep-equals above pin VALUES; this pins
-// that no fourth key and no deleted block can creep back into any one kind.
-test('no kind\'s hello carries a system key, and the capability object has exactly cc\'s three keys', async (t) => {
+// that no extra key and no deleted block can creep back into any one kind.
+test('no kind\'s hello carries a system key, and the capability object has exactly cc\'s Capabilities keys', async (t) => {
   const store = await tempStore();
   t.after(() => store.cleanup());
   const launches = [
