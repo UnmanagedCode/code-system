@@ -288,10 +288,12 @@ export async function stubSshCli(t, {
   connectExit = 0, connectStderr = '',
   execStdout = 'CCREAP ok 0 7\n', execStderr = '', execExit = 0,
   socket = false, answers = null, master = false, checkKilled = false,
+  version = 'OpenSSH_10.0p2 Debian-7',
 } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'code-system-sshstub-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const argvLog = path.join(dir, 'argv.txt');
+  const envLog = path.join(dir, 'env.txt');
   const bin = path.join(dir, 'ssh');
   const marker = path.join(dir, 'master.alive');
   const ans = answers ? await answersFiles(dir, answers) : null;
@@ -305,6 +307,9 @@ export async function stubSshCli(t, {
   await fs.writeFile(bin, [
     '#!/bin/sh',
     `printf '%s\\n' "$@" >> ${q(argvLog)}`,
+    // One line per invocation: what the credential env looked like to ssh.
+    `printf 'REQUIRE=%s ASKPASS=%s PW=%s\\n' "$SSH_ASKPASS_REQUIRE" "$SSH_ASKPASS" "$CODE_SYSTEM_SSH_PASSWORD" >> ${q(envLog)}`,
+    `if [ "$1" = -V ]; then printf '%s\\n' ${q(version)} >&2; exit 0; fi`,
     // Recover the ControlPath the caller asked for, so the stub can materialise
     // a socket there — reachability's fingerprint is read off that file.
     'cp=""; verb=""; prev=""',
@@ -363,6 +368,11 @@ export async function stubSshCli(t, {
     setAnswer: ans ? ans.set : null,
     async argv() {
       try { return (await fs.readFile(argvLog, 'utf8')).split('\n').filter(Boolean); }
+      catch { return []; }
+    },
+    // The credential environment each invocation saw, one entry per call.
+    async envs() {
+      try { return (await fs.readFile(envLog, 'utf8')).split('\n').filter(Boolean); }
       catch { return []; }
     },
   };

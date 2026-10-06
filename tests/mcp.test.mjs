@@ -617,3 +617,15 @@ test('renderRemotes is a pure function of the cards it is given', () => {
     renderRemotes([{ remoteId: 'z', kind: 'host', label: 'a"b\nc', config: {}, enabled: false }]),
     'disabled  z  host  [unregistered kind]  "a\\"b\\nc"');
 });
+
+// PINS that the catalog a worker reads never carries a stored password: it
+// renders only the identity field of an already-redacted card.
+test('list_remotes never shows an ssh password', async (t) => {
+  const { call, store } = await withApi(t);
+  await plant(store, remoteRecord('box', {
+    kind: 'ssh', config: { host: '10.0.0.5', user: 'dev', password: 'hunter2 secret' },
+  }));
+  const res = await listRemotes(call);
+  assert.equal(JSON.stringify(res.body).includes('hunter2'), false);
+  assert.match(JSON.stringify(res.body), /10\.0\.0\.5/);
+});

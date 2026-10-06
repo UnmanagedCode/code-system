@@ -764,3 +764,96 @@ test('both catalog routes serve the mirror defaults, and cards carry the mirror'
   assert.deepEqual((await call('GET', '/remotes')).body.remotes[0].mirror, MIRROR,
     'the card carries it, so the edit form can pre-fill from the list response');
 });
+
+// ── secret config fields (an ssh password) ───────────────────────────
+
+const SECRET = 'hunter2 secret';
+const noSecret = (body) => assert.equal(JSON.stringify(body).includes('hunter2'), false,
+  `the password leaked into ${JSON.stringify(body).slice(0, 200)}`);
+
+// PINS that the password reaches NO API response — POST, GET, PATCH, connect
+// and the connect-502 card — while the store file keeps it at mode 0600 in a
+// 0700 directory, and every response says a secret is stored instead.
+test('an ssh password is stored but never returned, and the store file is private', async (t) => {
+  const stub = await stubSshCli(t, { master: true, execStdout: GNU_OUT });
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_SSH: JSON.stringify(stub.cli) });
+  const made = await call('POST', '/remotes', {
+    remoteId: 'box', kind: 'ssh', config: { host: '10.0.0.5', user: 'dev', password: SECRET },
+  });
+  assert.equal(made.status, 201);
+  noSecret(made.body);
+  assert.deepEqual(made.body.remote.storedSecrets, ['password']);
+  assert.equal(made.body.remote.config.password, undefined);
+  assert.equal((await stored(store, 'box')).config.password, SECRET);
+
+  const { promises: fs } = await import('node:fs');
+  const path = await import('node:path');
+  assert.equal((await fs.stat(path.join(store.dir, 'remotes', 'box.json'))).mode & 0o777, 0o600);
+  assert.equal((await fs.stat(path.join(store.dir, 'remotes'))).mode & 0o777, 0o700);
+
+  const listed = await call('GET', '/remotes');
+  noSecret(listed.body);
+  assert.deepEqual(listed.body.remotes[0].storedSecrets, ['password']);
+  noSecret(await call('PATCH', '/remotes/box', { label: 'x' }));
+  const connected = await call('POST', '/remotes/box/connect');
+  assert.equal(connected.status, 200);
+  noSecret(connected.body);
+  noSecret(await call('POST', '/remotes/box/disconnect'));
+
+  const refused = await stubSshCli(t, { master: true, connectExit: 255, connectStderr: 'denied\\n' });
+  process.env.CODE_SYSTEM_SSH = JSON.stringify(refused.cli);
+  const bad = await call('POST', '/remotes/box/connect');
+  assert.equal(bad.status, 502);
+  noSecret(bad.body);
+  assert.deepEqual(bad.body.remote.storedSecrets, ['password']);
+});
+
+// PINS the PATCH rule for a secret — omitted keeps, a new value replaces and
+// resets the gate, null clears, '' is refused — and that a kept secret is NOT
+// a config change (the form re-sends the config on every save).
+test('PATCH: an omitted password is kept, a new one resets the gate, null clears, empty is refused', async (t) => {
+  const stub = await stubSshCli(t, { master: true, execStdout: GNU_OUT });
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_SSH: JSON.stringify(stub.cli) });
+  await call('POST', '/remotes', { remoteId: 'box', kind: 'ssh', config: { host: '10.0.0.5', user: 'dev', password: SECRET } });
+  await call('POST', '/remotes/box/connect');
+  assert.equal((await stored(store, 'box')).enabled, true);
+
+  const kept = await call('PATCH', '/remotes/box', { config: { host: '10.0.0.5', user: 'dev' } });
+  assert.equal(kept.status, 200);
+  assert.equal((await stored(store, 'box')).config.password, SECRET, 'omitted keeps the stored password');
+  assert.equal((await stored(store, 'box')).enabled, true, 'and a kept secret does not reset the gate');
+
+  const empty = await call('PATCH', '/remotes/box', { config: { host: '10.0.0.5', password: '' } });
+  assert.equal(empty.status, 400);
+  assert.match(empty.body.error, /omit it to keep|null to clear/);
+  assert.equal((await stored(store, 'box')).config.password, SECRET);
+
+  const changed = await call('PATCH', '/remotes/box', { config: { host: '10.0.0.5', user: 'dev', password: 'other' } });
+  assert.equal(changed.status, 200);
+  assert.equal((await stored(store, 'box')).config.password, 'other');
+  assert.equal((await stored(store, 'box')).enabled, false, 'a new password may be a different login: the gate resets');
+
+  const cleared = await call('PATCH', '/remotes/box', { config: { host: '10.0.0.5', user: 'dev', password: null } });
+  assert.equal(cleared.status, 200);
+  assert.equal(Object.hasOwn((await stored(store, 'box')).config, 'password'), false);
+  assert.deepEqual(cleared.body.remote.storedSecrets, []);
+
+  // Both credentials together are refused, so switching to a key needs the clear.
+  await call('PATCH', '/remotes/box', { config: { host: '10.0.0.5', user: 'dev', password: SECRET } });
+  const both = await call('PATCH', '/remotes/box', { config: { host: '10.0.0.5', identityFile: '/k/id' } });
+  assert.equal(both.status, 400);
+  assert.match(both.body.error, /not both/);
+  const swapped = await call('PATCH', '/remotes/box', { config: { host: '10.0.0.5', identityFile: '/k/id', password: null } });
+  assert.equal(swapped.status, 200);
+});
+
+// PINS that a null secret on POST means "none", and that docker (no secret
+// fields) is untouched by the redaction.
+test('POST treats a null password as absent, and a docker card has no storedSecrets', async (t) => {
+  const { call } = await withApi(t);
+  const a = await call('POST', '/remotes', { remoteId: 'a', kind: 'ssh', config: { host: 'h', password: null } });
+  assert.equal(a.status, 201);
+  assert.deepEqual(a.body.remote.storedSecrets, []);
+  const d = await call('POST', '/remotes', { remoteId: 'd', kind: 'docker', config: { container: 'c' } });
+  assert.deepEqual(d.body.remote.storedSecrets, []);
+});

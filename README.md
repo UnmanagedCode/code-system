@@ -26,7 +26,7 @@ Users running cc against development environments that live outside their local 
 ### How to use it
 
 1. Install the plugin.
-2. In the plugin's card UI, add a remote: pick `docker` or `ssh`, then supply the connection details (container name, or host/user).
+2. In the plugin's card UI, add a remote: pick `docker` or `ssh`, then supply the connection details (container name, or host/user — an ssh card may also carry its own password or private key file).
 3. Press **Connect**. A new remote starts switched off, and a switched-off remote refuses every operation.
 4. Point a cc project's *Remote* field at that remote's `remoteId`. (Connect first: cc will not accept a *Remote* it has never been able to reach.)
 5. cc registers the corresponding System row (`docker` or `ssh`) and spawns the provider to handshake; once connected, cc operates against the remote target for that project.
@@ -102,6 +102,7 @@ See [`.wiki/decisions/architecture-shape.md`](.wiki/decisions/architecture-shape
 - **`BASH_RULES_NOT_ENFORCEABLE`.** If the user's `~/.claude/settings.json` has any `Bash(...)` entry under `permissions.deny`/`permissions.ask`, every remote spawn from this plugin is refused. This is host configuration, not a provider bug. See [`.wiki/gotchas/host-environment.md`](.wiki/gotchas/host-environment.md).
 - **A mirror change is not live.** A card's **Advanced** group sets how much of the target a worker can see; cc asks for it once per provider connection, so an edit reaches an already-running session only after the System reconnects. See [`.wiki/gotchas/mirror-advertisement.md`](.wiki/gotchas/mirror-advertisement.md) and [`docs/features.md`](docs/features.md).
 
+- **An ssh password is stored unencrypted.** It lives in the remote's store file (mode 0600), so it is readable by that user, by root and by any backup of the store; the API never returns it. See [`docs/features.md`](docs/features.md).
 - **Plugin must live on the `local` system (`PLUGIN_BACKEND_LOCAL_ONLY`).** The plugin backend itself is not relocatable to a remote System.
 
 ## License

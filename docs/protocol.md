@@ -426,6 +426,24 @@ and the baseline probe — through one optional `Transport.classifyFailure` memb
           -- <user>@<host> "<ONE quoted remote command>"
 ```
 
+**Credential options.** With no credentials the argv is exactly the above. A
+card's credentials add, before `--`:
+
+| Credential | `BatchMode` | Added argv | Child env |
+|---|---|---|---|
+| password | `no` | `-o NumberOfPasswordPrompts=1 -o PreferredAuthentications=password,keyboard-interactive` | `SSH_ASKPASS=<abs path of kinds/askpass.sh>`, `SSH_ASKPASS_REQUIRE=force`, `CODE_SYSTEM_SSH_PASSWORD=<password>` |
+| key file | `yes` | `-i <identityFile> -o IdentitiesOnly=yes -o PreferredAuthentications=publickey` | — |
+
+`BatchMode=yes` disables askpass, hence `no` for a password remote. The password
+is **never** in argv. `kinds/askpass.sh` answers only a prompt matching
+`*[Pp]assword*`; every other prompt gets exit 1, so ssh fails instead of
+hanging. Every invocation (`connect`, `reachability`, `disconnect`, `reap`,
+`spawnPlan`) takes both halves from `sshAuth` in `kinds/ssh.mjs`. A password
+remote's `connect` first runs `<cli> -V` and refuses below OpenSSH 8.4; a key
+remote's `connect` refuses a missing, unreadable or group/world-accessible file.
+The ControlPath hash appends `\0password` or `\0key:<path>` when a credential is
+set (the password value is never hashed).
+
 The remote command is a **single argv element**: every token below quoted once
 with `shellQuote` and joined with spaces.
 
@@ -745,6 +763,20 @@ only and re-derived at every start.
 | `POST /api/mcp` | the MCP surface — one read-only tool. Its own contract is **MCP surface** below |
 | *(router tail)* | every response is JSON, including express's own body-parser refusals — the client reads `{error}` off every status |
 
+**Secret config fields.** A `configFields` entry may carry **`secret: true`**
+(ssh's `password`). No response — `GET /remotes`, `POST`, `PATCH`, connect,
+disconnect, or the connect-502 card — contains a secret's value; each remote
+carries **`storedSecrets: [<field names>]`** instead, and its `config` omits
+them. On `POST`, a `null` secret means none. On `PATCH`, per secret field:
+**omitted keeps** the stored value, **`null` clears** it, a non-empty string
+sets it, and `''` is **400** ("omit it to keep the stored value, or send null to
+clear it"). The merge runs before validation, so a kept secret is not a config
+change and a new one resets the gate. ssh refuses `password` together with
+`identityFile` (400), so switching modes means clearing one with `null`. Other
+ssh fields: `identityFile` must be absolute with no `%`, `$` or control
+characters (ssh expands them in a key path); `password` is not trimmed and must
+be a single line.
+
 **The two gate routes are deliberately asymmetric**, because enabling and
 disabling carry different risks:
 
@@ -768,7 +800,7 @@ reaches argv is one of **two** things, and the obligation differs:
 | The value becomes | Fields today | What the kind owes it |
 |---|---|---|
 | an argv **operand** | `docker`'s `container`, `ssh`'s `host` and `ssh`'s `user` | **Reject a leading `-`**, via `operand()` in `src/launcher/kinds/config.mjs`, and place it after a `--` in `spawnPlan` |
-| a **flag's argument** | `docker`'s `user` (the card's **Run as** → `docker exec -u <value>`) | **Do not use `operand()`.** Validate the value's own shape in the kind, and emit the flag and its value as **two** argv elements |
+| a **flag's argument** | `docker`'s `user` (the card's **Run as** → `docker exec -u <value>`), `ssh`'s `identityFile` (`-i <value>`, validated absolute) | **Do not use `operand()`.** Validate the value's own shape in the kind, and emit the flag and its value as **two** argv elements |
 
 **Operands: why a leading `-` is refused.** A value like
 `container: "-v /:/host"` or `host: "-oProxyCommand=..."` is read by the

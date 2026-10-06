@@ -157,6 +157,28 @@ export function mirrorPayload(formMirror) {
 }
 
 /**
+ * The `config` a form submits. An empty field is OMITTED, never sent as `''`.
+ * A secret is NEVER TRIMMED (its edge spaces are part of it), and a stored
+ * secret the operator ticked "clear" on goes as `null` — the backend's rule is
+ * omitted keeps, `null` clears.
+ * @param {Record<string,unknown>} draftConfig
+ * @param {Record<string,boolean>|undefined} clears
+ * @param {string[]} secretNames
+ */
+export function configPayload(draftConfig, clears, secretNames) {
+  const out = {};
+  for (const [name, v] of Object.entries(draftConfig ?? {})) {
+    const text = String(v ?? '');
+    const blank = secretNames.includes(name) ? text === '' : text.trim() === '';
+    if (!blank) out[name] = v;
+  }
+  for (const name of secretNames) {
+    if (clears?.[name] && out[name] === undefined) out[name] = null;
+  }
+  return out;
+}
+
+/**
  * The card badge for an opted-in remote. The ROOT only: the exclude count is not
  * what an operator scans a card for, and the form is one click away.
  * @returns {null|string}

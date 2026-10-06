@@ -119,7 +119,7 @@ export async function writeRemote(record) {
   if (!isValidRemoteId(record?.remoteId)) {
     throw new Error(`refusing to write a record with invalid remoteId ${JSON.stringify(record?.remoteId)}`);
   }
-  await fs.mkdir(remotesDir(), { recursive: true });
+  await fs.mkdir(remotesDir(), { recursive: true, mode: 0o700 });
   const target = recordPath(record.remoteId);
   const tmp = `${target}.${process.pid}.${tmpSeq++}.tmp`;
   let fh;
