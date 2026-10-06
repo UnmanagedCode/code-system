@@ -15,7 +15,7 @@ import path from 'node:path';
 import { controlDir, controlPathFor, createSshTransport } from '../src/launcher/kinds/ssh.mjs';
 import { makeRunner } from '../src/launcher/run.mjs';
 import {
-  authCount, bareSshConfig, controlPathProcs, resolveSshGate, setPassword, skipUnlessSsh,
+  authCount, bareSshConfig, controlPathProcs, resolveSshGate, run, setPassword, skipUnlessSsh,
   withSshTarget,
 } from './sshFixture.mjs';
 
@@ -73,6 +73,24 @@ live('a card port beats the alias Port', async (t, g) => {
   closing(t, transport, target.config);
   await transport.connect(target.config);
   assert.equal(await serverPort(transport, target.config), '2222');
+});
+
+// PINS the wiki §14 observation the design leans on: under an explicit
+// ControlPath, `-O check` and `-O exit` ignore `-p`, so a master on 2222 answers
+// a check naming 2223 — the port separates masters only through the ControlPath.
+live('-O check and -O exit ignore -p under an explicit ControlPath', async (t, g) => {
+  const target = await withSshTarget(t, g, { ports: [2222] });
+  const transport = target.transport();
+  closing(t, transport, target.config);
+  await transport.connect(target.config);
+  const cp = controlPathFor(target.config);
+  const cli = [...g.ssh, '-F', target.sshConfig, '-o', `ControlPath=${cp}`, '-p', '2223'];
+  const check = await run([...cli, '-O', 'check', '--', target.alias]);
+  assert.equal(check.code, 0, check.stderr);
+  assert.match(check.stderr, /Master running/);
+  const exit = await run([...cli, '-O', 'exit', '--', target.alias]);
+  assert.equal(exit.code, 0, exit.stderr);
+  assert.equal((await controlPathProcs(cp)).count, 0, 'the master is gone');
 });
 
 // PINS key-file + port on a bare IP: the card's key and port are all there is,

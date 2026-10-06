@@ -808,7 +808,7 @@ reaches argv is one of **two** things, and the obligation differs:
 
 | The value becomes | Fields today | What the kind owes it |
 |---|---|---|
-| an argv **operand** | `docker`'s `container`, `ssh`'s `host` and `ssh`'s `user` | **Reject a leading `-`**, via `operand()` in `src/launcher/kinds/config.mjs`, and place it after a `--` in `spawnPlan` |
+| an argv **operand** | `docker`'s `container`, `ssh`'s `host` and `ssh`'s `user` | **Reject a leading `-` and any control character** (NUL is the ControlPath hash separator), via `operand()` in `src/launcher/kinds/config.mjs`, and place it after a `--` in `spawnPlan` |
 | a **flag's argument** | `docker`'s `user` (the card's **Run as** → `docker exec -u <value>`), `ssh`'s `identityFile` (`-i <value>`, validated absolute) and `ssh`'s `port` (`-p <value>`, validated an integer 1–65535) | **Do not use `operand()`.** Validate the value's own shape in the kind, and emit the flag and its value as **two** argv elements |
 
 **Operands: why a leading `-` is refused.** A value like

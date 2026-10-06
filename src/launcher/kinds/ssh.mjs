@@ -1066,7 +1066,8 @@ export function createSshTransport({ cli, env = process.env } = {}) {
             code: 'EUNKNOWN',
             message: `ssh could not verify the host key for '${dest}'. This provider never prompts`
               + ' and never trusts a key on first use — add it to the operator\'s own known_hosts'
-              + ` out of band (e.g. ssh-keyscan), then retry: ${hostkeyLine}`,
+              + ` out of band (e.g. ${config?.port !== undefined ? `ssh-keyscan -p ${config.port}` : 'ssh-keyscan'}),`
+              + ` then retry: ${hostkeyLine}`,
             stderr: allOf(stderr),
           };
         }

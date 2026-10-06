@@ -78,12 +78,13 @@ test('no port: the whole argv is the pre-port literal', async (t) => {
     '-T', '-o', `BatchMode=${config.password ? 'no' : 'yes'}`, '-o', 'ConnectTimeout=5',
     '-o', `ControlPath=${controlPathFor(config)}`, '-o', 'ControlMaster=no', '-o', 'ControlPersist=600',
   ];
-  const a = tr.spawnPlan(AMBIENT, req());
-  assert.deepEqual(a.args.slice(0, 11), base(AMBIENT));
-  assert.equal(a.args[11], '--');
+  const a = tr.spawnPlan(AMBIENT, req()).args;
+  assert.deepEqual(a.slice(0, -1), [...base(AMBIENT), '--', 'me@box']);
+  assert.match(a.at(-1), /git/, 'the one quoted remote command follows');
   const k = tr.spawnPlan(KEY_CONFIG, req()).args;
-  assert.deepEqual(k.slice(0, 11), base(KEY_CONFIG));
-  assert.deepEqual(k.slice(11, 17), ['-i', '/keys/id', '-o', 'IdentitiesOnly=yes', '-o', 'PreferredAuthentications=publickey']);
+  assert.deepEqual(k.slice(0, -1), [
+    ...base(KEY_CONFIG), '-i', '/keys/id', '-o', 'IdentitiesOnly=yes',
+    '-o', 'PreferredAuthentications=publickey', '--', 'root@10.1.2.3']);
   const p = tr.spawnPlan(PASSWORD_CONFIG, req()).args;
   assert.deepEqual(p.slice(0, 11), base(PASSWORD_CONFIG));
   assert.equal(p.includes('-p'), false);
@@ -140,9 +141,43 @@ test('every dial of a port remote carries -p, and the -V probe does not', async 
   await tr.reap(config, { token: 'tok', remoteId: 'r' }).catch(() => {});
   await tr.disconnect(config);
 
+  // The stub logs one argument per line, so split into invocations at each
+  // dial's leading `-T`; whatever precedes the first is the `-V` probe.
   const argv = await stub.argv();
-  assert.equal(argv.filter(a => a === '-p').length, 6, 'six dials, each with -p');
-  assert.equal(argv.filter((a, i) => a === '-p' && argv[i + 1] === '2222').length, 6);
-  assert.equal(argv.indexOf('-V'), 0, 'the version probe came first');
-  assert.notEqual(argv[1], '-p', 'and carries no -p');
+  const first = argv.indexOf('-T');
+  assert.deepEqual(argv.slice(0, first), ['-V'], 'the version probe came first and carries no -p');
+  const dials = [];
+  for (const a of argv.slice(first)) {
+    if (a === '-T') dials.push([]);
+    dials.at(-1).push(a);
+  }
+  assert.equal(dials.length, 6, 'six dials');
+  for (const d of dials) {
+    assert.equal(d.filter(a => a === '-p').length, 1, d.join(' '));
+    assert.equal(d[d.indexOf('-p') + 1], '2222', d.join(' '));
+  }
+});
+
+// PINS that the NUL-joined identity cannot be forged: an operand carrying NUL (or
+// any control character) is refused, so {host:'box\0port:2222'} can never share a
+// ControlPath with {host:'box', port:2222}.
+test('validateConfig refuses control characters in host and user', () => {
+  const forged = { host: 'box\0port:2222' };
+  assert.equal(controlPathFor(forged), controlPathFor({ host: 'box', port: 2222 }), 'the collision is real if it got through');
+  for (const bad of [forged, { host: 'box', user: 'me\0password' }, { host: 'bo\nx' }]) {
+    const v = validate(bad);
+    assert.equal(v.ok, false, JSON.stringify(bad));
+    assert.match(v.error, /must not contain control characters/);
+  }
+});
+
+// PINS that the host-key refusal's advice names the card's port, and stays the
+// bare `ssh-keyscan` when no port is set.
+test('the host-key refusal advises ssh-keyscan -p when the card sets a port', () => {
+  const tr = createSshTransport({ cli: ['ssh'] });
+  const stderr = 'Host key verification failed.\r\n';
+  const withPort = tr.classifyFailure({ ...AMBIENT, port: 2222 }, { code: 255, stdout: '', stderr });
+  assert.match(withPort.message, /ssh-keyscan -p 2222\)/);
+  const without = tr.classifyFailure(AMBIENT, { code: 255, stdout: '', stderr });
+  assert.match(without.message, /\(e\.g\. ssh-keyscan\)/);
 });

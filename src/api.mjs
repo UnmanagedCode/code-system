@@ -165,7 +165,7 @@ export function createApi(deps = {}) {
         // A config that really CHANGED may point at a different target
         // entirely, so the old verdict is not about this remote any more — and
         // neither is the gate. For ssh this is not merely cautious:
-        // `controlPathFor` keys on (user, host), so editing `host` yields a
+        // `controlPathFor` keys on (user, host, port, credential), so editing `host` yields a
         // DIFFERENT socket, the old master is irrelevant, and a carried-over
         // "enabled" would be factually stale.
         //
