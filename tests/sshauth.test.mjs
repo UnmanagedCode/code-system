@@ -164,6 +164,14 @@ test('askpass helper: answers a password prompt and declines every other', async
   assert.deepEqual(await runAskpass('Enter passphrase for key \'/k/id\': ', env), { code: 1, stdout: '' });
 });
 
+// PINS that an UNSET (or empty) password makes the helper fail rather than
+// answer an empty line, which ssh would send as a real (empty) password.
+test('askpass helper: an unset or empty password is exit 1, never an empty answer', async () => {
+  assert.deepEqual(await runAskpass("dev@1.2.3.4's password: ", { PATH: process.env.PATH }), { code: 1, stdout: '' });
+  assert.deepEqual(await runAskpass("dev@1.2.3.4's password: ",
+    { PATH: process.env.PATH, CODE_SYSTEM_SSH_PASSWORD: '' }), { code: 1, stdout: '' });
+});
+
 // ── through the stub: every invocation carries both halves ───────────
 
 // PINS that connect, reachability, disconnect and reap each go through the one
@@ -218,6 +226,26 @@ test('connect refuses a missing or too-open key file before any dial', async (t)
   const good = path.join(dir, 'good');
   await fs.writeFile(good, 'k', { mode: 0o600 });
   await tr.connect({ ...KEY_CONFIG, identityFile: good });
+});
+
+// PINS the other two key-file refusals: a directory is not a key, and an
+// unreadable (mode 0000) file is refused in words before any dial.
+test('connect refuses a directory and an unreadable key file before any dial', async (t) => {
+  const dir = await withTmpdir(t);
+  const stub = await stubSshCli(t, { master: true });
+  const tr = createSshTransport({ cli: stub.cli });
+  const sub = path.join(dir, 'adir');
+  await fs.mkdir(sub, { mode: 0o700 });
+  await assert.rejects(() => tr.connect({ ...KEY_CONFIG, identityFile: sub }), /not a regular file/);
+  if (process.getuid() === 0) {
+    t.diagnostic('unreadable-file branch skipped: root reads mode-0000 files, so it cannot be produced');
+  } else {
+    const locked = path.join(dir, 'locked');
+    await fs.writeFile(locked, 'k', { mode: 0o600 });
+    await fs.chmod(locked, 0o000);
+    await assert.rejects(() => tr.connect({ ...KEY_CONFIG, identityFile: locked }), /cannot be read: EACCES/);
+  }
+  assert.deepEqual(await stub.argv(), [], 'nothing was dialled');
 });
 
 // ── classifyFailure ──────────────────────────────────────────────────

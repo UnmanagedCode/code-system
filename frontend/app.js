@@ -237,7 +237,7 @@ function formFor(mode) {
     return el('div', { class: 'field' },
       el('label', { for: `f-${f.name}` }, `${f.label}${f.required ? '' : ' (optional)'}`),
       el('input', {
-        id: `f-${f.name}`, value: draft.config[f.name] ?? '',
+        id: `f-${f.name}`, value: f.secret === true ? undefined : (draft.config[f.name] ?? ''),
         placeholder: stored ? 'stored — leave blank to keep' : (f.placeholder ?? ''),
         ...(f.secret === true ? { type: 'password', autocomplete: 'new-password' } : {}),
         oninput: e => { draft.config[f.name] = e.target.value; },

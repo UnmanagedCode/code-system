@@ -345,9 +345,21 @@ allows password auth for a non-root user.
   ssh fails with `Host key verification failed.` + CRLF. No hang.
 - **Prompts the helper sees**: `<user>@<ip>'s password: ` (matches `*[Pp]assword*`)
   and the host-key one above (its body mentions no "password", and is declined).
-- **`-i` paths are expanded by ssh**: `%u` becomes the local user name and
-  `${HOME}` the environment value, so `validateConfig` refuses `%` and `$` in an
-  `identityFile`. `~` is expanded too, but a relative path is refused anyway.
+- **`-i` paths are expanded by ssh**: `-i '/d/%u'` opens `/d/<local user>` (a
+  login with the key at that path SUCCEEDS) and `${HOME}` becomes the
+  environment value, so `validateConfig` refuses `%` and `$` in an
+  `identityFile`. **The "not accessible" warning is no evidence either way**: it
+  prints the path LITERALLY, before expansion, so `-i /tmp/%u/key` over a missing
+  file warns with `%u` still in it — read the `debug1: identity file …` /
+  `Will attempt key:` lines under `-vvv` instead, which show the expanded path.
+  `~` is expanded too, but a relative path is refused anyway.
+- **`-i` does NOT pin the identity.** With a config `IdentityFile <authorized>`
+  for the host and `-i <unauthorized> -o IdentitiesOnly=yes`, ssh offers the `-i`
+  key first and then the config's, and authenticates with the config's. `-o
+  IdentityFile=none` (before or after `-i`) changes nothing — `-G` lists
+  `bad`, `none`, `good`. No per-invocation option found drops config identities
+  except `-F`, which would discard the alias config. A known limitation, stated in
+  `docs/features.md`.
 - **A key file with mode 0644** prints a multi-line `@@@ WARNING: UNPROTECTED
   PRIVATE KEY FILE! @@@ … Permissions 0644 for '<path>' are too open.` banner
   before the denial; `connect` stats the file and refuses first, in plain words.

@@ -349,3 +349,20 @@ test('a quarantine move that fails is logged, and the rest of the store is still
       'the record AFTER the failure was still processed: one bad file is not a dead pass');
   });
 });
+
+// PINS that the records directory ends up private even when it already existed
+// with looser bits (mkdir's mode applies only on creation), since records can
+// hold a password.
+test('writeRemote tightens a pre-existing records directory to 0700', async (t) => {
+  await withStore(t, async () => {
+    await fs.mkdir(remotesDir(), { recursive: true, mode: 0o755 });
+    await fs.chmod(remotesDir(), 0o755);
+    assert.equal((await fs.stat(remotesDir())).mode & 0o777, 0o755, 'precondition: it starts loose');
+    await writeRemote(makeRecord({ remoteId: 'a', kind: 'docker', config: { container: 'c' }, enabled: false }));
+    assert.equal((await fs.stat(remotesDir())).mode & 0o777, 0o700);
+    // And the startup pass does the same for a directory no write has touched.
+    await fs.chmod(remotesDir(), 0o755);
+    await migrate();
+    assert.equal((await fs.stat(remotesDir())).mode & 0o777, 0o700);
+  });
+});

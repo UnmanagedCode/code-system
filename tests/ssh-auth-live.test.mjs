@@ -124,9 +124,9 @@ live('an unauthorized key fails fast, leaves nothing running, and names the key 
   });
 });
 
-// PINS the askpass helper declining a non-password prompt: an unknown host key
-// on the password path fails with ssh's own refusal and does not hang waiting
-// for an answer nobody gives.
+// PINS that an unknown host key on the password path fails FAST with ssh's own
+// refusal wording and leaves nothing running. (That the askpass helper declines
+// non-password prompts is pinned in tests/sshauth.test.mjs, not here.)
 live('on the password path an unknown host key fails fast with the host-key refusal', async (t, g) => {
   const { target } = await credentialTarget(t, g);
   const empty = path.join(target.dir, 'empty_known_hosts');

@@ -47,7 +47,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { quarantineDir, remotesDir } from './paths.mjs';
-import { SCHEMA, isValidRemoteId, readRemote, writeRemote } from './store.mjs';
+import { SCHEMA, ensureRemotesDir, isValidRemoteId, readRemote, writeRemote } from './store.mjs';
 
 // Reasons a record cannot be read that mean "we do not understand this file",
 // as opposed to "this file is not there" or "the disk refused us". Only these
@@ -94,7 +94,7 @@ async function upgradeToSchema2(id, log) {
 }
 
 export async function migrate({ log = () => {} } = {}) {
-  await fs.mkdir(remotesDir(), { recursive: true });
+  await ensureRemotesDir();
   const result = { schema: SCHEMA, scanned: 0, upgraded: [], quarantined: [] };
 
   let names;

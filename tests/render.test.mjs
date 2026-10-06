@@ -804,3 +804,79 @@ test('Edit sends the retyped identity, and can clear it', async () => {
   assert.deepEqual((await saved('')).config, { container: 'app2' },
     'and clearing the field OMITS it, which is what the validator reads as "the image default"');
 });
+
+// ── a secret config field (ssh's password) ───────────────────────────
+
+const SECRET_SSH = {
+  kind: 'ssh', label: 'SSH hosts', mirrorByDefault: false,
+  configFields: [
+    { name: 'host', label: 'Host', required: true, placeholder: 'my-box', hint: 'a Host alias' },
+    { name: 'user', label: 'User', required: false, placeholder: '', hint: 'optional' },
+    { name: 'password', label: 'Password', required: false, secret: true, hint: 'stored unencrypted' },
+  ],
+};
+const pwRemote = (storedSecrets) => ({
+  remoteId: 'pw-box', kind: 'ssh', label: 'Pw box', enabled: false,
+  config: { host: '10.0.0.5', user: 'dev' }, storedSecrets, mirror: null, baseline: unknownBaseline,
+  reachability: { connected: false, detail: 'no master', fingerprint: null },
+});
+const checkboxIn = (root, label) => root.all(e => e.tagName === 'label'
+  && e.text.includes(label)).flatMap(l => l.all(e => e.attrs.type === 'checkbox'))[0];
+const settle2 = async () => { await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r)); };
+
+// PINS that a `secret` descriptor field renders as a password input that is
+// never prefilled — in create and in edit, even if a record somehow carried a
+// value — so a secret can never be read back out of the DOM.
+test('a secret field is a password input and is never prefilled', async () => {
+  const { byId, cards } = await mount({ remotes: [], kinds: [SECRET_SSH] });
+  byId.get('add').click();
+  const pw = inputById(cards().at(-1), 'f-password');
+  assert.equal(pw.attrs.type, 'password');
+  assert.equal(pw.attrs.autocomplete, 'new-password');
+  assert.equal(pw.attrs.value, undefined, 'blank on create');
+  assert.equal(inputById(cards().at(-1), 'f-host').attrs.type, undefined, 'only the secret is masked');
+
+  const leaked = { ...pwRemote(['password']), config: { host: 'h', password: 'leaked' } };
+  const edit = await mount({ remotes: [leaked], kinds: [SECRET_SSH] });
+  cardFor(edit.cards(), 'pw-box').all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
+  assert.equal(inputById(cardFor(edit.cards(), 'pw-box'), 'f-password').attrs.value, undefined,
+    'a secret is not rendered into the input even if a record carried one');
+});
+
+// PINS the edit-mode affordances for a STORED secret: the keep-blank placeholder
+// and the clear checkbox appear only when `storedSecrets` names the field.
+test('edit shows the keep placeholder and the clear checkbox only for a stored secret', async () => {
+  const stored = await mount({ remotes: [pwRemote(['password'])], kinds: [SECRET_SSH] });
+  cardFor(stored.cards(), 'pw-box').all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
+  const form = cardFor(stored.cards(), 'pw-box');
+  assert.equal(inputById(form, 'f-password').attrs.placeholder, 'stored — leave blank to keep');
+  assert.match(form.text, /Clear stored password/);
+  assert.notEqual(checkboxIn(form, 'Clear stored password'), undefined);
+
+  const none = await mount({ remotes: [pwRemote([])], kinds: [SECRET_SSH] });
+  cardFor(none.cards(), 'pw-box').all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
+  const bare = cardFor(none.cards(), 'pw-box');
+  assert.notEqual(inputById(bare, 'f-password').attrs.placeholder, 'stored — leave blank to keep');
+  assert.equal(/Clear stored/.test(bare.text), false, 'nothing stored, nothing to clear');
+});
+
+// PINS the PATCH body the form really sends: blank omits the secret (the backend
+// keeps it), ticking Clear sends null, and a typed value is sent untrimmed.
+test('Save omits a blank secret, sends null once Clear is ticked, and never trims a typed one', async () => {
+  const saved = async (act) => {
+    const { cards, calls } = await mount({ remotes: [pwRemote(['password'])], kinds: [SECRET_SSH] });
+    cardFor(cards(), 'pw-box').all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
+    const form = cardFor(cards(), 'pw-box');
+    act?.(form);
+    form.all(e => e.tagName === 'button' && e.text === 'Save')[0].click();
+    await settle2();
+    return calls.find(c => c.method === 'PATCH' && c.path === 'api/remotes/pw-box')?.body.config;
+  };
+  assert.deepEqual(await saved(null), { host: '10.0.0.5', user: 'dev' }, 'blank: the field is omitted');
+  assert.deepEqual(await saved((form) => {
+    for (const fn of checkboxIn(form, 'Clear stored password').handlers.change ?? []) fn({ target: { checked: true } });
+  }), { host: '10.0.0.5', user: 'dev', password: null }, 'ticked: null clears');
+  assert.deepEqual(await saved((form) => {
+    for (const fn of inputById(form, 'f-password').handlers.input ?? []) fn({ target: { value: ' new pw ' } });
+  }), { host: '10.0.0.5', user: 'dev', password: ' new pw ' }, 'typed: sent as typed');
+});

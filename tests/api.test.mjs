@@ -857,3 +857,34 @@ test('POST treats a null password as absent, and a docker card has no storedSecr
   const d = await call('POST', '/remotes', { remoteId: 'd', kind: 'docker', config: { container: 'c' } });
   assert.deepEqual(d.body.remote.storedSecrets, []);
 });
+
+// PINS that an empty-string password on POST is refused 400 (via mergeSecrets)
+// and nothing is written — only null means "none".
+test('POST refuses an empty-string password and writes nothing', async (t) => {
+  const { call, store } = await withApi(t);
+  const res = await call('POST', '/remotes', { remoteId: 'e', kind: 'ssh', config: { host: 'h', password: '' } });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /omit it to keep|null to clear/);
+  assert.equal((await call('GET', '/remotes')).body.remotes.length, 0);
+  assert.ok(store.dir);
+});
+
+// PINS that a corrupt record containing a password never echoes the parser's
+// message (Node quotes a snippet of the file) through GET, PATCH or connect.
+test('a corrupt record holding a password does not leak it through any error body', async (t) => {
+  const { call, store } = await withApi(t);
+  const { promises: fs } = await import('node:fs');
+  const path = await import('node:path');
+  await fs.mkdir(path.join(store.dir, 'remotes'), { recursive: true });
+  // An unquoted value right beside the password: Node's `Unexpected token`
+  // message quotes a snippet of the file around it.
+  await fs.writeFile(path.join(store.dir, 'remotes', 'bad.json'),
+    '{"remoteId":"bad","config":{"host":"h","password":hunter2 secret}}');
+  const bodies = [
+    await call('GET', '/remotes'),
+    await call('PATCH', '/remotes/bad', { label: 'x' }),
+    await call('POST', '/remotes/bad/connect'),
+  ];
+  for (const b of bodies) assert.equal(JSON.stringify(b.body).includes('hunter2'), false, JSON.stringify(b.body));
+  assert.match(JSON.stringify(bodies[0].body), /not valid JSON/, 'the card still says what is wrong');
+});

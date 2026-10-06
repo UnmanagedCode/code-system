@@ -364,7 +364,7 @@ in **host** (a plain hostname or IP works), **user**, and **one** of:
 |---|---|---|
 | Ambient (default) | host alias only | Your `~/.ssh/config` and agent supply the identity |
 | Password | `user` + **Password** | Each ssh call answers the password prompt itself; no ssh config or agent is needed |
-| Key file | `user` + **Private key file** | Only that key is offered (`IdentitiesOnly`); no agent or config identity is used |
+| Key file | `user` + **Private key file** | That key is offered **first**, with `IdentitiesOnly` and public-key auth only. Any `IdentityFile` your ssh config lists for a matching `Host` is **still offered after it** (see below) |
 
 A card cannot carry both a password and a key file — saving both is refused.
 
@@ -393,6 +393,13 @@ A card cannot carry both a password and a key file — saving both is refused.
 - **Changing a password while a password connection is live**: Connect reuses
   the live shared connection until it has been idle for 600 s, so the new
   password is not tried until then. Disconnect first to test it immediately.
+- **A key file does not exclude your ssh config's identities.** ssh has no
+  per-invocation option that drops a config-listed `IdentityFile` without also
+  discarding the config (`-F`), which an alias host needs. So when the host
+  matches a `Host` entry that lists one, that key can authenticate even if the
+  card's key is unauthorized. `IdentitiesOnly` still keeps agent keys out unless
+  they are listed. For a login that only the card's key may perform, use a host
+  with no `IdentityFile` in your config.
 - A password or key file gets its own shared connection, separate from a
   credential-less remote to the same user and host.
 - A non-standard ssh **port** still has to be set in an ssh config `Host` entry.

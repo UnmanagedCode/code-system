@@ -434,6 +434,9 @@ card's credentials add, before `--`:
 | password | `no` | `-o NumberOfPasswordPrompts=1 -o PreferredAuthentications=password,keyboard-interactive` | `SSH_ASKPASS=<abs path of kinds/askpass.sh>`, `SSH_ASKPASS_REQUIRE=force`, `CODE_SYSTEM_SSH_PASSWORD=<password>` |
 | key file | `yes` | `-i <identityFile> -o IdentitiesOnly=yes -o PreferredAuthentications=publickey` | — |
 
+**A key remote does not pin the identity.** `IdentitiesOnly=yes` restricts ssh to explicitly configured keys, which includes any `IdentityFile` in the operator's config for the host: the card's `-i` key is offered first and the config's keys after it (measured, wiki §13). No per-invocation option removes them without discarding the config. A password remote is not affected — `PreferredAuthentications` excludes public-key auth.
+
+
 `BatchMode=yes` disables askpass, hence `no` for a password remote. The password
 is **never** in argv. `kinds/askpass.sh` answers only a prompt matching
 `*[Pp]assword*`; every other prompt gets exit 1, so ssh fails instead of

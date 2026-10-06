@@ -81,6 +81,7 @@ export const KIND_META = {
       required: false,
       placeholder: '/home/me/.ssh/id_ed25519',
       hint: 'Optional. An absolute path to an unencrypted private key that is not group- or world-readable.'
+        + ' It is offered first; an IdentityFile your ssh config lists for this host may still be offered after it.'
         + ' Not combinable with a password.',
     },
   ],
