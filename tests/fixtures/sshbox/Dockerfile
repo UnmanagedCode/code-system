@@ -35,6 +35,9 @@ RUN apt-get update \
       'if [ -n "$ALLOW_PASSWORD" ]; then' \
       '  printf "%s\n" "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/00-password.conf' \
       'fi' \
+      'if [ -n "$SSHD_PORTS" ]; then' \
+      '  for p in $SSHD_PORTS; do printf "Port %s\n" "$p"; done > /etc/ssh/sshd_config.d/00-port.conf' \
+      'fi' \
       'ssh-keygen -A >/dev/null' \
       'exec /usr/sbin/sshd -D -e' \
     > /usr/local/bin/entry.sh \

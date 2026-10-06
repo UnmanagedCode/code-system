@@ -367,6 +367,30 @@ allows password auth for a non-root user.
   file or directory.` (LF, not CRLF) followed by `Connection closed by <ip> port
   22` — nothing classifiable, hence the `connect` pre-check.
 
+## 14. `-p` and the port (OpenSSH_10.0p2)
+
+Measured against the test sshd listening on 22 and 2222.
+
+- **The command line beats the config.** `ssh -G <alias with Port 2200>` reports
+  `port 2200`; `ssh -G -p 2222 <alias>` reports `port 2222`. So an explicit
+  `-p 22` would override every alias's `Port`, which is why a card with no port
+  emits no `-p` at all, and why an explicit `22` is kept rather than treated as
+  unset.
+- **known_hosts is keyed `[host]:port` for a non-22 port, with a fallback.** With
+  only `[ip]:2222 <key>` on file, port 2222 connects and port 22 fails with
+  `Host key verification failed.`. With only a bare `ip <key>` entry, port 2222
+  STILL connects: `-vv` shows `checking without port identifier` and `found
+  matching key w/out port`. A bare entry satisfies any port; a `[host]:port`
+  entry only its own. No entry at all fails with the same single line.
+- **`-p` is ignored by `-O check`, `-O exit` and a multiplexed exec** under an
+  explicit `ControlPath`: with a master on 2222, `-O check -p 2223` answers
+  `Master running`, `-O exit -p 2223` exits it, and an exec with `-p 2223` ran
+  over the master and reported server port 2222. The port therefore separates
+  masters only through the ControlPath hash.
+- **A wrong port is refused instantly.** A closed port answers `ssh: connect to
+  host <ip> port 2223: Connection refused` in about 10 ms, so `connect` and
+  `classifyFailure` quote a line that already names the port.
+
 See also: [kill-relay.md](kill-relay.md),
 [exec-env-across-a-boundary.md](exec-env-across-a-boundary.md),
 [baseline-probe-two-tier.md](baseline-probe-two-tier.md),

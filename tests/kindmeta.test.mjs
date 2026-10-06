@@ -23,7 +23,7 @@ import { stubDockerCli } from './helpers.mjs';
 // A plausible value per descriptor field, so a form can be filled in from the
 // descriptor alone. Never option-shaped — a leading `-` is refused by design.
 const SAMPLE = {
-  container: 'app', host: 'box', user: 'me', password: 'pw with spaces ', identityFile: '/home/me/.ssh/id_ed25519',
+  container: 'app', host: 'box', port: 2222, user: 'me', password: 'pw with spaces ', identityFile: '/home/me/.ssh/id_ed25519',
 };
 // A field a kind refuses to accept together with another one: the "full" config
 // leaves the key out and a second pass swaps it in for its counterpart.

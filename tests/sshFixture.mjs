@@ -123,6 +123,8 @@ async function ensureImage(cli) {
  */
 export async function withSshTarget(t, gate, {
   stem = 'box', alias = uniqueName('alias'), extraConfig = [], allowPassword = false,
+  // sshd's listening ports (default: 22). The first becomes `config.port`.
+  ports,
 } = {}) {
   // THE ALIAS IS UNIQUE PER TARGET BY DEFAULT, and that is not cosmetic:
   // `controlPathFor` keys on (user, host), so two targets sharing an alias
@@ -141,8 +143,9 @@ export async function withSshTarget(t, gate, {
   // NOT `--rm`: a test that stops the container must leave it existing.
   const started = await run([...cli, 'run', '-d', '--name', name, '-e', `AUTHORIZED_KEY=${pub}`,
     // Lets sshd accept passwords (the image's entrypoint writes the drop-in).
-    ...(allowPassword ? ['-e', 'ALLOW_PASSWORD=1'] : []), IMAGE]);
-  const config = { host: alias, user: 'root' };
+    ...(allowPassword ? ['-e', 'ALLOW_PASSWORD=1'] : []),
+    ...(ports ? ['-e', `SSHD_PORTS=${ports.join(' ')}`] : []), IMAGE]);
+  const config = { host: alias, user: 'root', ...(ports ? { port: ports[0] } : {}) };
 
   // Registered BEFORE the started-ok check, so a container that came up and
   // then failed readiness is still removed.
@@ -171,7 +174,9 @@ export async function withSshTarget(t, gate, {
   if (!hostKey) throw new Error(`could not read the host key of ${name}`);
 
   const knownHosts = path.join(dir, 'known_hosts');
-  await fs.writeFile(knownHosts, `${ip} ${hostKey}\n`);
+  // ssh looks a non-22 port up as `[ip]:port`.
+  const hostSpec = (n) => (n === 22 ? ip : `[${ip}]:${n}`);
+  await fs.writeFile(knownHosts, `${(ports ?? [22]).map((n) => `${hostSpec(n)} ${hostKey}\n`).join('')}`);
 
   const sshConfig = path.join(dir, 'ssh_config');
   await writeSshConfig(sshConfig, [
@@ -194,7 +199,8 @@ export async function withSshTarget(t, gate, {
   // cannot leave a master behind and pre-empt what a test is measuring.
   const ready = await settle(async () => {
     const res = await run([...gate.ssh, '-F', sshConfig, '-T', '-o', 'BatchMode=yes',
-      '-o', 'ConnectTimeout=2', '-o', 'ControlPath=none', '--', alias, 'true']);
+      '-o', 'ConnectTimeout=2', '-o', 'ControlPath=none',
+      ...(ports ? ['-p', String(ports[0])] : []), '--', alias, 'true']);
     return res.code === 0;
   }, 30_000);
   if (!ready) throw new Error(`sshd in ${name} never accepted a connection`);

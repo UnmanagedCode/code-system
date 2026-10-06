@@ -422,7 +422,7 @@ and the baseline probe — through one optional `Transport.classifyFailure` memb
 
 ```
 <ssh-cli> -T -o BatchMode=yes -o ConnectTimeout=5 -o ControlPath=<path>
-          -o ControlMaster=no -o ControlPersist=600
+          -o ControlMaster=no -o ControlPersist=600 [-p <port>]
           -- <user>@<host> "<ONE quoted remote command>"
 ```
 
@@ -485,6 +485,7 @@ inherit branch the assignments are ours, but `<command…>[0]` is the frame's ow
 | `-o ControlPath=<path>` | provider-computed, never configurable — formula in `docs/architecture.md` |
 | `-o ControlMaster` | **`no` on every operation**; `yes` only in `connect`, and only after its own `no` pre-check found no master. `no` means "use a master if one exists, never create one", so the exec path needs no directory and `spawnPlan` stays pure. **`-M` is never emitted**: doubled with `-o ControlMaster=yes` it means `ask`, which `BatchMode` cannot answer (measured) |
 | `-o ControlPersist=600` | finite, so a master orphaned by a crashed launcher reaps itself |
+| `-p <port>` | only when the card sets a `port`, as two argv elements right after `ControlPersist` and before any credential options. Part of the shared option block, so every dial carries it (exec, `-O check`, connect's master, `-O exit`, the kill relay); the `-V` probe does not dial and has none. Unset emits nothing, so ssh's own default (22, or the config's `Port`) applies. Under an explicit `ControlPath`, `-O check`, `-O exit` and a multiplexed exec ignore `-p` (measured); the port separates masters only through the ControlPath |
 | `StrictHostKeyChecking` / `UserKnownHostsFile` | **never set** — that is the policy, not an omission. See below |
 | `--chdir=<cwd>` | the frame's `cwd`, verbatim, **including `/`**. Replaces docker's `-w`, which has no ssh equivalent; a bad cwd then fails inside `env` with a wording we classify |
 | `env` absent (`null`) | no `-i`: the target keeps its own PATH/HOME/toolchain. The two plumbing variables ride as `env` operands |
@@ -776,7 +777,12 @@ sets it, and `''` is **400** ("omit it to keep the stored value, or send null to
 clear it"). The merge runs before validation, so a kept secret is not a config
 change and a new one resets the gate. ssh refuses `password` together with
 `identityFile` (400), so switching modes means clearing one with `null`. Other
-ssh fields: `identityFile` must be absolute with no `%`, `$` or control
+ssh fields: `port` is optional — a JSON number or a string of ASCII digits
+(trimmed) from 1 to 65535, stored as a **number** (so a form re-sending the
+stored value as a string is not a change); `undefined`, `null`, `''` and blank
+store no key; anything else is **400** `ssh config: 'port' must be a whole
+number from 1 to 65535 (got <JSON of the value>)`. An explicit `22` is stored
+and emitted as `-p 22`. `identityFile` must be absolute with no `%`, `$` or control
 characters (ssh expands them in a key path); `password` is not trimmed and must
 be a single line.
 
@@ -803,7 +809,7 @@ reaches argv is one of **two** things, and the obligation differs:
 | The value becomes | Fields today | What the kind owes it |
 |---|---|---|
 | an argv **operand** | `docker`'s `container`, `ssh`'s `host` and `ssh`'s `user` | **Reject a leading `-`**, via `operand()` in `src/launcher/kinds/config.mjs`, and place it after a `--` in `spawnPlan` |
-| a **flag's argument** | `docker`'s `user` (the card's **Run as** → `docker exec -u <value>`), `ssh`'s `identityFile` (`-i <value>`, validated absolute) | **Do not use `operand()`.** Validate the value's own shape in the kind, and emit the flag and its value as **two** argv elements |
+| a **flag's argument** | `docker`'s `user` (the card's **Run as** → `docker exec -u <value>`), `ssh`'s `identityFile` (`-i <value>`, validated absolute) and `ssh`'s `port` (`-p <value>`, validated an integer 1–65535) | **Do not use `operand()`.** Validate the value's own shape in the kind, and emit the flag and its value as **two** argv elements |
 
 **Operands: why a leading `-` is refused.** A value like
 `container: "-v /:/host"` or `host: "-oProxyCommand=..."` is read by the
