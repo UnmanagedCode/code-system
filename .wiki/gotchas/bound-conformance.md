@@ -7,9 +7,11 @@ battery on `host`; that it carries every other kind is a *seam* argument
 (`protocol.mjs`, `session.mjs` and `fileops.mjs` are kind-agnostic and
 `spawnPlan` is pure). This run **measures the per-kind residue** instead of
 generalising to it. Design in `docs/architecture.md` → "The bound conformance
-run". The timing and census figures below were measured against cc `5da5b292`
-(branch `main`), daemon server 29.7.2, `sudo -n docker`, on both channel arms;
-the outcome table is not restated here — it is the manifest.
+run". The manifest, the reporter fixture and the hashes under "The pin" are
+taken at cc `b550d1a8847ddba36986051d0a35b79b9e89729e` (branch `main`); the
+outcome table is not restated here — it is the manifest. The timing and census
+figures are a separate measurement, taken at cc `5da5b292`, daemon server
+29.7.2, `sudo -n docker`, on both channel arms.
 
 ## The outcome, and the coverage it buys
 
@@ -354,16 +356,24 @@ which is why the seam argument could never have surfaced this.
 
 **THE SUITE FILE MOVES; THE HARNESS DOES NOT** — and it is that distinction, not
 the commit sha, that says whether a recorded result still holds. At cc
-`5da5b292`:
+`b550d1a8847ddba36986051d0a35b79b9e89729e`, the pin `EXPECTED_TOTAL`, `EXPECTED`
+and `tests/fixtures/specReport.txt` were written against:
 
 | file | sha256 |
 |---|---|
-| `tests/systems-protocol-conformance.test.mjs` | `4935b5c316553466abedc476499805d073b8ceb1c1a50fe508afcbfab49f0d1b` |
-| `tests/referenceProviderHarness.mjs` | `50b5b2e1fd56a65951919c2b7de6a3f76553cbef0386da4c84e0ce4e38064313` |
+| `tests/systems-protocol-conformance.test.mjs` | `19d491823a56af3a4ee0d219b5d2cc4d40c1a3819aca461daf10a21e983620ae` |
+| `tests/referenceProviderHarness.mjs` | `0b5e18f3df198697c27f0a73a643b06a0a2651369eaf77f10c5203df518847da` |
 
-`referenceProviderHarness.mjs` has been **byte-identical across every pin this
-page has recorded**, so the capability matrix and the two config names have never
-moved; only the battery has. Re-take both hashes before trusting a recorded
+Take them with `git -C <cc> show <pin>:<file> | sha256sum`, which reads cc
+without touching its tree.
+
+**`referenceProviderHarness.mjs` DID move at this pin, and only additively.**
+Each `CAPABILITY_CONFIGS` entry's `caps` gained `remoteListing: false`, the
+third-party superset gained `remoteListing`, and it now exports the enumeration
+rows' gate (`VERIFY_LISTING`, `remoteListingVerdict`) and `listRemotesRaw`. The
+config names and the toggled axis (`processGroupSignal` alone) did not move, so
+the capability-row reasoning below still holds. A future harness change is not
+safe to assume additive — diff it. Re-take both hashes before trusting a recorded
 result, and re-take the battery's size with them — `EXPECTED_TOTAL` in
 `tests/boundConformanceExpectations.mjs` is pinned absolutely, so a grown suite
 aborts the run rather than quietly covering less.

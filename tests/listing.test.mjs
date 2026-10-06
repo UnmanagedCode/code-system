@@ -33,7 +33,10 @@ async function list(l, id) {
   return l.waitFor(f => f.id === id && (f.type === 'remoteList' || f.type === 'error'));
 }
 
-const idsOf = (frame) => frame.remotes.map(r => r.remoteId);
+const idsOf = (frame) => {
+  assert.equal(frame.type, 'remoteList', `expected a remoteList, got ${JSON.stringify(frame)}`);
+  return frame.remotes.map(r => r.remoteId);
+};
 
 // PINS THAT THE LISTING AND THE CONFIGURATION REFUSAL ARE ONE PREDICATE. For
 // every record file in a store mixing each way a record can fail configuration,

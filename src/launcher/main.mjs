@@ -4,7 +4,10 @@
 //
 //   node src/launcher/main.mjs --kind <docker|ssh|host>
 //                              [--no-process-group-signal]
-//                              [--remote <id>=<absolute root>]…   (host only)
+//                              [--remote <id>=<absolute root>]…   (host only;
+//                                <id> must be one cc accepts as a Remote —
+//                                `remoteIdDefect`, at most REMOTE_ID_MAX
+//                                characters — or the launch is refused)
 //                              [--mirror <[id=]absolute root>]…   (host only)
 //                              [--exclude <[id=]absolute path>]…  (host only)
 //
