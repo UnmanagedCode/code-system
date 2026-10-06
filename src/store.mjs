@@ -116,11 +116,26 @@ export async function listRemotes() {
  * creation, so a directory that already exists (an older install, a hand-made
  * one) has its group/other bits cleared too: records can hold a password. Only
  * TIGHTENED — an owner's own stricter mode is left as the operator set it.
+ *
+ * A tightening the store cannot perform (a filesystem without unix modes, a
+ * directory owned by someone else) is a logged warning, once per directory, and
+ * not a failure: this runs inside the startup pass, and a backend that will not
+ * start cannot be used to repair anything. A failing `mkdir` still throws.
  */
+const warnedLoose = new Set();
 export async function ensureRemotesDir() {
-  await fs.mkdir(remotesDir(), { recursive: true, mode: 0o700 });
-  const { mode } = await fs.stat(remotesDir());
-  if ((mode & 0o077) !== 0) await fs.chmod(remotesDir(), mode & 0o700);
+  const dir = remotesDir();
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  const { mode } = await fs.stat(dir);
+  if ((mode & 0o077) === 0) return;
+  try { await fs.chmod(dir, mode & 0o700); }
+  catch (e) {
+    if (warnedLoose.has(dir)) return;
+    warnedLoose.add(dir);
+    console.warn(`code-system: the records directory '${dir}' is group- or world-accessible`
+      + ` (mode 0${(mode & 0o777).toString(8)}) and could not be made private: ${e?.message ?? e}`
+      + ' — it can hold an ssh password, so fix its mode by hand');
+  }
 }
 
 let tmpSeq = 0;

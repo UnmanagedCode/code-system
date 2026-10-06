@@ -866,7 +866,10 @@ test('POST refuses an empty-string password and writes nothing', async (t) => {
   assert.equal(res.status, 400);
   assert.match(res.body.error, /omit it to keep|null to clear/);
   assert.equal((await call('GET', '/remotes')).body.remotes.length, 0);
-  assert.ok(store.dir);
+  const { promises: fs } = await import('node:fs');
+  const path = await import('node:path');
+  const files = await fs.readdir(path.join(store.dir, 'remotes')).catch(e => (e.code === 'ENOENT' ? [] : Promise.reject(e)));
+  assert.deepEqual(files, [], 'no record file was written');
 });
 
 // PINS that a corrupt record containing a password never echoes the parser's

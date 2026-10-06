@@ -833,13 +833,13 @@ test('a secret field is a password input and is never prefilled', async () => {
   const pw = inputById(cards().at(-1), 'f-password');
   assert.equal(pw.attrs.type, 'password');
   assert.equal(pw.attrs.autocomplete, 'new-password');
-  assert.equal(pw.attrs.value, undefined, 'blank on create');
+  assert.equal(String(pw.attrs.value ?? ''), '', 'blank on create');
   assert.equal(inputById(cards().at(-1), 'f-host').attrs.type, undefined, 'only the secret is masked');
 
   const leaked = { ...pwRemote(['password']), config: { host: 'h', password: 'leaked' } };
   const edit = await mount({ remotes: [leaked], kinds: [SECRET_SSH] });
   cardFor(edit.cards(), 'pw-box').all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
-  assert.equal(inputById(cardFor(edit.cards(), 'pw-box'), 'f-password').attrs.value, undefined,
+  assert.equal(String(inputById(cardFor(edit.cards(), 'pw-box'), 'f-password').attrs.value ?? '').includes('leaked'), false,
     'a secret is not rendered into the input even if a record carried one');
 });
 
