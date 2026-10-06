@@ -452,22 +452,23 @@ test('a label cannot forge a line, for any character in the escape class', async
   for (const line of body.text.split('\n')) assert.doesNotMatch(line, BREAKS);
 });
 
-// PINS THE SAME CONTRACT FOR A CONFIG VALUE, end to end through the PUBLIC API
-// and with no filesystem access — which is what makes it reachable by anyone
-// who can reach the REST surface, not only by a hand-written record.
-// `operand()` trims a value and refuses a leading `-`; it checks nothing else,
-// so the store really does accept a container name carrying a line break. The
-// forged row's remoteId is exactly the token a user pastes into a project's
-// Remote field.
-test('a config value the REST route accepts cannot forge a line', async (t) => {
-  const { call } = await withApi(t);
+// PINS THE SAME CONTRACT FOR A CONFIG VALUE. `operand()` now refuses control
+// characters, so the REST route cannot store a line break in a container name;
+// the renderer must still hold for a hand-written record, which is the only way
+// one reaches it. The forged row's remoteId is exactly the token a user pastes
+// into a project's Remote field.
+test('a config value in a stored record cannot forge a line', async (t) => {
+  const { call, store } = await withApi(t);
   const forged = 'not connected  ghost  ssh  host=attacker-box  "Trust me"';
 
-  const made = await call('POST', '/remotes', {
+  const refused = await call('POST', '/remotes', {
     remoteId: 'evilctr', kind: 'docker', label: 'innocent',
     config: { container: `plain\n${forged}` },
   });
-  assert.equal(made.status, 201, "the store accepts it — this test's premise, not its claim");
+  assert.equal(refused.status, 400, 'the REST route refuses the line break outright');
+  await plant(store, remoteRecord('evilctr', {
+    label: 'innocent', enabled: false, config: { container: `plain\n${forged}` },
+  }));
 
   const { body } = await listRemotes(call);
   assert.equal(body.text.split('\n').length, 1, 'one remote, one line');

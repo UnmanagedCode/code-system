@@ -55,9 +55,17 @@ export const KIND_META = {
       label: 'Host',
       required: true,
       placeholder: 'my-box',
-      hint: 'A `Host` alias from the ssh config of whoever runs the plugin. HostName, Port, User,'
-        + ' IdentityFile and ProxyJump all live in that file. With a password or key file below, a plain'
+      hint: 'A `Host` alias from the ssh config of whoever runs the plugin. HostName, User,'
+        + ' IdentityFile and ProxyJump live in that file. With a password or key file below, a plain'
         + ' hostname or IP works too.',
+    },
+    {
+      name: 'port',
+      label: 'Port',
+      required: false,
+      placeholder: '22',
+      hint: 'Optional. Blank uses ssh\'s default: 22, or the Port your ssh config sets for this Host.'
+        + ' A port set here overrides that.',
     },
     {
       name: 'user',
@@ -168,6 +176,27 @@ export function controlDir() {
   return path.join(os.tmpdir(), `code-system-ssh-${process.getuid()}`);
 }
 
+/**
+ * A card's `port`: absent (undefined, null, blank) or a whole number 1-65535,
+ * given as a JSON number or a string of ASCII digits. Stored as a number, so a
+ * form re-sending the stored value as a string is not a change.
+ * @returns {{ok:true, value:number|undefined}|{ok:false, error:string}}
+ */
+function portOf(raw) {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  let n;
+  if (typeof raw === 'number') n = raw;
+  else if (typeof raw === 'string') {
+    const t = raw.trim();
+    if (t === '') return { ok: true, value: undefined };
+    n = /^[0-9]+$/.test(t) ? Number(t) : NaN;
+  } else n = NaN;
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    return { ok: false, error: `ssh config: 'port' must be a whole number from 1 to 65535 (got ${JSON.stringify(raw)})` };
+  }
+  return { ok: true, value: n };
+}
+
 /** The 20-hex identity of a connection target, and the whole of what keys it. */
 function identityHash(config) {
   const user = String(config?.user ?? '');
@@ -178,10 +207,13 @@ function identityHash(config) {
   // live master until it idles out (docs/features.md).
   const auth = config?.password ? '\0password'
     : config?.identityFile ? `\0key:${config.identityFile}` : '';
+  // A set port splits the master per port; unset adds nothing, which keeps every
+  // existing path. The tag cannot collide with the credential tags below it.
+  const port = config?.port !== undefined ? `\0port:${config.port}` : '';
   // A NUL separator, because it is the one byte no username or hostname can
   // contain: with a joinable separator, ('ab','c') and ('a','bc') would collide
   // onto one master.
-  return createHash('sha256').update(`${user}\0${host}${auth}`).digest('hex').slice(0, 20);
+  return createHash('sha256').update(`${user}\0${host}${port}${auth}`).digest('hex').slice(0, 20);
 }
 
 /**
@@ -189,7 +221,7 @@ function identityHash(config) {
  * launcher and the backend compute the same path from the same config with no
  * message between them.
  *
- * KEYED ON THE RESOLVED CONNECTION IDENTITY (user, host), NOT ON `remoteId`.
+ * KEYED ON THE RESOLVED CONNECTION IDENTITY (user, host, port, credential), NOT ON `remoteId`.
  * Two remoteIds naming the same target share one master, which is what "one
  * ControlMaster per remote" means once the remote is understood as the target
  * rather than the record. More importantly, editing a remote's `host` yields a
@@ -263,9 +295,9 @@ export async function ensureControlDir() {
  * fileops' `CCSTAT` header parse (src/launcher/fileops.mjs).
  *
  * NO CONFIG VALUE EVER BECOMES AN `-o`. Every value here is a provider-owned
- * constant or the provider-computed ControlPath. The one config value that
- * reaches argv at all is `identityFile`, as `-i`'s optarg in `sshAuth`, and
- * `validateConfig` has already required it absolute.
+ * constant or the provider-computed ControlPath. Config values reach
+ * argv only as a flag's optarg: `identityFile` as `-i`'s in `sshAuth` (already
+ * required absolute) and `port` as `-p`'s here (already a validated integer).
  *
  * `BatchMode` IS THE ONE OPTION A CREDENTIAL CHANGES: `yes` disables password
  * prompts, askpass included (measured, .wiki/gotchas/ssh-controlmaster-transport.md
@@ -282,6 +314,7 @@ export function sshBaseArgs(controlPath, { master, config }) {
     '-o', `ControlPath=${controlPath}`,
     '-o', `ControlMaster=${master}`,
     '-o', `ControlPersist=${CONTROL_PERSIST}`,
+    ...(config?.port !== undefined ? ['-p', String(config.port)] : []),
   ];
 }
 
@@ -577,6 +610,8 @@ export function createSshTransport({ cli, env = process.env } = {}) {
       if (!host.ok) return { ok: false, error: `ssh config: ${host.error}` };
       const user = operand(o.user, 'user', { required: false });
       if (!user.ok) return { ok: false, error: `ssh config: ${user.error}` };
+      const port = portOf(o.port);
+      if (!port.ok) return { ok: false, error: port.error };
       const hasPassword = o.password !== undefined && o.password !== null;
       const identityFile = typeof o.identityFile === 'string' ? o.identityFile.trim() : '';
       if (hasPassword) {
@@ -610,6 +645,7 @@ export function createSshTransport({ cli, env = process.env } = {}) {
         ok: true,
         config: {
           host: host.value,
+          ...(port.value !== undefined ? { port: port.value } : {}),
           ...(user.value ? { user: user.value } : {}),
           ...(identityFile ? { identityFile } : {}),
           ...(hasPassword ? { password: o.password } : {}),
@@ -1030,7 +1066,8 @@ export function createSshTransport({ cli, env = process.env } = {}) {
             code: 'EUNKNOWN',
             message: `ssh could not verify the host key for '${dest}'. This provider never prompts`
               + ' and never trusts a key on first use — add it to the operator\'s own known_hosts'
-              + ` out of band (e.g. ssh-keyscan), then retry: ${hostkeyLine}`,
+              + ` out of band (e.g. ${config?.port !== undefined ? `ssh-keyscan -p ${config.port}` : 'ssh-keyscan'}),`
+              + ` then retry: ${hostkeyLine}`,
             stderr: allOf(stderr),
           };
         }

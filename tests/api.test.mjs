@@ -891,3 +891,54 @@ test('a corrupt record holding a password does not leak it through any error bod
   for (const b of bodies) assert.equal(JSON.stringify(b.body).includes('hunter2'), false, JSON.stringify(b.body));
   assert.match(JSON.stringify(bodies[0].body), /not valid JSON/, 'the card still says what is wrong');
 });
+
+// ── ssh port ─────────────────────────────────────────────────────────
+
+// PINS that a form's digit-string port is stored as a NUMBER, and that a bad one
+// is a 400 with the exact wording, on POST and PATCH, with nothing written.
+test('an ssh port is stored as a number; a bad one is a 400 and writes nothing', async (t) => {
+  const { call, store } = await withApi(t);
+  const made = await call('POST', '/remotes', { remoteId: 'box', kind: 'ssh', config: { host: 'box', port: '2222' } });
+  assert.equal(made.status, 201);
+  assert.strictEqual((await stored(store, 'box')).config.port, 2222);
+
+  const bad = await call('POST', '/remotes', { remoteId: 'bad', kind: 'ssh', config: { host: 'box', port: 'abc' } });
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /ssh config: 'port' must be a whole number from 1 to 65535 \(got "abc"\)/);
+  assert.deepEqual((await call('GET', '/remotes')).body.remotes.map(r => r.remoteId), ['box'], 'nothing was created');
+
+  const patched = await call('PATCH', '/remotes/box', { config: { host: 'box', port: 'abc' } });
+  assert.equal(patched.status, 400);
+  assert.match(patched.body.error, /'port' must be a whole number/);
+  assert.strictEqual((await stored(store, 'box')).config.port, 2222, 'the stored port is untouched');
+});
+
+// PINS the port as part of the "did the target change" predicate: changing it or
+// removing it resets the gate and baseline; re-sending the stored value — even as
+// the string a form sends — does not.
+test('changing or removing an ssh port resets the gate; re-sending it does not', async (t) => {
+  const stub = await stubSshCli(t, { socket: true, execStdout: GNU_OUT });
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_SSH: JSON.stringify(stub.cli) });
+  await call('POST', '/remotes', { remoteId: 'box', kind: 'ssh', config: { host: 'box', port: 2222 } });
+  const enable = async () => {
+    await call('POST', '/remotes/box/connect');
+    assert.equal((await stored(store, 'box')).enabled, true);
+    assert.equal((await stored(store, 'box')).baseline.state, 'ok');
+  };
+  await enable();
+
+  const same = await call('PATCH', '/remotes/box', { config: { host: 'box', port: '2222' } });
+  assert.equal(same.body.remote.enabled, true, 'the same port as a string is not a change');
+  assert.equal(same.body.remote.baseline.state, 'ok');
+
+  const changed = await call('PATCH', '/remotes/box', { config: { host: 'box', port: '2223' } });
+  assert.equal(changed.body.remote.enabled, false);
+  assert.equal(changed.body.remote.baseline.state, 'unknown');
+  assert.strictEqual((await stored(store, 'box')).config.port, 2223);
+
+  await enable();
+  const removed = await call('PATCH', '/remotes/box', { config: { host: 'box' } });
+  assert.equal(removed.body.remote.enabled, false, 'dropping the port is a change');
+  assert.equal(removed.body.remote.baseline.state, 'unknown');
+  assert.equal('port' in (await stored(store, 'box')).config, false);
+});

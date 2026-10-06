@@ -324,8 +324,20 @@ An SSH card's **host** field is a `Host` alias out of the `~/.ssh/config`
 belonging to whoever runs the plugin — not a hostname the plugin resolves
 itself. Everything about *how* to reach the machine lives there: `HostName`,
 `Port`, `User`, `IdentityFile`, `ProxyJump`, `IdentityAgent`. The plugin adds
-only its own connection options and never turns a card field into an ssh
-option.
+only its own connection options. A card field becomes an ssh flag only as that
+flag's argument (the card's **Port** as `-p`, its **Private key file** as `-i`),
+never as an `-o` option.
+
+**Port is optional.** Blank means ssh's own default: 22, or the `Port` your ssh
+config sets for that `Host`. A port set on the card overrides the config's, and
+an explicit `22` does too. A whole number from 1 to 65535 is accepted. Each
+port gets its own shared connection, so the same user and host on two ports are
+two remotes. Changing or removing the port switches the remote off, like any
+other connection change.
+
+**known_hosts is keyed by port.** On a non-22 port ssh looks the key up as
+`[host]:port`, so add it with `ssh-keyscan -p <port> <host>`. A `[host]:port`
+entry satisfies only that port; a bare `host` entry satisfies any port.
 
 **Host keys are never accepted for you.** The plugin does not set
 `StrictHostKeyChecking` and does not point ssh at a `known_hosts` of its own, so
@@ -402,7 +414,7 @@ A card cannot carry both a password and a key file — saving both is refused.
   with no `IdentityFile` in your config.
 - A password or key file gets its own shared connection, separate from a
   credential-less remote to the same user and host.
-- A non-standard ssh **port** still has to be set in an ssh config `Host` entry.
+- A card **Port** overrides the ssh config's `Port` for that host; with none set, the config's applies.
 
 ## Registration is automatic, and says why when it fails
 

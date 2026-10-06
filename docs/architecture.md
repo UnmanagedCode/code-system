@@ -1012,10 +1012,10 @@ re-asks the socket.
 independently (`kinds/ssh.mjs`):
 
 ```
-controlPathFor(config) → <os.tmpdir()>/code-system-ssh-<uid>/<sha256(user \0 host [\0password | \0key:<identityFile>])[0..20]>
+controlPathFor(config) → <os.tmpdir()>/code-system-ssh-<uid>/<sha256(user \0 host [\0port:<port>] [\0password | \0key:<identityFile>])[0..20]>
 ```
 
-- **Keyed on the resolved connection identity `(user, host)`, not on
+- **Keyed on the resolved connection identity (user, host, port, credential), not on
   `remoteId`.** Two remoteIds naming the same target share one master — which is
   what "one master per remote" means once the remote is understood as the
   *target* rather than the record. More importantly, editing a remote's `host`
@@ -1028,6 +1028,10 @@ controlPathFor(config) → <os.tmpdir()>/code-system-ssh-<uid>/<sha256(user \0 h
   or `\0key:<path>` when the card carries one, so an ambient master is never
   reused to "prove" a password or key; with no credentials the hash — and every
   existing socket path — is unchanged. The password value is never hashed.
+- **A port is part of the identity.** `identityHash` appends `\0port:<n>` only
+  when the card sets one, so the same user and host on two ports get two
+  masters, an explicit `22` is distinct from unset, and a remote with no port
+  keeps every existing socket path.
 - **Credentials ride one funnel, `sshAuth(config, baseEnv)`.** It returns the
   extra argv and the child environment for a call; every ssh invocation
   (`spawnPlan`, `checkMaster`, `connect`, `disconnect`, `reap`) takes both. The
@@ -1270,7 +1274,7 @@ global.
     provider. The fixture also deliberately does **not** set
     `StrictHostKeyChecking`, because the provider's policy rests on OpenSSH's
     default — pinning it would test the fixture instead of the policy.
-  - **Aliases are unique per target.** `controlPathFor` keys on `(user, host)`,
+  - **Aliases are unique per target.** `controlPathFor` keys on the whole connection identity (user, host, port, credential),
     so two targets sharing an alias would share one master and a test could
     silently multiplex onto the previous test's container.
 - **Multiplexing is asserted on sshd's OWN authentication count**, never on "the

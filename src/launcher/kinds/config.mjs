@@ -36,6 +36,13 @@ export function operand(raw, field, { required = true } = {}) {
       ? { ok: false, error: `'${field}' is required and must be a non-empty string` }
       : { ok: true, value: '' };
   }
+  // A control character is refused too: NUL is the separator `identityHash`
+  // joins its fields with, so an operand holding one could forge another
+  // config's ControlPath ({host:'box\0port:2222'} vs {host:'box', port:2222}).
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f\x7f]/.test(value)) {
+    return { ok: false, error: `'${field}' must not contain control characters (got ${JSON.stringify(value)})` };
+  }
   if (value.startsWith('-')) {
     return {
       ok: false,

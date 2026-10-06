@@ -26,7 +26,7 @@ Users running cc against development environments that live outside their local 
 ### How to use it
 
 1. Install the plugin.
-2. In the plugin's card UI, add a remote: pick `docker` or `ssh`, then supply the connection details (container name, or host/user — an ssh card may also carry its own password or private key file).
+2. In the plugin's card UI, add a remote: pick `docker` or `ssh`, then supply the connection details (container name, or host, optional port and user — an ssh card may also carry its own password or private key file).
 3. Press **Connect**. A new remote starts switched off, and a switched-off remote refuses every operation.
 4. Point a cc project's *Remote* field at that remote's `remoteId`. (Connect first: cc will not accept a *Remote* it has never been able to reach.)
 5. cc registers the corresponding System row (`docker` or `ssh`) and spawns the provider to handshake; once connected, cc operates against the remote target for that project.
