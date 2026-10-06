@@ -6,9 +6,11 @@ What the plugin does for a user.
 
 Each **remote** — one Docker container, or one SSH host — is one card. The card
 UI is where a remote is added, edited and removed, and this plugin is the
-**only** catalog of remotes: cc's protocol has no `listRemotes` frame, so cc
-never knows what remotes exist. It only knows the `remoteId` string a project's
-*Remote* field is set to.
+**only** catalog of remotes a user sees. cc's protocol can ask a provider which
+remotes it serves (`listRemotes`, and both providers answer it — see
+[`protocol.md`](protocol.md) → "Remote enumeration"), but no cc surface shows
+that list: cc only knows the `remoteId` string a project's *Remote* field is set
+to.
 
 The catalog has **two read surfaces** — the cards, and the `list_remotes` MCP
 tool below — and one writer: adding, editing and removing a remote happens in

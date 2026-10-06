@@ -1,8 +1,8 @@
 // PINS the backend REST surface card 2026-0005 renders: remote CRUD with the
 // kind owning its own config validation, that `remoteId` is never renamed, and
 // that deleting a remote WARNS about the cc projects still naming it — which is
-// the concrete discharge of .wiki/gotchas/no-remote-discovery.md, since cc
-// cannot enumerate remotes on its own.
+// the concrete discharge of .wiki/gotchas/remote-catalog.md, since no cc
+// surface enumerates remotes.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

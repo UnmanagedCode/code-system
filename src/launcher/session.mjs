@@ -171,6 +171,7 @@ export class Session {
       case 'data': return this.#writeData(f);
       case 'end': return this.#writeEnd(f);
       case 'describeRemote': return this.#describeRemote(f, remote);
+      case 'listRemotes': return this.#listRemotes(f);
       // UNKNOWN TYPES ARE IGNORED — the extension point that lets the contract
       // grow without a version bump.
       default: return undefined;
@@ -742,6 +743,37 @@ export class Session {
       frame.exclude = m.exclude;
     }
     this.#write(frame);
+  }
+
+  // ── listRemotes ────────────────────────────────────────────────────
+
+  // REMOTE ENUMERATION (systems-protocol.md §2.2). NOT ROUTED: the frame names no
+  // remote, and `lookup` would refuse it ENOREMOTE for naming none, which §2.2
+  // forbids. Answered in the serialised chain like `describeRemote`, with one
+  // terminal frame and nothing after it, so a later `close` for its id finds
+  // nothing to stop.
+  //
+  // ALL OR NOTHING. The source lists its configured set, or throws when the
+  // configuration cannot be read; a throw is an id-addressed EUNKNOWN with the
+  // reason in `message`, never a partial list and never an id-less error, which
+  // would fail every other target's work.
+  //
+  // The reason is passed through verbatim, errno token and all, unlike the
+  // gate's refusal: the token hazard is cc's exec-path re-parsers (`runGit`,
+  // `ProviderShell`), and no cc source sends `listRemotes`, so none reads this.
+  async #listRemotes(f) {
+    const id = String(f.id);
+    if (!this.#caps.remoteListing) {
+      this.#fail(id, 'EUNSUPPORTED', 'this provider serves one unnamed target and lists no remotes');
+      return;
+    }
+    let ids;
+    try { ids = await this.#source.list(); }
+    catch (e) {
+      this.#fail(id, 'EUNKNOWN', `could not enumerate the remotes this provider serves: ${errMsg(e)}`);
+      return;
+    }
+    this.#write({ type: 'remoteList', id, remotes: ids.map(remoteId => ({ remoteId })) });
   }
 
   // ── shutdown: protocol MUST 3 ──────────────────────────────────────

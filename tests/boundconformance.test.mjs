@@ -142,7 +142,7 @@ test('a listed row that now passes is red, and the message carries its cause', (
   assert.match(problems[0].message, new RegExp(MANIFEST[0].cause.slice(0, 20)));
 });
 
-// PINS: "a fifth skip, OR A DIFFERENT REASON STRING, means the harness changed"
+// PINS: "another skip, OR A DIFFERENT REASON STRING, means the harness changed"
 // — mechanised. A known-skipping row whose reason text moved is red.
 test('a known skip with a different reason string is red, showing both strings', () => {
   const problems = compareOutcomes(observed([
@@ -199,8 +199,8 @@ test('a row silently vanishing from the suite is caught by the total, and only b
   const raw = await fs.readFile(FIXTURE, 'utf8');
   const victim = 'parseFindLines refuses a malformed entry rather than skipping it';
   const shrunk = raw.split('\n').filter(l => !l.includes(victim)).join('\n')
-    .replace('\u2139 tests 63', '\u2139 tests 62')
-    .replace('\u2139 pass 48', '\u2139 pass 47');
+    .replace('\u2139 tests 69', '\u2139 tests 68')
+    .replace('\u2139 pass 49', '\u2139 pass 48');
   const report = parseSpecReport(shrunk);
   assert.equal(report.tests.has(victim), false, 'the row really is gone from the parse');
   assert.deepEqual(checkTally(report), [], 'the parse/tally cross-check cannot see consistent shrinkage');
@@ -307,7 +307,7 @@ test('the parser reads a real captured bound run, and the manifest matches it', 
   assert.deepEqual(checkTally(report), [], 'the parse must agree with the reporter\'s own tally');
   assert.equal(report.tally.tests, EXPECTED_TOTAL);
   assert.deepEqual(checkTotal(report.tally), []);
-  assert.equal(report.tests.size, 63, 'the failing-tests recap repeats every failing line and must not double count');
+  assert.equal(report.tests.size, 69, 'the failing-tests recap repeats every failing line and must not double count');
   assert.equal(
     report.tests.get('every code in the taxonomy is produced by a real failure somewhere in this suite')?.reason,
     'counts producers across rows a third-party run skips');

@@ -32,12 +32,29 @@ export const MAX_LINE_BYTES = 4 * 1024 * 1024;
 export const MIRROR_EXCLUDE_MAX = 64;
 export const MIRROR_PATH_MAX = 4096;
 
+// THE remoteId RULE cc's Remote field and its `readRemoteList` both enforce: an
+// id a `remoteList` carries that fails it makes cc refuse the WHOLE enumeration
+// (systems-protocol.md §2.2). Returns the defect, not a message.
+export const REMOTE_ID_MAX = 128;
+
+export function remoteIdDefect(id) {
+  if (id === '') return 'empty';
+  if (id.length > REMOTE_ID_MAX) return 'too-long';
+  // eslint-disable-next-line no-control-regex
+  if (/[\s\u0000-\u001f\u007f]/.test(id)) return 'invalid-char';
+  return null;
+}
+
 // SIGTERM → SIGKILL delay when the frame names none.
 export const DEFAULT_KILL_GRACE_MS = 100;
 
 // The frames that OPEN an operation, and therefore the only ones carrying
 // `remoteId`. Everything else inherits the binding through its `id` — AN ID IS
 // BOUND TO ONE REMOTE FOR ITS WHOLE LIFETIME (§4).
+//
+// `listRemotes` is a request frame too, and DELIBERATELY ABSENT: it carries no
+// `remoteId`, and routing it would refuse it ENOREMOTE for naming none, which
+// §2.2 forbids. session.mjs answers it beside `describeRemote`, unrouted.
 export const REQUEST_FRAMES = new Set(['exec', 'readFile', 'writeFile', 'describeRemote']);
 
 // The frame types whose meaning IS their payload, so a bad payload is a bad
@@ -51,6 +68,7 @@ export const PROTOCOL_ERROR_CODES = [
 
 export const FS_ERROR_CODES = [
   'ENOENT', 'EACCES', 'EEXIST', 'ENOTDIR', 'EISDIR', 'ENOSPC', 'ENOTEMPTY', 'EINVAL',
+  'ENAMETOOLONG', 'ELOOP',
   'EUNKNOWN',
 ];
 
@@ -77,6 +95,10 @@ const STDERR_TABLE = [
   // errno a derived command can produce is named — because naming it is what
   // lets a caller tell "that is not a symlink" from "the box hiccuped".
   ['Invalid argument', 'EINVAL'],
+  // The two path-resolution errnos (path_resolution(7)) the rows above do not
+  // already name.
+  ['File name too long', 'ENAMETOOLONG'],
+  ['Too many levels of symbolic links', 'ELOOP'],
 ];
 
 export function classifyStderr(stderr) {

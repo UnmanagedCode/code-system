@@ -14,7 +14,7 @@
 
 import path from 'node:path';
 import {
-  NdjsonDecoder, ProtocolError, encodeFrame,
+  NdjsonDecoder, ProtocolError, REMOTE_ID_MAX, encodeFrame, remoteIdDefect,
 } from './protocol.mjs';
 import { createChannelPool } from './channel.mjs';
 import { FlagRemoteSource, StoreRemoteSource } from './remotes.mjs';
@@ -66,6 +66,15 @@ export function parseArgs(argv) {
       const root = eq === -1 ? '' : spec.slice(eq + 1);
       if (!id || !path.isAbsolute(root)) {
         throw new UsageError(`--remote wants <id>=<absolute root>, got ${JSON.stringify(spec)}`);
+      }
+      // The flag ids ARE the configured set this launcher lists (§2.2), and cc
+      // refuses a whole `remoteList` over one id its Remote field could never
+      // name — so such an id is refused here, at launch, instead.
+      const defect = remoteIdDefect(id);
+      if (defect) {
+        throw new UsageError(`--remote id ${JSON.stringify(id)} is ${defect}: cc's Remote field accepts`
+          + ` a non-empty id of at most ${REMOTE_ID_MAX} characters with no whitespace or control`
+          + ' characters, so it could never name this target');
       }
       o.remotes.set(id, path.resolve(root));
     } else if (a === '--mirror') {
@@ -142,12 +151,18 @@ export async function runLauncher(argv, { stdin = process.stdin, stdout = proces
     ? new StoreRemoteSource(opts.kind)
     : new FlagRemoteSource(opts.remotes, opts.mirrors);
 
-  // EXACTLY cc's `Capabilities` interface, no more: it reads these three and
-  // ignores anything else, so a fourth key would be a field with no reader.
+  // EXACTLY cc's `Capabilities` interface, no more: it ignores any key it does
+  // not read, so an extra one would be a field with no reader.
+  //
+  // `remoteListing` FOLLOWS `remotes`, because every source this launcher builds
+  // can list its configured set completely: `StoreRemoteSource` from the store,
+  // `FlagRemoteSource` from the `--remote` flags (§2.2, configured membership).
+  const remotes = transport.remotes === true;
   const capabilities = {
     processGroupSignal: transport.processGroupSignal === true,
-    remotes: transport.remotes === true,
+    remotes,
     remoteDescriptors: transport.remoteDescriptors === true,
+    remoteListing: remotes,
   };
 
   // NOTHING BUT FRAMES GOES TO STDOUT (MUST 1). Everything diagnostic goes to

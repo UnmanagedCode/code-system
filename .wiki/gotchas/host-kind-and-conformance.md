@@ -44,7 +44,7 @@ superset (**measured 2026-09-05**: flipping `docker`/`ssh` to
 `remoteDescriptors: true` moved no manifest row); and `CAPABILITY_CONFIGS` is **two** configurations, not three.
 `host` unlocks **zero** rows a bound `docker` would not.
 
-**What a third-party run does NOT verify — four skips, identical for `host` and
+**What a third-party run does NOT verify — these skips, identical for `host` and
 for a bound `docker`, all gated on `IS_REFERENCE_PROVIDER`:**
 
 | Test | Printed reason |
@@ -53,8 +53,17 @@ for a bound `docker`, all gated on `IS_REFERENCE_PROVIDER`:**
 | `a provider without the capability advertises no mirror` | same — and it still skips now that `docker`/`ssh` advertise `remoteDescriptors: true`: the gate is provider **identity**, not shape |
 | `CC_CONFORMANCE_REMOTE_ID binds the fixture handle, and an explicit remoteId still wins` | `asserts the unset default` |
 | `every code in the taxonomy is produced by a real failure somewhere in this suite` | `counts producers across rows a third-party run skips` |
+| `a provider without remoteListing refuses listRemotes EUNSUPPORTED, id-addressed` | `a provider that does not advertise a capability may ignore its frame (§2); the reference provider refuses it` — our absent behaviour is pinned in `tests/hostkind.test.mjs` instead |
 
-A **fifth** skip, or a different reason string, means the harness changed.
+A skip not in this table, or a different reason string, means the harness
+changed. The same list is the skip half of `EXPECTED` in
+`tests/boundConformanceExpectations.mjs`, which reds on any difference.
+
+**The `listRemotes` enumeration rows RUN on `host`, and pass.** They skip for a
+provider that does not advertise `remoteListing`; `host` derives it from
+`--remote` (it follows `remotes` in `src/launcher/main.mjs`), and those rows
+launch with `--remote`. `FlagRemoteSource.list()` is exactly the flag ids, which
+is §10's "its `remoteList` must then be exactly the `--remote` ids".
 
 **Two things about the launch surface:**
 
@@ -97,17 +106,18 @@ to card 2026-0006 and that card did not do it**: 2026-0006's rig hosts the
 plugin under a real cc and runs no conformance battery
 ([hosted-integration-measured.md](hosted-integration-measured.md)).
 
-**Card 2026-0014 landed it: `npm run conformance:docker`.** It reports **48 pass
-/ 11 fail / 4 skip** of 63, of which **41 rows exercise the shipped `docker`
-transport**. Eight of the failures have
-two structural causes — the hardcoded `processGroupSignal: false` against
+**Card 2026-0014 landed it: `npm run conformance:docker`.** Every row it does
+not pass is an `EXPECTED` entry in `tests/boundConformanceExpectations.mjs` with
+its cause, and the runner prints the split per arm. The structural failures have
+two causes — the hardcoded `processGroupSignal: false` against
 `CAPABILITY_CONFIGS[0]`, and `main.mjs` refusing
 `--remote`/`--mirror`/`--exclude` for a store-backed kind (the refusal stands now
-that `docker`/`ssh` do answer `describeRemote`: **the store owns the
-advertisement**, not argv); two are a real transport defect the run **found**
+that `docker`/`ssh` do answer `describeRemote` and `listRemotes`: **the store owns
+the advertisement and the configured set**, not argv); two are a real transport defect the run **found**
 (card 2026-0016), which `host` structurally cannot reach; and one is `close`'s
-reap reach against that same hardcoded capability (card 2026-0019). The four
-skips below are unchanged by it. Every measurement, the failure breakdown, and
+reap reach against that same hardcoded capability (card 2026-0019); and the
+`a path that cannot resolve is ENAMETOOLONG or ELOOP…` rows are a frame-path
+`readFile` defect `host` shares (`src/launcher/fileops.mjs` answers `ENOENT`). The skips above are unchanged by it. Every measurement, the failure breakdown, and
 why `ssh` does not inherit the result, are in
 [bound-conformance.md](bound-conformance.md).
 

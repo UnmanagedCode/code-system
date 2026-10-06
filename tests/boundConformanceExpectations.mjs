@@ -1,8 +1,7 @@
 // THE BOUND RUN'S EXPECTATION MANIFEST — one table, two jobs.
 //
 // A bound `docker` run of cc's battery cannot be all-green, for reasons that are
-// OURS AND DELIBERATE, and it also skips the four rows any third-party run
-// skips. Rather than two mechanisms (a known-skip count and an expected-failure
+// OURS AND DELIBERATE, and it also skips the rows any third-party run skips. Rather than two mechanisms (a known-skip count and an expected-failure
 // list) that can drift apart, there is one table and one rule:
 //
 //   ANYTHING NOT LISTED HERE MUST PASS. Anything listed must produce EXACTLY the
@@ -20,8 +19,8 @@
 
 export const MIN_CAUSE_CHARS = 60;
 
-// THE BATTERY'S OWN SIZE at the pin: 22 in-loop rows x 2 `CAPABILITY_CONFIGS`,
-// plus 19 out-of-loop. Pinned ABSOLUTELY rather than derived from the run,
+// THE BATTERY'S OWN SIZE at the pin: 23 in-loop rows x 2 `CAPABILITY_CONFIGS`,
+// plus 23 out-of-loop. Pinned ABSOLUTELY rather than derived from the run,
 // because every other guard here is RELATIVE — `compareOutcomes` walks observed
 // union listed, and the parse/tally cross-check compares two numbers that shrink
 // together. Measured: delete one unlisted PASSING row and decrement the tally to
@@ -31,7 +30,7 @@ export const MIN_CAUSE_CHARS = 60;
 // RED IN BOTH DIRECTIONS. A vanished row and a new row are the same event: the
 // harness moved, and this manifest was written against a battery that no longer
 // exists. Re-read it against the current suite rather than editing the number.
-export const EXPECTED_TOTAL = 63;
+export const EXPECTED_TOTAL = 69;
 
 const OUTCOMES = new Set(['skip', 'fail']);
 
@@ -42,17 +41,17 @@ const OUTCOMES = new Set(['skip', 'fail']);
 // added, false.
 const CITATION_RE = /[\w./-]+\.(?:mjs|ts)(?::\d+)?|\u00a7\s*\d+/;
 
-// The two reasons a third-party run skips, verbatim from cc's suite at the pin.
-// Spelled once each: three of the four skips share the first string, and two
-// copies of it would be two things to keep in step.
+// The reason most third-party skips print, verbatim from cc's suite at the pin.
+// Spelled once: several skips share it, and two copies would be two things to
+// keep in step.
 const CC_SIDE_ONLY =
   'cc-side fixture, pinned to the reference provider: asserts what CC does, not what a provider does';
 
 /** @type {{name:string, outcome:'skip'|'fail', reason?:string, cause:string}[]} */
 export const EXPECTED = [
-  // ── The four skips, gated on IS_REFERENCE_PROVIDER ────────────────
+  // ── The skips, gated on IS_REFERENCE_PROVIDER ─────────────────────
   // Identical for `host` and for a bound `docker`: the gate is provider
-  // IDENTITY, not shape. A fifth skip, or a different reason string, means the
+  // IDENTITY, not shape. Another skip, or a different reason string, means the
   // harness changed. See .wiki/gotchas/host-kind-and-conformance.md.
   {
     name: 'a provider that does not advertise remotes is never handed a remoteId',
@@ -76,6 +75,14 @@ export const EXPECTED = [
     cause: 'the row asserts what an UNSET CC_CONFORMANCE_REMOTE_ID does, which a bound run has'
       + ' deliberately changed; systems-protocol-conformance.test.mjs skips it on'
       + ' IS_REFERENCE_PROVIDER for any third-party provider.',
+  },
+  {
+    name: 'a provider without remoteListing refuses listRemotes EUNSUPPORTED, id-addressed',
+    outcome: 'skip',
+    reason: 'a provider that does not advertise a capability may ignore its frame (§2); the reference provider refuses it',
+    cause: 'reference-only: systems-protocol-conformance.test.mjs skips it on IS_REFERENCE_PROVIDER,'
+      + ' because a provider not advertising remoteListing may ignore the frame (systems-protocol.md'
+      + ' \u00a72). The launcher\'s own absent-behaviour is pinned by tests/hostkind.test.mjs instead.',
   },
   {
     name: 'every code in the taxonomy is produced by a real failure somewhere in this suite',
@@ -182,11 +189,27 @@ export const EXPECTED = [
       + ' Delete this entry when card 2026-0016 lands.',
   })),
 
+  // ── A frame-path DEFECT, shared with `host` ──────────────────────
+  //
+  // Not docker-specific: `npm run conformance` (host) fails the same two rows.
+  // `stat` passes — cc derives it and classifies the far side's own stderr —
+  // but `readFile` rides src/launcher/fileops.mjs, whose script tests `-e` and
+  // answers ENOENT for a path that cannot resolve at all.
+  ...['[all capabilities]', '[processGroupSignal:false]'].map(tag => ({
+    name: `${tag} a path that cannot resolve is ENAMETOOLONG or ELOOP, on the derived and the frame path`,
+    outcome: 'fail',
+    cause: 'a DEFECT, not a forced outcome: the readFile script in src/launcher/fileops.mjs refuses'
+      + ' `[ ! -e "$p" ]` as ENOENT, and test(1) cannot tell a missing path from one whose name is'
+      + ' too long or loops, so readFile answers ENOENT where systems-protocol.md \u00a78 names'
+      + ' ENAMETOOLONG/ELOOP. Observed identically on --kind host. Delete this entry when fixed.',
+  })),
+
   // ── --remote / --mirror / --exclude: structurally unreachable ─────
   // src/launcher/main.mjs refuses these flags for STORE_BACKED kinds with exit 2
   // BEFORE ANY FRAME, so `sys.connect()` fails and §10's "fails that whole
-  // configuration at the handshake" applies. Six out-of-loop rows launch their
-  // own provider with them. This is not a gap to close: a flag-backed target
+  // configuration at the handshake" applies. The out-of-loop rows below launch
+  // their own provider with them — the two `listRemotes` rows included, since
+  // `withRemotes` passes `--remote`. This is not a gap to close: a flag-backed target
   // source on a shipped store-backed kind would be a second remote path around
   // the single ENOREMOTE chokepoint in StoreRemoteSource.lookup.
   ...[
@@ -196,6 +219,8 @@ export const EXPECTED = [
     'a request that names NO remote is refused, never answered from a default',
     'describeRemote round-trips the mirror root and the exclude list',
     'describeRemote for an unknown remote is an id-addressed ENOREMOTE',
+    'listRemotes enumerates exactly the configured targets; an unconfigured id refuses ENOREMOTE',
+    'listRemotes is one id among many: answered beside an in-flight exec, never disturbing it',
   ].map(name => ({
     name,
     outcome: 'fail',

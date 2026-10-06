@@ -253,8 +253,8 @@ test('the gate note renders only for a kind with copy, and never empty', async (
     /the gate is what stops them, not the connection/i, 'ssh card shows its one sentence');
 });
 
-// PINS: the hand-off contract is ON the card. cc has no listRemotes frame, so
-// this string is the only thing connecting a project to this remote — and the
+// PINS: the hand-off contract is ON the card. No cc surface enumerates remotes,
+// so this string is the only thing connecting a project to this remote — and the
 // card says where to paste it.
 test('every working card shows its remoteId and where it goes', async () => {
   const { cards } = await mount();

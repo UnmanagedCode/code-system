@@ -11,6 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { REMOTE_ID_MAX } from '../src/launcher/protocol.mjs';
 import { Launcher, tempStore } from './helpers.mjs';
 
 // Both seams. The second one is needed for every launch below that passes no
@@ -68,7 +69,7 @@ test('with the guard open and NO flags, host advertises exactly what cc\'s core 
   const hs = await l.hello();
   // This deep-equal is CAPABILITY_CONFIGS[0].caps, verbatim.
   assert.deepEqual(hs.capabilities, {
-    processGroupSignal: true, remotes: false, remoteDescriptors: false,
+    processGroupSignal: true, remotes: false, remoteDescriptors: false, remoteListing: false,
   });
   assert.match(hs.provider, /^code-system-host\/\S+$/);
 
@@ -85,7 +86,7 @@ test('--no-process-group-signal lowers the capability and sets descendantsMaySur
   const hs = await l.hello();
   // CAPABILITY_CONFIGS[1].caps, verbatim.
   assert.deepEqual(hs.capabilities, {
-    processGroupSignal: false, remotes: false, remoteDescriptors: false,
+    processGroupSignal: false, remotes: false, remoteDescriptors: false, remoteListing: false,
   });
 
   // The grandchild's own stdout goes to /dev/null so it does not hold the
@@ -123,6 +124,14 @@ test('--remote turns on `remotes`, fences each target, and injects CC_REMOTE', a
   const hs = await l.hello();
   assert.equal(hs.capabilities.remotes, true, 'given targets, the provider says so');
   assert.equal(hs.capabilities.remoteDescriptors, false, 'and still advertises no mirror');
+  assert.equal(hs.capabilities.remoteListing, true, 'and lists them');
+
+  // §10: "its remoteList must then be exactly the --remote ids" — its
+  // configured set. The frame names no remote and is answered, not refused.
+  l.send({ type: 'listRemotes', id: 'l1' });
+  const listed = await l.waitFor(f => f.id === 'l1' && (f.type === 'remoteList' || f.type === 'error'));
+  assert.equal(listed.type, 'remoteList', `answered ${JSON.stringify(listed)}`);
+  assert.deepEqual(listed.remotes, [{ remoteId: 'a' }, { remoteId: 'b' }]);
 
   // POSITIVE ROUTING EVIDENCE: only the far side knows which target ran this.
   l.send({ type: 'exec', id: 'e1', remoteId: 'a', cwd: rootA, shell: 'echo "$CC_REMOTE"' });
@@ -221,6 +230,46 @@ test('describeRemote for an unknown remote is an id-addressed ENOREMOTE', async 
   l.send({ type: 'describeRemote', id: 'd1', remoteId: 'a' });
   const d = await l.waitFor(f => f.type === 'remoteDescriptor' && f.id === 'd1');
   assert.equal(d.mirrorRoot, store.dir);
+});
+
+// PINS THE ABSENT BEHAVIOUR: with no `--remote` this serves one unnamed target,
+// has nothing to list, and refuses a stray `listRemotes` id-addressed — the
+// same shape as the reference provider — without tearing the connection down.
+test('listRemotes without the capability is EUNSUPPORTED, id-addressed, and the connection still serves', async (t) => {
+  const l = new Launcher(['--kind', 'host'], ALLOW);
+  t.after(() => l.kill());
+  await l.hello();
+  for (const id of ['l1', 'l2']) {
+    l.send({ type: 'listRemotes', id });
+    const err = await l.waitFor(f => f.id === id && (f.type === 'error' || f.type === 'remoteList'));
+    assert.equal(err.type, 'error');
+    assert.equal(err.id, id, 'id-addressed, never connection-level');
+    assert.equal(err.code, 'EUNSUPPORTED');
+  }
+  l.send({ type: 'exec', id: 'e1', cwd: '/tmp', argv: ['printf', 'served'] });
+  assert.equal((await l.waitFor(f => f.type === 'exit' && f.id === 'e1')).code, 0);
+});
+
+// PINS THE LAUNCH SURFACE AGAINST AN UNLISTABLE ID. The `--remote` ids are what
+// `remoteList` carries, and cc refuses the whole list over one id that fails
+// `remoteIdDefect` — so such an id is refused at launch, before any frame,
+// rather than advertised and then listed.
+test('a --remote id cc could never name is refused before any frame', async (t) => {
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  for (const [id, defect] of [['bad id', 'invalid-char'], ['tab\tid', 'invalid-char'], ['x'.repeat(REMOTE_ID_MAX + 1), 'too-long']]) {
+    const l = new Launcher(['--kind', 'host', '--remote', `${id}=${store.dir}`], ALLOW_FENCED);
+    const { code } = await l.exited;
+    assert.equal(code, 2, `${JSON.stringify(id)} must be refused`);
+    assert.equal(l.frames.length, 0, 'before any frame');
+    assert.match(l.stderr, new RegExp(defect), 'the refusal names the defect');
+    assert.match(l.stderr, new RegExp(`at most ${REMOTE_ID_MAX} characters`), 'and the ceiling');
+  }
+  // The ceiling itself is an id cc accepts.
+  const max = 'x'.repeat(REMOTE_ID_MAX);
+  const l = new Launcher(['--kind', 'host', '--remote', `${max}=${store.dir}`], ALLOW_FENCED);
+  t.after(() => l.kill());
+  assert.equal((await l.hello()).capabilities.remoteListing, true);
 });
 
 test('describeRemote without the capability is EUNSUPPORTED, id-addressed', async (t) => {

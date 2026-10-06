@@ -12,8 +12,8 @@
 // ~200-byte local read per request frame, against an operation that is already
 // a round trip to a container or another machine.
 //
-// THE BACKEND IS THE ONLY WRITER. The launcher calls readRemote/listRemotes and
-// nothing else.
+// THE BACKEND IS THE ONLY WRITER. The launcher calls readRemote/listRemoteIds
+// and nothing else.
 //
 // `enabled` IS THE OPERATOR GATE, and it lives here rather than in backend
 // memory because the backend and the launcher are DIFFERENT PROCESSES — cc
@@ -37,7 +37,7 @@ export const SCHEMA = 2;
 // A remoteId is TWO things at once, and both constrain it: it is a filename
 // stem, and it is the entire hand-off contract to cc — a user reads it off the
 // card UI and pastes it into a project's Remote field
-// (.wiki/gotchas/no-remote-discovery.md), so it must be human-typable rather
+// (.wiki/gotchas/remote-catalog.md), so it must be human-typable rather
 // than an opaque token. It is never renamed once created.
 export const REMOTE_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
@@ -92,17 +92,27 @@ export async function readRemote(id) {
   return { ok: true, record: raw };
 }
 
-export async function listRemotes() {
+// Every `*.json` stem in the remotes directory, in FILENAME order (the order the
+// cards render in) — valid ids or not: whether a stem names a remote is
+// `readRemote`'s decision. An ABSENT directory is "nothing configured"; any
+// other failure is THROWN, because a store that cannot be enumerated is not an
+// empty one.
+export async function listRemoteIds() {
   let names;
   try { names = await fs.readdir(remotesDir()); }
   catch (e) {
     if (e?.code === 'ENOENT') return [];
     throw e;
   }
+  return names
+    .sort()
+    .filter(name => name.endsWith('.json'))
+    .map(name => name.slice(0, -'.json'.length));
+}
+
+export async function listRemotes() {
   const out = [];
-  for (const name of names.sort()) {
-    if (!name.endsWith('.json')) continue;
-    const id = name.slice(0, -'.json'.length);
+  for (const id of await listRemoteIds()) {
     const r = await readRemote(id);
     // A record that will not read is still surfaced, so the card UI can say so
     // rather than showing a shorter list than the user configured.

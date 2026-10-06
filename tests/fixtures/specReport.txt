@@ -1,100 +1,96 @@
-✖ [all capabilities] the handshake carries the protocol version, the provider name and the capabilities (78.701297ms)
-✔ [all capabilities] exec runs argv and shell forms, and reports stdout, stderr and the exit code (542.390989ms)
-✖ [all capabilities] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (183.490035ms)
-✔ [all capabilities] a command that cannot start carries the provider's own error code (175.141196ms)
-✔ [all capabilities] a timeout is exit 124 with timedOut set (326.694026ms)
-✖ [all capabilities] process-group signalling: the capability decides whether grandchildren are reachable (385.738542ms)
-✔ [all capabilities] detach ends the operation and kills nothing; close kills as far as it reaches (1522.786451ms)
-✔ [all capabilities] a redirected background job outlives its command, in both capability configurations (980.105909ms)
-✔ [all capabilities] concurrent execs are multiplexed by id and never mix their output (438.386007ms)
-✔ [all capabilities] the exec output caps behave identically to the local runner (448.548029ms)
-✔ [all capabilities] stdin:'ignore' hands the command a closed stdin instead of a wait (171.171296ms)
-(node:2576969) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
-(Use `node --trace-warnings ...` to show where the warning was created)
-✔ [all capabilities] readFile and writeFile round-trip, including a payload past one chunk (238.945977ms)
-✔ [all capabilities] writeFile honours atomic and exclusive, and refuses the pair (318.750724ms)
-✔ [all capabilities] readFile reports absence, a directory, and an unreadable file (203.777024ms)
-✔ [all capabilities] a read above the protocol's per-file cap is refused, not streamed (166.449907ms)
-(node:2576969) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
-✔ [all capabilities] stat is derived from exec and matches what fs.stat reports (197.822182ms)
-✔ [all capabilities] readDir is derived from exec, reports kinds, and refuses a file (210.750008ms)
-✔ [all capabilities] a filename containing a newline OR A TAB is an ERROR, never a silently dropped entry (207.672657ms)
-(node:2576969) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
-✔ [all capabilities] lstat reports a SYMLINK as one, with its target, where stat cannot (199.884853ms)
-(node:2576969) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
-✔ [all capabilities] readlink, symlink and removeEntry are derived and behave like fs (302.179153ms)
-✔ [all capabilities] writeFileBytes carries a byte a UTF-8 round trip does not survive (214.1741ms)
-(node:2576969) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
-✔ [all capabilities] realpath, mkdir, removeTree, unlink and chmod are derived and behave like fs (512.460207ms)
-✔ [processGroupSignal:false] the handshake carries the protocol version, the provider name and the capabilities (43.969269ms)
-✔ [processGroupSignal:false] exec runs argv and shell forms, and reports stdout, stderr and the exit code (528.548009ms)
-✖ [processGroupSignal:false] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (188.741642ms)
-✔ [processGroupSignal:false] a command that cannot start carries the provider's own error code (178.35146ms)
-✔ [processGroupSignal:false] a timeout is exit 124 with timedOut set (335.971701ms)
-✔ [processGroupSignal:false] process-group signalling: the capability decides whether grandchildren are reachable (378.7315ms)
-✖ [processGroupSignal:false] detach ends the operation and kills nothing; close kills as far as it reaches (1537.34399ms)
-✔ [processGroupSignal:false] a redirected background job outlives its command, in both capability configurations (995.897514ms)
-✔ [processGroupSignal:false] concurrent execs are multiplexed by id and never mix their output (400.458074ms)
-✔ [processGroupSignal:false] the exec output caps behave identically to the local runner (433.288253ms)
-✔ [processGroupSignal:false] stdin:'ignore' hands the command a closed stdin instead of a wait (174.428404ms)
-(node:2576969) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
-✔ [processGroupSignal:false] readFile and writeFile round-trip, including a payload past one chunk (247.375982ms)
-✔ [processGroupSignal:false] writeFile honours atomic and exclusive, and refuses the pair (343.934722ms)
-✔ [processGroupSignal:false] readFile reports absence, a directory, and an unreadable file (180.882396ms)
-✔ [processGroupSignal:false] a read above the protocol's per-file cap is refused, not streamed (184.035846ms)
-(node:2576969) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
-✔ [processGroupSignal:false] stat is derived from exec and matches what fs.stat reports (231.9009ms)
-✔ [processGroupSignal:false] readDir is derived from exec, reports kinds, and refuses a file (178.623097ms)
-✔ [processGroupSignal:false] a filename containing a newline OR A TAB is an ERROR, never a silently dropped entry (214.002569ms)
-(node:2576969) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
-✔ [processGroupSignal:false] lstat reports a SYMLINK as one, with its target, where stat cannot (219.106257ms)
-(node:2576969) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
-✔ [processGroupSignal:false] readlink, symlink and removeEntry are derived and behave like fs (313.637672ms)
-✔ [processGroupSignal:false] writeFileBytes carries a byte a UTF-8 round trip does not survive (216.43792ms)
-(node:2576969) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
-✔ [processGroupSignal:false] realpath, mkdir, removeTree, unlink and chmod are derived and behave like fs (547.756728ms)
-✔ a provider refuses a corrupted write payload — it never lands a partial file (55.431882ms)
-✖ a bound handle names its remote on exec, readFile and writeFile (85.246252ms)
-✖ an id is bound to one remote for its whole lifetime — follow-on frames carry none (66.925841ms)
-✖ ENOREMOTE is id-addressed: one dead remote is not a dead connection (72.295971ms)
-✖ a request that names NO remote is refused, never answered from a default (62.738164ms)
-﹣ a provider that does not advertise remotes is never handed a remoteId (0.909435ms) # cc-side fixture, pinned to the reference provider: asserts what CC does, not what a provider does
-✔ msFromNanos is pinned to LITERALS, because every other observation of it mutates with it (0.26236ms)
-✔ msFromFindStamp parses two integers out of the stamp, never one float (0.258245ms)
-✔ parseFindLines refuses a malformed entry rather than skipping it (1.026288ms)
-✖ describeRemote round-trips the mirror root and the exclude list (64.872449ms)
-﹣ a provider without the capability advertises no mirror (0.473736ms) # cc-side fixture, pinned to the reference provider: asserts what CC does, not what a provider does
-✖ describeRemote for an unknown remote is an id-addressed ENOREMOTE (71.416412ms)
-✔ an unrecognised field on a remoteDescriptor is ignored, not an error (58.846352ms)
-✔ a write above the protocol cap is refused before a byte reaches the wire (239.058205ms)
-﹣ CC_CONFORMANCE_REMOTE_ID binds the fixture handle, and an explicit remoteId still wins (0.488448ms) # asserts the unset default
-✔ an empty or blank CC_CONFORMANCE_REMOTE_ID is unbound, never bound to a nonsense target (0.668865ms)
-✔ a bound run is refused at the handshake unless the provider serves that target (1.449443ms)
-✔ the third-party capability assertion tolerates a superset but pins the toggle (16.582571ms)
-﹣ every code in the taxonomy is produced by a real failure somewhere in this suite (0.190449ms) # counts producers across rows a third-party run skips
-ℹ tests 63
+
+✖ [all capabilities] the handshake carries the protocol version, the provider name and the capabilities (104.098509ms)
+✔ [all capabilities] exec runs argv and shell forms, and reports stdout, stderr and the exit code (364.08849ms)
+✖ [all capabilities] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (137.209351ms)
+✔ [all capabilities] a command that cannot start carries the provider's own error code (114.267762ms)
+✔ [all capabilities] a timeout is exit 124 with timedOut set (307.792216ms)
+✖ [all capabilities] process-group signalling: the capability decides whether grandchildren are reachable (367.718682ms)
+✔ [all capabilities] detach ends the operation and kills nothing; close kills as far as it reaches (1389.407397ms)
+✔ [all capabilities] a redirected background job outlives its command, in both capability configurations (952.016237ms)
+✔ [all capabilities] concurrent execs are multiplexed by id and never mix their output (448.406742ms)
+✔ [all capabilities] the exec output caps behave identically to the local runner (305.831481ms)
+✔ [all capabilities] stdin:'ignore' hands the command a closed stdin instead of a wait (141.349814ms)
+✔ [all capabilities] readFile and writeFile round-trip, including a payload past one chunk (273.332308ms)
+✔ [all capabilities] writeFile honours atomic and exclusive, and refuses the pair (271.79782ms)
+✔ [all capabilities] readFile reports absence, a directory, and an unreadable file (127.974097ms)
+✖ [all capabilities] a path that cannot resolve is ENAMETOOLONG or ELOOP, on the derived and the frame path (165.735967ms)
+✔ [all capabilities] a read above the protocol's per-file cap is refused, not streamed (196.383698ms)
+✔ [all capabilities] stat is derived from exec and matches what fs.stat reports (269.063377ms)
+✔ [all capabilities] readDir is derived from exec, reports kinds, and refuses a file (146.362575ms)
+✔ [all capabilities] a filename containing a newline OR A TAB is an ERROR, never a silently dropped entry (215.919019ms)
+✔ [all capabilities] lstat reports a SYMLINK as one, with its target, where stat cannot (197.084306ms)
+✔ [all capabilities] readlink, symlink and removeEntry are derived and behave like fs (256.026734ms)
+✔ [all capabilities] writeFileBytes carries a byte a UTF-8 round trip does not survive (194.654381ms)
+✔ [all capabilities] realpath, mkdir, removeTree, unlink and chmod are derived and behave like fs (412.225663ms)
+✔ [processGroupSignal:false] the handshake carries the protocol version, the provider name and the capabilities (100.049712ms)
+✔ [processGroupSignal:false] exec runs argv and shell forms, and reports stdout, stderr and the exit code (352.111292ms)
+✖ [processGroupSignal:false] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (148.50665ms)
+✔ [processGroupSignal:false] a command that cannot start carries the provider's own error code (117.867589ms)
+✔ [processGroupSignal:false] a timeout is exit 124 with timedOut set (309.2724ms)
+✔ [processGroupSignal:false] process-group signalling: the capability decides whether grandchildren are reachable (349.595884ms)
+✖ [processGroupSignal:false] detach ends the operation and kills nothing; close kills as far as it reaches (1394.852731ms)
+✔ [processGroupSignal:false] a redirected background job outlives its command, in both capability configurations (909.966216ms)
+✔ [processGroupSignal:false] concurrent execs are multiplexed by id and never mix their output (386.078338ms)
+✔ [processGroupSignal:false] the exec output caps behave identically to the local runner (268.339561ms)
+✔ [processGroupSignal:false] stdin:'ignore' hands the command a closed stdin instead of a wait (95.845962ms)
+✔ [processGroupSignal:false] readFile and writeFile round-trip, including a payload past one chunk (161.835202ms)
+✔ [processGroupSignal:false] writeFile honours atomic and exclusive, and refuses the pair (205.670893ms)
+✔ [processGroupSignal:false] readFile reports absence, a directory, and an unreadable file (139.430242ms)
+✖ [processGroupSignal:false] a path that cannot resolve is ENAMETOOLONG or ELOOP, on the derived and the frame path (176.574794ms)
+✔ [processGroupSignal:false] a read above the protocol's per-file cap is refused, not streamed (129.790146ms)
+✔ [processGroupSignal:false] stat is derived from exec and matches what fs.stat reports (161.202031ms)
+✔ [processGroupSignal:false] readDir is derived from exec, reports kinds, and refuses a file (161.51843ms)
+✔ [processGroupSignal:false] a filename containing a newline OR A TAB is an ERROR, never a silently dropped entry (153.638785ms)
+✔ [processGroupSignal:false] lstat reports a SYMLINK as one, with its target, where stat cannot (141.011355ms)
+✔ [processGroupSignal:false] readlink, symlink and removeEntry are derived and behave like fs (182.43306ms)
+✔ [processGroupSignal:false] writeFileBytes carries a byte a UTF-8 round trip does not survive (155.600976ms)
+✔ [processGroupSignal:false] realpath, mkdir, removeTree, unlink and chmod are derived and behave like fs (299.771969ms)
+✔ a provider refuses a corrupted write payload — it never lands a partial file (108.977991ms)
+✖ a bound handle names its remote on exec, readFile and writeFile (45.694848ms)
+✖ an id is bound to one remote for its whole lifetime — follow-on frames carry none (37.900575ms)
+✖ ENOREMOTE is id-addressed: one dead remote is not a dead connection (51.515814ms)
+✖ a request that names NO remote is refused, never answered from a default (65.638974ms)
+﹣ a provider that does not advertise remotes is never handed a remoteId (0.465197ms) # cc-side fixture, pinned to the reference provider: asserts what CC does, not what a provider does
+✔ msFromNanos is pinned to LITERALS, because every other observation of it mutates with it (0.128894ms)
+✔ msFromFindStamp parses two integers out of the stamp, never one float (0.086762ms)
+✔ parseFindLines refuses a malformed entry rather than skipping it (0.456768ms)
+✖ describeRemote round-trips the mirror root and the exclude list (38.325665ms)
+﹣ a provider without the capability advertises no mirror (0.368583ms) # cc-side fixture, pinned to the reference provider: asserts what CC does, not what a provider does
+✖ describeRemote for an unknown remote is an id-addressed ENOREMOTE (39.60737ms)
+✔ an unrecognised field on a remoteDescriptor is ignored, not an error (55.831977ms)
+✖ listRemotes enumerates exactly the configured targets; an unconfigured id refuses ENOREMOTE (66.882523ms)
+✖ listRemotes is one id among many: answered beside an in-flight exec, never disturbing it (64.194441ms)
+﹣ a provider without remoteListing refuses listRemotes EUNSUPPORTED, id-addressed (0.585527ms) # a provider that does not advertise a capability may ignore its frame (§2); the reference provider refuses it
+✔ a provider that does not advertise remoteListing skips the enumeration rows, never fails them (0.337148ms)
+✔ a write above the protocol cap is refused before a byte reaches the wire (131.66717ms)
+﹣ CC_CONFORMANCE_REMOTE_ID binds the fixture handle, and an explicit remoteId still wins (0.146607ms) # asserts the unset default
+✔ an empty or blank CC_CONFORMANCE_REMOTE_ID is unbound, never bound to a nonsense target (0.169479ms)
+✔ a bound run is refused at the handshake unless the provider serves that target (0.304422ms)
+✔ the third-party capability assertion tolerates a superset but pins the toggle (8.598015ms)
+﹣ every code in the taxonomy is produced by a real failure somewhere in this suite (0.069384ms) # counts producers across rows a third-party run skips
+ℹ tests 69
 ℹ suites 0
-ℹ pass 48
-ℹ fail 11
+ℹ pass 49
+ℹ fail 15
 ℹ cancelled 0
-ℹ skipped 4
+ℹ skipped 5
 ℹ todo 0
-ℹ duration_ms 17022.358677
+ℹ duration_ms 14696.157638
 
 ✖ failing tests:
 
-test at tests/systems-protocol-conformance.test.mjs:92:3
-✖ [all capabilities] the handshake carries the protocol version, the provider name and the capabilities (78.701297ms)
+test at tests/systems-protocol-conformance.test.mjs:93:3
+✖ [all capabilities] the handshake carries the protocol version, the provider name and the capabilities (104.098509ms)
   AssertionError [ERR_ASSERTION]: processGroupSignal: the flag the provider was launched with is what it advertises
   
   false !== true
   
       at strict.wrapped [as equal] (file://<checkout>/tests/dom-assert-tripwire.mjs:79:17)
       at assertNegotiatedCapabilities (file://<checkout>/tests/referenceProviderHarness.mjs:177:12)
-      at file://<checkout>/tests/systems-protocol-conformance.test.mjs:95:7
-      at withSystem (file://<checkout>/tests/systems-protocol-conformance.test.mjs:64:18)
+      at file://<checkout>/tests/systems-protocol-conformance.test.mjs:96:7
+      at withSystem (file://<checkout>/tests/systems-protocol-conformance.test.mjs:65:18)
       at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-      at async TestContext.<anonymous> (file://<checkout>/tests/systems-protocol-conformance.test.mjs:93:5)
+      at async TestContext.<anonymous> (file://<checkout>/tests/systems-protocol-conformance.test.mjs:94:5)
       at async Test.run (node:internal/test_runner/test:1332:7)
       at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
     generatedMessage: false,
@@ -105,8 +101,8 @@ test at tests/systems-protocol-conformance.test.mjs:92:3
     diff: 'simple'
   }
 
-test at tests/systems-protocol-conformance.test.mjs:125:3
-✖ [all capabilities] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (183.490035ms)
+test at tests/systems-protocol-conformance.test.mjs:126:3
+✖ [all capabilities] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (137.209351ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
   + actual - expected
   
@@ -114,10 +110,10 @@ test at tests/systems-protocol-conformance.test.mjs:125:3
   - 'OCI runtime exec failed: exec failed: unable to start container process: exec: "definitely-not-a-real-binary-xyz": executable file not found in $PATH'
   
       at strict.wrapped [as equal] (file://<checkout>/tests/dom-assert-tripwire.mjs:79:17)
-      at file://<checkout>/tests/systems-protocol-conformance.test.mjs:131:14
+      at file://<checkout>/tests/systems-protocol-conformance.test.mjs:132:14
       at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-      at async withSystem (file://<checkout>/tests/systems-protocol-conformance.test.mjs:64:12)
-      at async TestContext.<anonymous> (file://<checkout>/tests/systems-protocol-conformance.test.mjs:126:5)
+      at async withSystem (file://<checkout>/tests/systems-protocol-conformance.test.mjs:65:12)
+      at async TestContext.<anonymous> (file://<checkout>/tests/systems-protocol-conformance.test.mjs:127:5)
       at async Test.run (node:internal/test_runner/test:1332:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
     generatedMessage: true,
@@ -128,8 +124,8 @@ test at tests/systems-protocol-conformance.test.mjs:125:3
     diff: 'simple'
   }
 
-test at tests/systems-protocol-conformance.test.mjs:158:3
-✖ [all capabilities] process-group signalling: the capability decides whether grandchildren are reachable (385.738542ms)
+test at tests/systems-protocol-conformance.test.mjs:159:3
+✖ [all capabilities] process-group signalling: the capability decides whether grandchildren are reachable (367.718682ms)
   AssertionError [ERR_ASSERTION]: with group reach the result claims nothing was left behind
   + actual - expected
   
@@ -137,9 +133,9 @@ test at tests/systems-protocol-conformance.test.mjs:158:3
   - undefined
   
       at strict.wrapped [as equal] (file://<checkout>/tests/dom-assert-tripwire.mjs:79:17)
-      at file://<checkout>/tests/systems-protocol-conformance.test.mjs:177:18
-      at async withSystem (file://<checkout>/tests/systems-protocol-conformance.test.mjs:64:12)
-      at async TestContext.<anonymous> (file://<checkout>/tests/systems-protocol-conformance.test.mjs:159:5)
+      at file://<checkout>/tests/systems-protocol-conformance.test.mjs:178:18
+      at async withSystem (file://<checkout>/tests/systems-protocol-conformance.test.mjs:65:12)
+      at async TestContext.<anonymous> (file://<checkout>/tests/systems-protocol-conformance.test.mjs:160:5)
       at async Test.run (node:internal/test_runner/test:1332:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
     generatedMessage: false,
@@ -150,8 +146,35 @@ test at tests/systems-protocol-conformance.test.mjs:158:3
     diff: 'simple'
   }
 
-test at tests/systems-protocol-conformance.test.mjs:125:3
-✖ [processGroupSignal:false] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (188.741642ms)
+test at tests/systems-protocol-conformance.test.mjs:397:3
+✖ [all capabilities] a path that cannot resolve is ENAMETOOLONG or ELOOP, on the derived and the frame path (165.735967ms)
+  AssertionError [ERR_ASSERTION]: readFile of an over-long name: expected ENAMETOOLONG, got ENOENT (<scratch>/cc-conformance-yLxGnG/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx: No such file or directory)
+  + actual - expected
+  
+  + 'ENOENT'
+  - 'ENAMETOOLONG'
+       ^
+  
+      at strict.wrapped [as equal] (file://<checkout>/tests/dom-assert-tripwire.mjs:79:17)
+      at expectCode (file://<checkout>/tests/systems-protocol-conformance.test.mjs:42:10)
+      at Object.<anonymous> (file://<checkout>/tests/systems-protocol-conformance.test.mjs:407:16)
+      at expectedException (node:assert:578:17)
+      at expectsError (node:assert:703:21)
+      at strict.rejects (node:assert:769:3)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async file://<checkout>/tests/systems-protocol-conformance.test.mjs:406:7
+      at async withSystem (file://<checkout>/tests/systems-protocol-conformance.test.mjs:65:12)
+      at async TestContext.<anonymous> (file://<checkout>/tests/systems-protocol-conformance.test.mjs:398:5) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 'ENOENT',
+    expected: 'ENAMETOOLONG',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests/systems-protocol-conformance.test.mjs:126:3
+✖ [processGroupSignal:false] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (148.50665ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
   + actual - expected
   
@@ -159,10 +182,10 @@ test at tests/systems-protocol-conformance.test.mjs:125:3
   - 'OCI runtime exec failed: exec failed: unable to start container process: exec: "definitely-not-a-real-binary-xyz": executable file not found in $PATH'
   
       at strict.wrapped [as equal] (file://<checkout>/tests/dom-assert-tripwire.mjs:79:17)
-      at file://<checkout>/tests/systems-protocol-conformance.test.mjs:131:14
+      at file://<checkout>/tests/systems-protocol-conformance.test.mjs:132:14
       at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-      at async withSystem (file://<checkout>/tests/systems-protocol-conformance.test.mjs:64:12)
-      at async TestContext.<anonymous> (file://<checkout>/tests/systems-protocol-conformance.test.mjs:126:5)
+      at async withSystem (file://<checkout>/tests/systems-protocol-conformance.test.mjs:65:12)
+      at async TestContext.<anonymous> (file://<checkout>/tests/systems-protocol-conformance.test.mjs:127:5)
       at async Test.run (node:internal/test_runner/test:1332:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
     generatedMessage: true,
@@ -173,14 +196,14 @@ test at tests/systems-protocol-conformance.test.mjs:125:3
     diff: 'simple'
   }
 
-test at tests/systems-protocol-conformance.test.mjs:206:3
-✖ [processGroupSignal:false] detach ends the operation and kills nothing; close kills as far as it reaches (1537.34399ms)
+test at tests/systems-protocol-conformance.test.mjs:207:3
+✖ [processGroupSignal:false] detach ends the operation and kills nothing; close kills as far as it reaches (1394.852731ms)
   AssertionError [ERR_ASSERTION]: without group reach close cannot get to it either
   
   false !== true
   
       at strict.wrapped [as equal] (file://<checkout>/tests/dom-assert-tripwire.mjs:79:17)
-      at TestContext.<anonymous> (file://<checkout>/tests/systems-protocol-conformance.test.mjs:260:16)
+      at TestContext.<anonymous> (file://<checkout>/tests/systems-protocol-conformance.test.mjs:261:16)
       at async Test.run (node:internal/test_runner/test:1332:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
     generatedMessage: false,
@@ -191,19 +214,35 @@ test at tests/systems-protocol-conformance.test.mjs:206:3
     diff: 'simple'
   }
 
-test at tests/systems-protocol-conformance.test.mjs:682:1
-✖ a bound handle names its remote on exec, readFile and writeFile (85.246252ms)
-  Error [SystemError]: provider exited (code 2)
-      at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:202:62)
-      at ChildProcess.emit (node:events:509:28)
-      at ChildProcess._handle.onexit (node:internal/child_process:295:12) {
-    code: 'ETRANSPORT',
-    exitCode: null,
-    stderr: null
+test at tests/systems-protocol-conformance.test.mjs:397:3
+✖ [processGroupSignal:false] a path that cannot resolve is ENAMETOOLONG or ELOOP, on the derived and the frame path (176.574794ms)
+  AssertionError [ERR_ASSERTION]: readFile of an over-long name: expected ENAMETOOLONG, got ENOENT (<scratch>/cc-conformance-B2Zwkc/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx: No such file or directory)
+  + actual - expected
+  
+  + 'ENOENT'
+  - 'ENAMETOOLONG'
+       ^
+  
+      at strict.wrapped [as equal] (file://<checkout>/tests/dom-assert-tripwire.mjs:79:17)
+      at expectCode (file://<checkout>/tests/systems-protocol-conformance.test.mjs:42:10)
+      at Object.<anonymous> (file://<checkout>/tests/systems-protocol-conformance.test.mjs:407:16)
+      at expectedException (node:assert:578:17)
+      at expectsError (node:assert:703:21)
+      at strict.rejects (node:assert:769:3)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async file://<checkout>/tests/systems-protocol-conformance.test.mjs:406:7
+      at async withSystem (file://<checkout>/tests/systems-protocol-conformance.test.mjs:65:12)
+      at async TestContext.<anonymous> (file://<checkout>/tests/systems-protocol-conformance.test.mjs:398:5) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 'ENOENT',
+    expected: 'ENAMETOOLONG',
+    operator: 'strictEqual',
+    diff: 'simple'
   }
 
 test at tests/systems-protocol-conformance.test.mjs:704:1
-✖ an id is bound to one remote for its whole lifetime — follow-on frames carry none (66.925841ms)
+✖ a bound handle names its remote on exec, readFile and writeFile (45.694848ms)
   Error [SystemError]: provider exited (code 2)
       at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
@@ -213,8 +252,8 @@ test at tests/systems-protocol-conformance.test.mjs:704:1
     stderr: null
   }
 
-test at tests/systems-protocol-conformance.test.mjs:717:1
-✖ ENOREMOTE is id-addressed: one dead remote is not a dead connection (72.295971ms)
+test at tests/systems-protocol-conformance.test.mjs:726:1
+✖ an id is bound to one remote for its whole lifetime — follow-on frames carry none (37.900575ms)
   Error [SystemError]: provider exited (code 2)
       at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
@@ -224,8 +263,8 @@ test at tests/systems-protocol-conformance.test.mjs:717:1
     stderr: null
   }
 
-test at tests/systems-protocol-conformance.test.mjs:735:1
-✖ a request that names NO remote is refused, never answered from a default (62.738164ms)
+test at tests/systems-protocol-conformance.test.mjs:739:1
+✖ ENOREMOTE is id-addressed: one dead remote is not a dead connection (51.515814ms)
   Error [SystemError]: provider exited (code 2)
       at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
@@ -235,8 +274,8 @@ test at tests/systems-protocol-conformance.test.mjs:735:1
     stderr: null
   }
 
-test at tests/systems-protocol-conformance.test.mjs:866:1
-✖ describeRemote round-trips the mirror root and the exclude list (64.872449ms)
+test at tests/systems-protocol-conformance.test.mjs:757:1
+✖ a request that names NO remote is refused, never answered from a default (65.638974ms)
   Error [SystemError]: provider exited (code 2)
       at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
@@ -246,8 +285,41 @@ test at tests/systems-protocol-conformance.test.mjs:866:1
     stderr: null
   }
 
-test at tests/systems-protocol-conformance.test.mjs:898:1
-✖ describeRemote for an unknown remote is an id-addressed ENOREMOTE (71.416412ms)
+test at tests/systems-protocol-conformance.test.mjs:888:1
+✖ describeRemote round-trips the mirror root and the exclude list (38.325665ms)
+  Error [SystemError]: provider exited (code 2)
+      at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:202:62)
+      at ChildProcess.emit (node:events:509:28)
+      at ChildProcess._handle.onexit (node:internal/child_process:295:12) {
+    code: 'ETRANSPORT',
+    exitCode: null,
+    stderr: null
+  }
+
+test at tests/systems-protocol-conformance.test.mjs:920:1
+✖ describeRemote for an unknown remote is an id-addressed ENOREMOTE (39.60737ms)
+  Error [SystemError]: provider exited (code 2)
+      at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:202:62)
+      at ChildProcess.emit (node:events:509:28)
+      at ChildProcess._handle.onexit (node:internal/child_process:295:12) {
+    code: 'ETRANSPORT',
+    exitCode: null,
+    stderr: null
+  }
+
+test at tests/systems-protocol-conformance.test.mjs:998:1
+✖ listRemotes enumerates exactly the configured targets; an unconfigured id refuses ENOREMOTE (66.882523ms)
+  Error [SystemError]: provider exited (code 2)
+      at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:202:62)
+      at ChildProcess.emit (node:events:509:28)
+      at ChildProcess._handle.onexit (node:internal/child_process:295:12) {
+    code: 'ETRANSPORT',
+    exitCode: null,
+    stderr: null
+  }
+
+test at tests/systems-protocol-conformance.test.mjs:1046:1
+✖ listRemotes is one id among many: answered beside an in-flight exec, never disturbing it (64.194441ms)
   Error [SystemError]: provider exited (code 2)
       at ChildProcess.<anonymous> (file://<checkout>/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
@@ -258,6 +330,7 @@ test at tests/systems-protocol-conformance.test.mjs:898:1
   }
 
 hang-guard: 1/1 files reported, 0 killed, 0 leaked process(es) swept, stream ended cleanly, run cap not reached
-hang-guard: slowest files (limit 90000ms): systems-protocol-conformance.test.mjs 17018ms
+hang-guard: slowest files (limit 90000ms): systems-protocol-conformance.test.mjs 14693ms
 
 guardrail: peak concurrent fake-claude subprocesses = 0 (budget 12)
+
