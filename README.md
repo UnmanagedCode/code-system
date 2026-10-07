@@ -75,7 +75,7 @@ The launcher and the backend share **no in-memory state**: the launcher reads th
 
 See [`.wiki/decisions/architecture-shape.md`](.wiki/decisions/architecture-shape.md) for the source of truth and rationale.
 
-- **One cc System row per provider KIND, not per remote.** Two rows total — `docker` and `ssh` — each advertising `remotes`, `remoteDescriptors` **and `remoteListing`**, always. No cc surface enumerates remotes, so this plugin is the only catalog a user sees ([`.wiki/gotchas/remote-catalog.md`](.wiki/gotchas/remote-catalog.md)).
+- **One cc System row per provider KIND, not per remote.** Two rows total — `docker` and `ssh` — each advertising `remotes`, `remoteDescriptors` **and `remoteListing`**, always. cc enumerates the configured set through `listRemotes`; this plugin is the only place remotes are managed, and its cards list every record ([`.wiki/gotchas/remote-catalog.md`](.wiki/gotchas/remote-catalog.md)).
 - **System is a transport, not the remote system.** The cc System row is just how cc reaches a target. The real unit of identity is the remote/`remoteId`, and config is stored per `remoteId`.
 - **Ownership split:** the **launcher** owns execution; the **backend** owns config storage and the UI.
 - **Attach-only connect toggle.** Connecting to a remote never starts or stops a container.

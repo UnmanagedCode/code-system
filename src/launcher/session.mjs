@@ -760,7 +760,8 @@ export class Session {
   //
   // The reason is passed through verbatim, errno token and all, unlike the
   // gate's refusal: the token hazard is cc's exec-path re-parsers (`runGit`,
-  // `ProviderShell`), and no cc source sends `listRemotes`, so none reads this.
+  // `ProviderShell`), and cc's one `listRemotes` sender reports an error answer
+  // as a failed enumeration with the message as its reason, so none reads this.
   async #listRemotes(f) {
     const id = String(f.id);
     if (!this.#caps.remoteListing) {

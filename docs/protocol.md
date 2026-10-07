@@ -139,11 +139,13 @@ request naming it passes configuration.
   id that fails `remoteIdDefect` at launch: stderr + exit 2, before any frame.
 - **The `EUNKNOWN` reason is passed verbatim**, errno token included. The
   errno-token hazard (`.wiki/gotchas/refusal-message-errno-tokens.md`) is cc's
-  exec-path re-parsers, and no cc source sends `listRemotes`.
-- **No cc surface enumerates remotes yet.** cc carries the frame but nothing in
-  cc sends it, so the card UI and `list_remotes` remain the only catalog a user
-  reads — and they list **every** record, broken and switched-off ones
-  included, where `remoteList` carries only the configured set.
+  exec-path re-parsers; cc reports a `listRemotes` error answer as a failed
+  enumeration and shows the message as its reason.
+- **cc sends it** (`ProviderSystem.listRemotes`) for the `enumerate_remotes` MCP
+  tool and the project dialogs' *Remote* dropdown. A listed id is configured,
+  not necessarily reachable. The card UI and `list_remotes` list **every**
+  record, broken and switched-off ones included, where `remoteList` carries only
+  the configured set.
 
 ## `remoteId` routing
 
@@ -912,8 +914,9 @@ this document names the kind whenever it means one of them.
 `remoteId` charset: `^[a-z0-9][a-z0-9._-]{0,63}$`, never `.` or `..`. It is both
 a filename stem and the entire hand-off contract to a cc project's *Remote*
 field, so it must be human-typable and is **never renamed** once created — which
-is why the delete route warns: no cc surface enumerates remotes, so nothing else
-would tell the user which projects they just stranded.
+is why the delete route warns: cc's enumeration lists configured ids, not the
+projects that name them, so nothing else would tell the user which projects they
+just stranded.
 
 ## MCP surface
 
@@ -944,10 +947,8 @@ from, not transport failures.
 **The success channel is `text`, never `result`.** The conductor's bridge
 unwraps `{text}` into raw, **unescaped** text blocks; a `{result}` body is
 JSON-stringified into one block, which would escape every newline of the
-rendering. `meta` is omitted, and the consequence is visible to a caller: the
-conductor emits a literal `null` metadata block as `content[0]` and the
-rendering as `content[1]`. A single bare text block is not reachable from a
-plugin. See [`.wiki/gotchas/plugin-mcp-surface.md`](../.wiki/gotchas/plugin-mcp-surface.md).
+rendering. `text` is one string and `meta` is omitted, so the caller receives
+exactly one raw block carrying the rendering. See [`.wiki/gotchas/plugin-mcp-surface.md`](../.wiki/gotchas/plugin-mcp-surface.md).
 
 No `timeoutMs` is declared, so the conductor's default of 30000 ms applies.
 
