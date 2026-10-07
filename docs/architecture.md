@@ -549,7 +549,7 @@ renders `span.tip > button.tip-btn[aria-describedby] + span.tip-body[role=toolti
   (a mouse click toggles `.open` instead), and `.tip.open`.
 - **Escape or a click on the body** adds `.dismissed`, declared last so it beats
   the equal-specificity show rules. It holds until `focusout`, a `mouseenter` while
-  the tip is unfocused, or a click on the "?".
+  the tip is unfocused, a fresh `focusin`, or a click on the "?".
 - **Overflow:** `.tip-body` is absolutely positioned under `.tip-anchor`, so
   `.card:has(.form)` lifts the card's `overflow: hidden`.
 - **Tests:** `tests/render.test.mjs` (hint text only inside a linked tooltip, the

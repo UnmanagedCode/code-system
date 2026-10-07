@@ -843,6 +843,15 @@ test('a tooltip opens on click, closes on Escape, and resets on focusout', async
   tip.fire('mouseenter');
   assert.equal(is('dismissed'), false, 'a fresh unfocused hover re-arms it');
 
+  // Invariant: a body click blurs the "?" first, so Tab back to it must reveal the tip
+  // although the pointer never moved.
+  btn.click();
+  tip.fire('focusout');
+  body.click();
+  tip.fire('focusin');
+  assert.equal(is('dismissed'), false, 'a fresh focus clears a pointer dismissal');
+  tip.fire('focusout');
+
   // Invariant: Escape on a focused tip holds across the mouse crossing it.
   tip.fire('focusin');
   tip.fire('keydown', { key: 'Escape' });
@@ -850,6 +859,10 @@ test('a tooltip opens on click, closes on Escape, and resets on focusout', async
   tip.fire('mouseenter');
   tip.fire('mouseleave');
   assert.equal(is('dismissed'), true, 'a mouse crossing does not revive a dismissal while focus stays');
+
+  // Invariant: clicking the "?" after a dismissal re-opens the tip.
+  btn.click();
+  assert.equal(is('open') && !is('dismissed'), true, 'a "?" click re-opens after Escape');
 
   tip.fire('focusout');
   assert.equal(is('open') || is('dismissed'), false, 'focusout resets');

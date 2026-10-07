@@ -35,7 +35,7 @@ function el(tag, attrs = {}, ...children) {
 // Not `title`: that never shows on touch or keyboard focus. Show rules live in
 // styles.css; this only toggles `open` (tap) and `dismissed` (Escape or a click
 // on the body). A dismissal holds until focus leaves the tip, a fresh hover
-// begins while it is unfocused, or the "?" is clicked again.
+// begins while it is unfocused, a fresh focus arrives, or the "?" is clicked again.
 function tip(id, name, text) {
   const t = el('span', { class: 'tip' });
   const cl = t.classList;
@@ -47,7 +47,7 @@ function tip(id, name, text) {
   }, '?'));
   t.appendChild(el('span', { class: 'tip-body', role: 'tooltip', id, onclick: dismiss }, text));
   t.addEventListener('keydown', (e) => { if (e.key === 'Escape') dismiss(); });
-  t.addEventListener('focusin', () => { focused = true; });
+  t.addEventListener('focusin', () => { focused = true; cl.remove('dismissed'); });
   t.addEventListener('focusout', () => { focused = false; cl.remove('open'); cl.remove('dismissed'); });
   t.addEventListener('mouseenter', () => { if (!focused) cl.remove('dismissed'); });
   return t;

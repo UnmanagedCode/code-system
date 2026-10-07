@@ -19,7 +19,8 @@ trigger and the field's input point at it with `aria-describedby`. The descripto
   specificity, so source order is what makes Escape win (WCAG 1.4.13). A body
   click sets it too, because `:hover` would otherwise keep the tip shown. It is
   cleared by `focusout`, by `mouseenter` only while the tip is unfocused (so a
-  mouse crossing cannot revive a keyboard dismissal), or by clicking the "?".
+  mouse crossing cannot revive a keyboard dismissal), by a fresh `focusin` (a body
+  click blurs the "?" first, so Tab back must reveal the tip), or by clicking the "?".
 - **`.card:has(.form)` lifts `overflow: hidden`** so a tip near the card's bottom
   is not clipped.
 - **ssh Port/Password/Key file stay in the main block.** Moving them under
