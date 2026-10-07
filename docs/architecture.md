@@ -534,6 +534,26 @@ names on `:root`, status on `--green`/`--amber`/`--red` and never `--accent`, th
 accent fill on a form's submit only, the host's control radius and disabled
 treatment, and no raw colour functions.
 
+**Field explanations are tooltips** (`tip()` and `fieldHead()`, `frontend/app.js`).
+`formFor` prints no hint paragraph: each descriptor `hint`, the Remote id text, the
+mirror texts and the edit note's detail go through `tip(id, name, text)`, which
+renders `span.tip > button.tip-btn[aria-describedby] + span.tip-body[role=tooltip]`.
+
+- **Linking:** the field's own `<input>`/`<textarea>` carries the same
+  `aria-describedby` as the trigger (`<inputId>-tip`; `f-note-tip` for the edit
+  note), so a screen reader reads the hint from the input.
+- **Not `title`:** it never shows on touch or keyboard focus and cannot take the
+  palette.
+- **Show rules** (`styles.css`): `.tip:hover` only inside `@media (hover: hover)`
+  (a phone's sticky `:hover` would pin it open), `.tip-btn:focus-visible + .tip-body`
+  (a mouse click toggles `.open` instead), and `.tip.open`.
+- **Escape** adds `.dismissed`, declared last so it beats the equal-specificity
+  show rules; `focusout` and `mouseleave` reset it.
+- **Overflow:** `.tip-body` is absolutely positioned under `.tip-anchor`, so
+  `.card:has(.form)` lifts the card's `overflow: hidden`.
+- **Tests:** `tests/render.test.mjs` (hint text only inside a linked tooltip, the
+  open/dismiss/reset behaviour) and `tests/frontend-styles.test.mjs` (the rule contract).
+
 **The Advanced group** (`formFor`, `frontend/app.js`) is the first and only
 `<details>` in this UI, and it holds **two kinds of member**:
 

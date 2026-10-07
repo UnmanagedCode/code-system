@@ -204,6 +204,13 @@ Three further differences the mode really has, stated rather than glossed:
 If you need a `cd`, exported variables or a background job to survive, put them
 in a single command, or in a profile file on the target.
 
+## Field explanations
+
+The add and edit forms show only labels, inputs and buttons. Each field's
+explanation is behind the **?** beside its label: it opens on hover, on keyboard
+focus and on tap, and Escape dismisses it. The one warning kept visible is the
+edit form's *"Changing a connection value switches this remote off."*
+
 ## Advanced card settings
 
 Each card's **Advanced** group holds two kinds of setting, and they behave

@@ -156,6 +156,31 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 .field.check input { width: auto; flex: 0 0 auto; }
 .field.check label { font-size: 13px; color: var(--text); }
 
+/* A "?" tip beside a label (tip() in app.js). The body overlays what follows
+   the row instead of shifting the layout. Show: hover (only where hover is real,
+   or a phone's sticky :hover pins it open), keyboard focus, or a tap (.open).
+   .dismissed (Escape) must stay LAST: it ties the show rules on specificity. */
+.card:has(.form) { overflow: visible; }
+.field-head { display: flex; align-items: center; gap: 6px; }
+.tip-anchor { position: relative; }
+.tip { display: inline-flex; }
+.tip-btn {
+  width: 16px; height: 16px; padding: 0; border-radius: 50%;
+  background: var(--panel-2); color: var(--muted); border: 1px solid var(--border);
+  font-size: 11px; line-height: 1;
+}
+.tip-body {
+  display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 10; margin-top: 2px;
+  background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 8px; font-size: 12px; white-space: normal;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--bg) 70%, transparent);
+}
+.tip.open .tip-body, .tip-btn:focus-visible + .tip-body { display: block; }
+@media (hover: hover) {
+  .tip:hover .tip-body { display: block; }
+}
+.tip.dismissed .tip-body { display: none; }
+
 /* The Advanced group: open exactly when the mirror box is ticked — a stored
    mirror on edit, or a fresh create form for a kind that mirrors by default.
    The first and only <details> in this UI. */
@@ -169,7 +194,6 @@ details.advanced > summary {
 details.advanced > summary::-webkit-details-marker { display: none; }
 details.advanced > summary::before { content: '▸ '; }
 details.advanced[open] > summary::before { content: '▾ '; }
-details.advanced > .hint { font-size: 11px; color: var(--muted); }
 .form-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .form-actions .connect {
   background: var(--accent); color: #0a0c12;

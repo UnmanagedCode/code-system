@@ -30,6 +30,15 @@ class El {
     this.handlers = {};
     this.style = { setProperty: () => {} };
     this._text = '';
+    const has = c => this.className.split(/\s+/).includes(c);
+    const set = list => { this.className = list.join(' '); };
+    const list = () => this.className.split(/\s+/).filter(Boolean);
+    this.classList = {
+      add: c => { if (!has(c)) set([...list(), c]); },
+      remove: c => set(list().filter(x => x !== c)),
+      toggle: c => { if (has(c)) set(list().filter(x => x !== c)); else set([...list(), c]); },
+      contains: has,
+    };
   }
 
   set textContent(v) { this._text = String(v); this.children.length = 0; }
@@ -39,7 +48,8 @@ class El {
   replaceChildren(...c) { this.children = c; this._text = ''; }
   setAttribute(k, v) { this.attrs[k] = String(v); }
   addEventListener(type, fn) { (this.handlers[type] ??= []).push(fn); }
-  click() { for (const fn of this.handlers.click ?? []) fn({ target: this }); }
+  click() { this.fire('click'); }
+  fire(type, ev = {}) { for (const fn of this.handlers[type] ?? []) fn({ target: this, ...ev }); }
 
   // Everything rendered under this node, as one string.
   get text() {
@@ -52,6 +62,14 @@ class El {
     }
     return out;
   }
+}
+
+// Everything rendered under `root` EXCEPT tooltip bodies: what is on screen
+// without a hover, focus or tap.
+function visibleText(node) {
+  if (node.attrs?.role === 'tooltip') return '';
+  return [node._text ?? node.text ?? '',
+    ...(node.children ?? []).map(visibleText)].filter(Boolean).join(' ');
 }
 
 const SHELL_IDS = ['reg-pill', 'registration', 'updated', 'refresh', 'empty', 'remotes', 'add'];
@@ -186,6 +204,13 @@ async function mount(opts = {}) {
   return { byId, calls, cards: () => byId.get('remotes').children };
 }
 
+// The tooltip a field's input is described by, found through the input's own
+// `aria-describedby` — the same link a screen reader follows.
+const tooltipFor = (root, inputId) => {
+  const input = root.all(e => e.attrs.id === inputId)[0];
+  return root.all(e => e.attrs.role === 'tooltip' && e.attrs.id === input?.attrs['aria-describedby'])[0];
+};
+
 const cardFor = (cards, id) => cards.find(c => c.text.includes(id));
 
 // PINS: the render path RUNS, and produces one card per remote — including the
@@ -316,7 +341,7 @@ test('the add form renders one input per descriptor field, per kind', async () =
   assert.deepEqual(ids, ['f-id', 'f-label', 'f-container', 'f-user', 'f-mirror-on', 'f-mirror-root'],
     'docker is the first kind, and the Advanced group renders last — its advanced CONFIG field'
     + ' (Run as) at the top of the group, above the mirror form');
-  assert.match(tile.text, /the container/, "and the descriptor's hint is shown");
+  assert.match(tooltipFor(tile, 'f-container').text, /the container/, "and the descriptor's hint is in its tooltip");
 
   // Switching kind swaps the config fields for the other kind's, including its
   // optional one — which is marked optional rather than hidden.
@@ -341,7 +366,7 @@ test('Edit opens an inline form on its own card, pre-filled, and warns about the
     'the remoteId is NOT editable — it is never renamed once created');
   assert.equal(inputs.find(i => i.attrs.id === 'f-host').attrs.value, 'box', 'pre-filled');
   assert.equal(inputs.find(i => i.attrs.id === 'f-user').attrs.value, 'me');
-  assert.match(edited.text, /switches this remote off/);
+  assert.match(visibleText(edited), /switches this remote off/);
 
   // And no other card grew a form.
   for (const id of ['on-up', 'off-up']) {
@@ -746,11 +771,78 @@ test('Create posts the typed identity, and omits it entirely when left empty', a
 test('the edit note names Run as, and scopes its exemption to the mirror', async () => {
   const { cards } = await mount();
   cardFor(cards(), 'on-up').all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
-  const note = cardFor(cards(), 'on-up').all(e => e.className === 'note')[0];
+  const note = cardFor(cards(), 'on-up').all(e => e.classList.contains('note'))[0];
 
   assert.notEqual(note, undefined, 'the edit form carries its note');
-  assert.match(note.text, /Run as/, 'the identity is named as something that DOES switch the remote off');
-  assert.match(note.text, /mirror settings/, 'and the exemption is scoped to the mirror');
+  assert.match(visibleText(note), /^Changing a connection value switches this remote off\.\s*\?$/, 'one short line plus the "?"');
+  const body = note.all(e => e.attrs.role === 'tooltip')[0];
+  assert.match(body.text, /Run as/, 'the identity is named as something that DOES switch the remote off');
+  assert.match(body.text, /mirror settings/, 'and the exemption is scoped to the mirror');
+});
+
+// PINS: the form's prose lives ONLY in a tooltip linked to its input and to its
+// "?" trigger — nothing visible but labels and controls — for every hint the
+// form can print, on both kinds.
+test('the add form shows labels and inputs, and every hint only in a linked tooltip', async () => {
+  const { byId, cards } = await mount();
+  byId.get('add').click();
+  const REMOTE_ID_HINT = /^Lower-case letters, digits, dot, dash, underscore\./;
+
+  const check = (tile, fieldHints) => {
+    assert.equal(tile.all(e => e.classList.contains('hint')).length, 0, 'no .hint paragraph is rendered');
+    const shown = visibleText(tile);
+    // The fixture's bare 'optional' hint is also every optional label's suffix.
+    for (const h of fieldHints.filter(x => x.text !== 'optional')) {
+      assert.equal(shown.includes(h.text), false, `"${h.text}" is not visible`);
+    }
+    assert.doesNotMatch(shown, REMOTE_ID_HINT);
+    assert.doesNotMatch(shown, /asks for the mirror once per provider connection|session root becomes/);
+    for (const [inputId, hint] of [['f-id', REMOTE_ID_HINT], ...fieldHints.map((h, i) => [h.id, h.text])]) {
+      const body = tooltipFor(tile, inputId);
+      assert.notEqual(body, undefined, `${inputId} is described by a tooltip`);
+      assert.match(body.text, typeof hint === 'string' ? new RegExp(`^${hint}$`) : hint);
+      const btn = tile.all(e => e.classList.contains('tip-btn') && e.attrs['aria-describedby'] === body.attrs.id)[0];
+      assert.notEqual(btn, undefined, `${inputId}'s tooltip has a trigger`);
+      assert.match(btn.attrs['aria-label'], /^About \S/);
+    }
+  };
+  const hints = (...pairs) => pairs.map(([id, text]) => Object.assign(new String(text), { id, text }));
+
+  check(cards().at(-1), hints(['f-container', 'the container'], ['f-user', 'the identity']));
+  const body = tooltipFor(cards().at(-1), 'f-mirror-root');
+  assert.match(body.text, /session root becomes the image of this path/);
+  assert.match(tooltipFor(cards().at(-1), 'f-mirror-exclude').text, /^One absolute path per line/);
+  assert.match(tooltipFor(cards().at(-1), 'f-mirror-on').text, /Changing them does not switch this remote off\.$/);
+
+  const select = cards().at(-1).all(e => e.tagName === 'select')[0];
+  select.fire('change', { target: { value: 'ssh' } });
+  check(cards().at(-1), hints(['f-host', 'a Host alias'], ['f-user', 'optional']));
+});
+
+// PINS: the tip's behaviour — a tap toggles it, Escape dismisses it even while
+// hovered or focused, and leaving focus resets both states.
+test('a tooltip opens on click, closes on Escape, and resets on focusout', async () => {
+  const { byId, cards } = await mount();
+  byId.get('add').click();
+  const tip = cards().at(-1).all(e => e.classList.contains('tip'))[0];
+  const btn = tip.all(e => e.classList.contains('tip-btn'))[0];
+
+  btn.click();
+  assert.equal(tip.classList.contains('open'), true, 'click opens');
+  btn.click();
+  assert.equal(tip.classList.contains('open'), false, 'click again closes');
+
+  btn.click();
+  tip.fire('keydown', { key: 'Escape' });
+  assert.equal(tip.classList.contains('open'), false);
+  assert.equal(tip.classList.contains('dismissed'), true, 'Escape dismisses');
+
+  tip.fire('mouseleave');
+  assert.equal(tip.classList.contains('dismissed'), false, 'leaving the pointer re-arms it');
+  tip.fire('keydown', { key: 'Escape' });
+  btn.click();
+  tip.fire('focusout');
+  assert.equal(tip.classList.contains('open') || tip.classList.contains('dismissed'), false, 'focusout resets');
 });
 
 // PINS THE EDIT PATH FOR AN ADVANCED CONFIG FIELD, END TO END — the one path the
