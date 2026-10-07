@@ -515,8 +515,12 @@ test('Copy confirms only after the write actually resolves', async () => {
 
 const inputById = (root, id) => root.all(e => e.tagName === 'input' && e.attrs.id === id)[0];
 const detailsOf = root => root.all(e => e.tagName === 'details')[0];
-// The summary's state span, verbatim: its leading ' · ' separator is pinned, not normalised.
-const summaryOf = d => d.all(e => e.classList.contains('summary-state'))[0].text;
+// The <summary> element itself: the state must be visible with the group closed.
+const summaryEl = d => d.all(e => e.tagName === 'summary')[0];
+// Its state span, searched ONLY inside the <summary> and verbatim: the leading ' · ' separator is pinned, not normalised.
+const summaryOf = d => summaryEl(d).all(e => e.classList.contains('summary-state'))[0].text;
+// Its title: the summary's own text node, apart from the state span.
+const summaryTitleOf = d => summaryEl(d).children.find(c => !(c instanceof El)).text;
 const textareaOf = root => root.all(e => e.tagName === 'textarea')[0];
 
 // PINS: a new docker remote (the first kind, so the add form's default) starts
@@ -532,6 +536,7 @@ test('the add form for docker renders the Advanced group collapsed, ticked, pref
   const details = detailsOf(tile);
   assert.notEqual(details, undefined, 'the group is rendered');
   assert.equal('open' in details.attrs, false, 'collapsed on create, even with the box ticked');
+  assert.equal(summaryTitleOf(details), 'Advanced', 'the title');
   assert.equal(summaryOf(details), ' · mirror /',
     'and the summary states the mirror');
   assert.equal('checked' in inputById(tile, 'f-mirror-on').attrs, true);
@@ -639,6 +644,7 @@ test('the edit form for an unmirrored remote leaves the group collapsed and unti
 
   assert.equal('open' in detailsOf(edited).attrs, false);
   assert.equal('checked' in inputById(edited, 'f-mirror-on').attrs, false);
+  assert.equal(summaryTitleOf(detailsOf(edited)), 'Advanced');
   assert.equal(summaryOf(detailsOf(edited)), ' · no mirror');
   assert.equal(inputById(edited, 'f-mirror-root').attrs.value, MIRROR_DEFAULTS.root,
     'and ticking it would offer the defaults, not an empty root');
@@ -715,7 +721,7 @@ test('typing a mirror root updates the Advanced summary', async () => {
   const { byId, cards } = await mount();
   byId.get('add').click();
   const tile = cards().at(-1);
-  const summary = detailsOf(tile).all(e => e.classList.contains('summary-state'))[0];
+  const summary = summaryEl(detailsOf(tile)).all(e => e.classList.contains('summary-state'))[0];
 
   inputById(tile, 'f-mirror-root').fire('input', { target: { value: '/srv' } });
   assert.equal(summary.text, ' · mirror /srv');
