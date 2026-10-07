@@ -189,6 +189,42 @@ export function mirrorSummary(remote) {
   return `mirror ${m.root}`;
 }
 
+/**
+ * The Advanced group's summary line: its title plus the mirror state, so the
+ * state can be read without opening the group. Shares `mirrorPayload` and
+ * `mirrorSummary` with the card badge, so both speak one vocabulary.
+ * @param {{on:boolean, root:string, exclude:string}|null|undefined} formMirror
+ */
+export function advancedSummary(formMirror) {
+  const payload = mirrorPayload(formMirror);
+  if (payload === undefined) return 'Advanced';
+  if (payload === null) return 'Advanced · no mirror';
+  return `Advanced · ${payload.root === '' ? 'mirror (no root)' : mirrorSummary({ mirror: payload })}`;
+}
+
+/**
+ * Whether the edit form opens its Advanced group: an advanced config field holds
+ * a stored value, or the stored mirror is a custom one. A default or absent
+ * mirror stays collapsed — the summary line already states it.
+ * @param {{config?:Record<string,unknown>, storedSecrets?:string[], mirror?:unknown}} remote
+ * @param {{name:string, advanced?:boolean}[]} configFields
+ * @param {{root:string, exclude:string[]}|null|undefined} mirrorDefaults
+ */
+export function advancedOpenOnEdit(remote, configFields, mirrorDefaults) {
+  const stored = (name) => {
+    const v = remote?.config?.[name];
+    return (v !== undefined && v !== null && v !== '') || (remote?.storedSecrets ?? []).includes(name);
+  };
+  if ((configFields ?? []).some(f => f.advanced === true && stored(f.name))) return true;
+  const m = remote?.mirror;
+  if (!mirrorDefaults || !m || typeof m !== 'object') return false;
+  const same = m.root === mirrorDefaults.root
+    && Array.isArray(m.exclude) && Array.isArray(mirrorDefaults.exclude)
+    && m.exclude.length === mirrorDefaults.exclude.length
+    && m.exclude.every((x, i) => x === mirrorDefaults.exclude[i]);
+  return !same;
+}
+
 // ── routing ──────────────────────────────────────────────────────────
 //
 // QUERY STRING ONLY, never a path segment. cc's proxy guarantees a trailing

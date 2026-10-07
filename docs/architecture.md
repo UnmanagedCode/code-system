@@ -559,7 +559,7 @@ renders `span.tip > button.tip-btn[aria-describedby] + span.tip-body[role=toolti
 `<details>` in this UI, and it holds **two kinds of member**:
 
 - an **advanced config field** — a `configFields` entry from the kind's own
-  descriptor flagged `advanced: true` (docker's `user`). `formFor` builds every
+  descriptor flagged `advanced: true` (docker's `user`; ssh's `port`, `password`, `identityFile`). `formFor` builds every
   config field with one `configField(f)` helper and routes the flagged ones here
   instead of into the connection block; nothing else about them differs. It is
   validated and stored by the kind exactly like a connection field, which means
@@ -570,6 +570,16 @@ renders `span.tip > button.tip-btn[aria-describedby] + span.tip-body[role=toolti
   and `mirrorPayload` / `mirrorSummary` in `cardState.mjs` convert to the wire
   shape and to the card badge, for the same reason every other card decision
   lives there. **Changing it resets neither**: it names the same target.
+
+**Open state lives in the draft, not in the checkbox.** `draft.advancedOpen` is set
+once when the draft is built — `false` on create, `advancedOpenOnEdit(remote,
+configFields, mirrorDefaults)` on edit — and the `<details>` writes it back on
+`toggle`. A derived state would collapse the group under the cursor when the mirror
+checkbox re-renders. `advancedOpenOnEdit` is true for a stored advanced config value
+(or a name in `storedSecrets`) or a mirror that is not exactly `mirrorDefaults`
+(root, exclude order and content). `advancedSummary(formMirror)` builds the summary
+line from `mirrorPayload` / `mirrorSummary`; the root input rewrites the
+`.summary-state` span as it is typed. `advancedOpen` is never sent.
 
 The mirror prefill comes from the `mirrorDefaults` on `GET /api/remotes`, so the
 frontend holds no second copy of the default list — and the **mirror half alone**
@@ -624,7 +634,8 @@ serves. `kindDescriptors` builds its own object field by field rather than
 spreading the meta, which is what keeps a new `KIND_META` key off the wire by
 construction.
 
-A field may carry **`advanced: true`**. It is a **rendering flag only** —
+A field may carry **`advanced: true`** (docker's `user`; ssh's `port`, `password`,
+`identityFile`). It is a **rendering flag only** —
 `kindDescriptors()` passes `configFields` through by reference, the card form
 draws a flagged field inside its Advanced `<details>`, and the kind validates,
 stores and resets it exactly like any other config field.
