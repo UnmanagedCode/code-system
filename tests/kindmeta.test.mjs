@@ -107,13 +107,24 @@ test('every registered kind identifies its target with a required config field',
 // descriptor the form reads (always a boolean on the wire) and the predicate
 // POST /api/remotes reads. A kind with no flag — or no meta at all — is opted
 // out, never an error.
-test('docker mirrors by default and ssh does not', () => {
+test('docker and ssh mirror by default, and a kind with no meta does not', () => {
   const byKind = Object.fromEntries(kindDescriptors().map(d => [d.kind, d]));
   assert.equal(byKind.docker.mirrorByDefault, true);
-  assert.equal(byKind.ssh.mirrorByDefault, false);
+  assert.equal(byKind.ssh.mirrorByDefault, true);
   assert.equal(mirrorsByDefault('docker'), true);
-  assert.equal(mirrorsByDefault('ssh'), false);
+  assert.equal(mirrorsByDefault('ssh'), true);
   assert.equal(mirrorsByDefault('host'), false);
+});
+
+// PINS WHICH ssh FIELDS THE FORM TUCKS UNDER ADVANCED: the three optional
+// connection extras, and neither the target (`host`) nor `user`.
+test('the ssh descriptor flags exactly port, password and identityFile as advanced', () => {
+  const ssh = kindDescriptors().find(d => d.kind === 'ssh');
+  assert.deepEqual(ssh.configFields.filter(f => f.advanced === true).map(f => f.name),
+    ['port', 'password', 'identityFile']);
+  for (const name of ['host', 'user']) {
+    assert.equal(ssh.configFields.find(f => f.name === name).advanced, undefined, `${name} stays in the connection block`);
+  }
 });
 
 // PINS THE DESCRIPTOR ↔ VALIDATOR CONTRACT. The card's form is generated from
@@ -181,7 +192,10 @@ test('an advanced config field is still a real config field', () => {
     const full = Object.fromEntries(
       kindDescriptors().find(d => d.kind === kind).configFields
         .filter(f => !(f.name in EXCLUSIVE)).map(f => [f.name, SAMPLE[f.name]]));
-    const v = validate(full);
+    // A mutually exclusive field is validated with its counterpart swapped out.
+    const config = { ...full, [field.name]: SAMPLE[field.name] };
+    for (const [alt, instead] of Object.entries(EXCLUSIVE)) if (alt === field.name) delete config[instead];
+    const v = validate(config);
     assert.equal(v.ok, true, `${kind}.${field.name}: ${v.error}`);
     assert.equal(v.config[field.name], SAMPLE[field.name],
       `${kind}.${field.name}: an advanced field is stored like any other`);

@@ -10,7 +10,7 @@
 // under code-conductor.
 
 import {
-  GATE_COPY, baselineNotice, cardAlert, configPayload, gateStatus, mirrorPayload,
+  GATE_COPY, advancedOpenOnEdit, advancedSummary, baselineNotice, cardAlert, configPayload, gateStatus, mirrorPayload,
   mirrorSummary, probeStatus, routeFromSearch, searchForRoute,
 } from './cardState.mjs';
 
@@ -314,11 +314,12 @@ function formFor(mode) {
         + ' the label or the mirror settings, does not.')));
   }
 
-  // THE ADVANCED GROUP opens exactly when the draft's box is ticked:
-  // `<details>` is closed unless `open` is set. An already-mirrored remote opens
-  // it, so an operator editing one sees what is stored without hunting for it —
-  // and so does a create form for a kind with `mirrorByDefault`, so the operator
-  // sees the advertisement they are about to register.
+  // THE ADVANCED GROUP's open state lives in the draft, set once when the form
+  // opens (`advancedOpenOnEdit` on edit, closed on create) and written back by
+  // the `toggle` handler. It is NOT derived from the mirror checkbox: that
+  // checkbox re-renders, and a derived state would collapse the group under the
+  // cursor when the operator unticks it. The summary carries the mirror state, so
+  // a collapsed group still says what will be advertised.
   //
   // THE MIRROR HALF is absent entirely until GET /api/remotes has served
   // `mirrorDefaults` — see `mirrorDraft`. Offering that form with no defaults
@@ -333,8 +334,13 @@ function formFor(mode) {
   const excludeHead = m && fieldHead('f-mirror-exclude', 'Excluded paths',
     'One absolute path per line, in normal form. These are never carried across — the defaults'
     + ' are the target\'s pseudo-filesystems.');
-  if (m || advancedFields.length > 0) fields.push(el('details', { class: 'advanced', open: m?.on === true },
-    el('summary', {}, 'Advanced'),
+  const summaryText = advancedSummary(m).slice('Advanced'.length);
+  const summaryState = el('span', { class: 'summary-state' }, summaryText);
+  if (m || advancedFields.length > 0) fields.push(el('details', {
+    class: 'advanced', open: draft.advancedOpen === true,
+    ontoggle: e => { draft.advancedOpen = e.target.open === true; },
+  },
+    el('summary', {}, 'Advanced', summaryState),
     ...advancedFields.map(configField),
     ...(m ? [el('div', { class: 'field check tip-anchor' },
       el('input', {
@@ -354,7 +360,10 @@ function formFor(mode) {
       el('input', {
         id: 'f-mirror-root', value: m.root, placeholder: '/', disabled: !m.on,
         'aria-describedby': rootHead.describedBy,
-        oninput: e => { m.root = e.target.value; },
+        oninput: e => {
+          m.root = e.target.value;
+          summaryState.textContent = advancedSummary(m).slice('Advanced'.length);
+        },
       }),
     ),
     el('div', { class: 'field' },
@@ -484,6 +493,7 @@ function controls(remote) {
           storedSecrets: [...(remote.storedSecrets ?? [])],
           clear: {},
           mirror: mirrorDraft(remote, remote.kind),
+          advancedOpen: advancedOpenOnEdit(remote, descriptorFor(remote.kind)?.configFields, state.mirrorDefaults),
         };
         go({ view: 'edit', remoteId: remote.remoteId });
       },
@@ -637,7 +647,7 @@ function render() {
 document.getElementById('refresh').addEventListener('click', () => refresh());
 document.getElementById('add').addEventListener('click', () => {
   const kind = state.kinds[0]?.kind ?? 'docker';
-  state.draft = { remoteId: '', kind, label: '', config: {}, mirror: mirrorDraft(null, kind) };
+  state.draft = { remoteId: '', kind, label: '', config: {}, mirror: mirrorDraft(null, kind), advancedOpen: false };
   go({ view: 'add' });
 });
 

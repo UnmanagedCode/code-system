@@ -219,6 +219,7 @@ differently on save:
 | Member | Kind | Editing it |
 |---|---|---|
 | **Run as** (docker only) | a **connection config** field the kind validates and stores | **switches the remote off**, like any other config change |
+| **Port** / **Password** / **Private key file** (ssh only) | **connection config** fields the kind validates and stores | **switches the remote off**, like any other config change |
 | **Mirror root** / **Excluded paths** | operator policy beside the config | leaves the gate and the baseline alone |
 
 ### What a worker can see: the mirror root
@@ -229,14 +230,14 @@ is the whole geometry. What a new remote advertises depends on its kind:
 
 | Kind | A new remote advertises |
 |---|---|
-| **docker** | `/`, minus `DEFAULT_MIRROR`'s excludes (`src/mirror.mjs`) — the create form opens the Advanced group with the box ticked |
-| **ssh** | nothing — the box starts unticked |
+| **docker** | `/`, minus `DEFAULT_MIRROR`'s excludes (`src/mirror.mjs`) — the create form's box starts ticked |
+| **ssh** | the same `/` and excludes — the box starts ticked. On an ssh host `/` lets a worker read and edit anywhere that ssh user can, which is wider than a container: untick the box or narrow the root for a host you do not want imaged whole |
 
 - **The kind default applies at registration only.** `POST /api/remotes` applies
   it when the request omits `mirror`. A stored record is never re-defaulted: a
   remote whose stored mirror is `null` keeps advertising nothing until an
   operator ticks the box, and a `PATCH` keeps what is stored.
-- **Untick the box on the create form** to register a docker remote without a
+- **Untick the box on the create form** to register a remote without a
   mirror — the form sends an explicit `mirror: null`.
 
 Each card's **Advanced** group sets the mirror per remote. With *"Advertise a
@@ -248,13 +249,18 @@ session root is the local image of.
 | **Mirror root** | the path cc's session root becomes the image of, so a worker can read and edit anywhere under it. Defaults to `/` — the whole target |
 | **Excluded paths** | prefixes cc never carries across, one absolute path per line. Defaults to the target's pseudo-filesystems (`/proc`, `/dev`, `/sys`) — the exact list is `DEFAULT_MIRROR` in `src/mirror.mjs`, served to the form over `GET /api/remotes` |
 
-- **The group opens exactly when the box is ticked**: on edit, when the remote
-  already advertises a mirror; on create, when the chosen kind mirrors by default
-  (docker). Changing the create form's **Kind** re-applies that kind's default.
+- **The group's open state is the operator's.** It starts collapsed on create for
+  every kind, and its summary states the mirror (`Advanced · mirror /`,
+  `Advanced · no mirror`), updating as the box is ticked or the root is typed. On
+  edit it starts open when an advanced config value is stored (Port, Password,
+  Private key file, Run as) or the stored mirror is **custom** (a root or exclude
+  list other than `DEFAULT_MIRROR`); a default or absent mirror stays collapsed.
+  Opening or closing it holds across redraws. Changing the create form's **Kind**
+  re-applies that kind's mirror default.
   **These three fields are absent entirely** until the card list's first fetch
   returns, since the defaults they prefill from are served by the backend and the
   form holds no copy of them — the Advanced group itself still renders, carrying
-  **Run as**, and a remote created in that state omits `mirror`, so it gets its
+  its advanced config fields, and a remote created in that state omits `mirror`, so it gets its
   kind's default.
 - **Paths must be absolute and already in normal form.** `/app/`, `/a/./b` and
   `/a/../b` are refused in the form, because code-conductor refuses to normalise

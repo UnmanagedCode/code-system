@@ -69,8 +69,9 @@ Do not assume parity when reading one against the other.
 - The **defaults** (`/`, and `/proc` `/dev` `/sys`) come from §11's
   `remoteDescriptors` row, not from us. They live once in `DEFAULT_MIRROR`
   (`src/mirror.mjs`) and are served to the form over REST.
-- **docker registers mirrored; ssh does not.** The switch is
-  `KIND_META.mirrorByDefault` (`src/launcher/kinds/docker.mjs`), read by
+- **docker and ssh both register mirrored.** The switch is
+  `KIND_META.mirrorByDefault` (`src/launcher/kinds/docker.mjs`,
+  `src/launcher/kinds/ssh.mjs`), read by
   `mirrorsByDefault` for `POST /api/remotes` and served on the kind descriptor
   for the create form. It applies **at registration only**, and only when the
   body OMITS `mirror`; an explicit `mirror: null` registers without a mirror.

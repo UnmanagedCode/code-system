@@ -23,8 +23,7 @@ trigger and the field's input point at it with `aria-describedby`. The descripto
   click blurs the "?" first, so Tab back must reveal the tip), or by clicking the "?".
 - **`.card:has(.form)` lifts `overflow: hidden`** so a tip near the card's bottom
   is not clipped.
-- **ssh Port/Password/Key file stay in the main block.** Moving them under
-  Advanced needs `advanced: true` in the ssh descriptor, a backend change, and
-  would put auth fields beside mirror policy.
+- **ssh Port/Password/Key file sit under Advanced.** See
+  [advanced-group.md](advanced-group.md).
 - The edit note keeps its consequence ("switches this remote off") visible; only
   the detail is in a tip.

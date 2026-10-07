@@ -18,6 +18,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { kindDescriptors } from '../src/launcher/kinds/index.mjs';
 
 // ── the stub ─────────────────────────────────────────────────────────
 
@@ -102,6 +103,8 @@ function installDom(clipboard) {
 
 // ── the fixture: one remote per row of the gate x probe table ────────
 
+const REAL_SSH = kindDescriptors().find(k => k.kind === 'ssh');
+
 const KINDS = [
   {
     kind: 'docker',
@@ -115,7 +118,8 @@ const KINDS = [
       { name: 'user', label: 'Run as', required: false, advanced: true, placeholder: 'node', hint: 'the identity' },
     ],
   },
-  { kind: 'ssh', label: 'SSH hosts', mirrorByDefault: false, configFields: [{ name: 'host', label: 'Host', required: true, placeholder: 'my-box', hint: 'a Host alias' }, { name: 'user', label: 'User', required: false, placeholder: '', hint: 'optional' }] },
+  // The SHIPPED ssh descriptor, so the pins below track its real `advanced` flags.
+  REAL_SSH,
 ];
 
 // Served by the backend from src/mirror.mjs; the Advanced group's MIRROR FIELDS
@@ -124,6 +128,11 @@ const KINDS = [
 const MIRROR_DEFAULTS = { root: '/', exclude: ['/proc', '/dev', '/sys'] };
 const STORED_MIRROR = { root: '/srv/app', exclude: ['/proc', '/srv/app/tmp'] };
 
+const SSH_PLAIN = {
+  remoteId: 'ssh-plain', kind: 'ssh', label: 'Plain', enabled: false,
+  config: { host: 'h' }, mirror: null, baseline: { state: 'unknown', fingerprint: null, missing: [], checkedAt: null },
+  reachability: { connected: false, detail: 'no master', fingerprint: null },
+};
 const okBaseline = { state: 'ok', fingerprint: 'f', missing: [], checkedAt: 'x' };
 const unknownBaseline = { state: 'unknown', fingerprint: null, missing: [], checkedAt: null };
 
@@ -349,7 +358,7 @@ test('the add form renders one input per descriptor field, per kind', async () =
   for (const fn of select.handlers.change ?? []) fn({ target: { value: 'ssh' } });
   const after = cards().at(-1);
   assert.deepEqual(after.all(e => e.tagName === 'input').map(i => i.attrs.id),
-    ['f-id', 'f-label', 'f-host', 'f-user', 'f-mirror-on', 'f-mirror-root']);
+    ['f-id', 'f-label', 'f-host', 'f-user', 'f-port', 'f-password', 'f-identityFile', 'f-mirror-on', 'f-mirror-root']);
   assert.match(after.text, /User \(optional\)/);
 });
 
@@ -362,7 +371,7 @@ test('Edit opens an inline form on its own card, pre-filled, and warns about the
 
   const edited = cardFor(cards(), 'ssh-down');
   const inputs = edited.all(e => e.tagName === 'input');
-  assert.deepEqual(inputs.map(i => i.attrs.id), ['f-label', 'f-host', 'f-user', 'f-mirror-on', 'f-mirror-root'],
+  assert.deepEqual(inputs.map(i => i.attrs.id), ['f-label', 'f-host', 'f-user', 'f-port', 'f-password', 'f-identityFile', 'f-mirror-on', 'f-mirror-root'],
     'the remoteId is NOT editable — it is never renamed once created');
   assert.equal(inputs.find(i => i.attrs.id === 'f-host').attrs.value, 'box', 'pre-filled');
   assert.equal(inputs.find(i => i.attrs.id === 'f-user').attrs.value, 'me');
@@ -506,20 +515,25 @@ test('Copy confirms only after the write actually resolves', async () => {
 
 const inputById = (root, id) => root.all(e => e.tagName === 'input' && e.attrs.id === id)[0];
 const detailsOf = root => root.all(e => e.tagName === 'details')[0];
+// The stub joins sibling nodes with a space the real DOM does not have.
+const summaryOf = d => d.all(e => e.tagName === 'summary')[0].text.replace(/\s+/g, ' ');
 const textareaOf = root => root.all(e => e.tagName === 'textarea')[0];
 
 // PINS: a new docker remote (the first kind, so the add form's default) starts
-// with the kind's `mirrorByDefault` — the group OPEN, the box ticked, the fields
-// enabled — so the operator sees the advertisement they are about to register,
-// and it carries the DEFAULTS SERVED BY THE BACKEND rather than a frontend copy.
-test('the add form for docker renders the Advanced group open, ticked, prefilled from the served defaults', async () => {
+// collapsed whatever its mirror default, with the box ticked and the fields
+// enabled, prefilled from the DEFAULTS SERVED BY THE BACKEND rather than a
+// frontend copy; the summary states the mirror so the collapsed group still
+// says what Create will register.
+test('the add form for docker renders the Advanced group collapsed, ticked, prefilled from the served defaults', async () => {
   const { byId, cards } = await mount();
   byId.get('add').click();
   const tile = cards().at(-1);
 
   const details = detailsOf(tile);
   assert.notEqual(details, undefined, 'the group is rendered');
-  assert.equal('open' in details.attrs, true, 'and open: the default is visible before Create');
+  assert.equal('open' in details.attrs, false, 'collapsed on create, even with the box ticked');
+  assert.equal(summaryOf(details), 'Advanced · mirror /',
+    'and the summary states the mirror');
   assert.equal('checked' in inputById(tile, 'f-mirror-on').attrs, true);
   assert.equal(inputById(tile, 'f-mirror-root').attrs.value, MIRROR_DEFAULTS.root);
   assert.equal(textareaOf(tile).text, MIRROR_DEFAULTS.exclude.join('\n'),
@@ -529,20 +543,57 @@ test('the add form for docker renders the Advanced group open, ticked, prefilled
 });
 
 // PINS THAT THE ADD BUTTON DRAFTS THE MIRROR FOR THE FIRST SERVED KIND, not for
-// a hardcoded docker: with ssh served first, the fresh add form opens unticked.
-test('the add form drafts the mirror for the first served kind, so ssh-first opens unticked', async () => {
+// a hardcoded docker: with ssh served first, the fresh add form is ssh's, ticked
+// (ssh mirrors by default too) and collapsed.
+test('the add form drafts the mirror for the first served kind, so ssh-first opens ticked and collapsed', async () => {
   const { byId, cards } = await mount({ remotes: [], kinds: [KINDS[1], KINDS[0]] });
   byId.get('add').click();
   const tile = cards().at(-1);
 
   assert.notEqual(inputById(tile, 'f-host'), undefined, 'the form is ssh\'s');
-  assert.equal('checked' in inputById(tile, 'f-mirror-on').attrs, false, 'unticked: ssh does not mirror by default');
+  assert.equal('checked' in inputById(tile, 'f-mirror-on').attrs, true, 'ticked: ssh mirrors by default');
   assert.equal('open' in detailsOf(tile).attrs, false, 'and collapsed');
+});
+
+// PINS THE SHIPPED ssh CREATE FORM: only the connection fields sit outside the
+// <details>; Port, Password and Key file are inside it, closed, with the mirror
+// ticked and the summary reading it.
+test('the ssh add form keeps Port, Password and Key file inside the collapsed Advanced group', async () => {
+  const { byId, cards } = await mount({ remotes: [], kinds: [KINDS[1], KINDS[0]] });
+  byId.get('add').click();
+  const tile = cards().at(-1);
+  const details = detailsOf(tile);
+  const inside = new Set(details.all(e => e.tagName === 'input').map(i => i.attrs.id));
+  const outside = tile.all(e => e.tagName === 'input').map(i => i.attrs.id).filter(id => !inside.has(id));
+
+  assert.deepEqual(outside, ['f-id', 'f-label', 'f-host', 'f-user']);
+  for (const id of ['f-port', 'f-password', 'f-identityFile']) assert.equal(inside.has(id), true, `${id} is inside`);
+  assert.equal('open' in details.attrs, false);
+  assert.equal('checked' in inputById(tile, 'f-mirror-on').attrs, true);
+  assert.equal(summaryOf(details), 'Advanced · mirror /');
+});
+
+// PINS THE WIRE of an untouched ssh Create: the ticked default leaves as the
+// served mirror, and the three advanced config fields are omitted, not sent blank.
+test('Create of an untouched ssh form posts the default mirror and no advanced config keys', async () => {
+  const { byId, cards, calls } = await mount({ remotes: [], kinds: [KINDS[1], KINDS[0]] });
+  byId.get('add').click();
+  const tile = cards().at(-1);
+  inputById(tile, 'f-id').fire('input', { target: { value: 'box' } });
+  inputById(tile, 'f-host').fire('input', { target: { value: 'h' } });
+  tile.all(e => e.tagName === 'button' && e.text === 'Create')[0].click();
+  await settle2();
+
+  const body = calls.find(c => c.method === 'POST' && c.path === 'api/remotes')?.body;
+  assert.notEqual(body, undefined, 'the POST really happened');
+  assert.deepEqual(body, {
+    remoteId: 'box', kind: 'ssh', config: { host: 'h' }, mirror: { root: '/', exclude: ['/proc', '/dev', '/sys'] },
+  });
 });
 
 // PINS THE KIND <select> WIRING for the mirror half: switching kind re-derives
 // the draft from the NEW kind's descriptor, before the re-render reads it. ssh
-// does not mirror by default; switching back to docker ticks the box again.
+// mirrors by default too; both kinds start ticked and collapsed.
 test('switching the add form\'s kind re-derives the mirror default', async () => {
   const { byId, cards } = await mount();
   byId.get('add').click();
@@ -554,17 +605,17 @@ test('switching the add form\'s kind re-derives the mirror default', async () =>
 
   const ssh = choose('ssh');
   assert.equal('open' in detailsOf(ssh).attrs, false, 'ssh: collapsed');
-  assert.equal('checked' in inputById(ssh, 'f-mirror-on').attrs, false, 'ssh: unticked');
-  assert.equal('disabled' in inputById(ssh, 'f-mirror-root').attrs, true, 'ssh: fields disabled');
+  assert.equal('checked' in inputById(ssh, 'f-mirror-on').attrs, true, 'ssh: ticked');
+  assert.equal('disabled' in inputById(ssh, 'f-mirror-root').attrs, false, 'ssh: fields enabled');
 
   const docker = choose('docker');
-  assert.equal('checked' in inputById(docker, 'f-mirror-on').attrs, true, 'docker: ticked again');
-  assert.equal('open' in detailsOf(docker).attrs, true);
+  assert.equal('checked' in inputById(docker, 'f-mirror-on').attrs, true, 'docker: ticked');
+  assert.equal('open' in detailsOf(docker).attrs, false, 'docker: collapsed');
 });
 
 // PINS: an operator editing an already-mirrored remote SEES what is stored,
-// without hunting for it — the one case where the group must be open.
-test('the edit form for a mirrored remote opens the group, ticked and pre-filled', async () => {
+// without hunting for it: a CUSTOM mirror opens the group (STORED_MIRROR is one).
+test('the edit form for a custom-mirrored remote opens the group, ticked and pre-filled', async () => {
   const { cards } = await mount();
   cardFor(cards(), 'ssh-down').all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
   const edited = cardFor(cards(), 'ssh-down');
@@ -577,27 +628,66 @@ test('the edit form for a mirrored remote opens the group, ticked and pre-filled
 });
 
 // PINS THE OTHER HALF: a remote that opted out gets a collapsed, unticked group
-// on edit — the form must not imply an advertisement that is not stored. `off-up`
-// is a DOCKER remote, so this also pins that the kind's `mirrorByDefault` applies
-// to the create form only: a stored `null` is never re-defaulted in the UI.
+// on edit — the form must not imply an advertisement that is not stored — and its
+// summary says `no mirror`. `ssh-null` is an ssh remote with nothing advanced.
+// The kind's `mirrorByDefault` applies to the create form only: a stored `null`
+// is never re-defaulted in the UI.
 test('the edit form for an unmirrored remote leaves the group collapsed and unticked', async () => {
-  const { cards } = await mount();
-  cardFor(cards(), 'off-up').all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
-  const edited = cardFor(cards(), 'off-up');
+  const { cards } = await mount({ remotes: [SSH_PLAIN] });
+  cardFor(cards(), 'ssh-plain').all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
+  const edited = cardFor(cards(), 'ssh-plain');
 
   assert.equal('open' in detailsOf(edited).attrs, false);
   assert.equal('checked' in inputById(edited, 'f-mirror-on').attrs, false);
+  assert.equal(summaryOf(detailsOf(edited)), 'Advanced · no mirror');
   assert.equal(inputById(edited, 'f-mirror-root').attrs.value, MIRROR_DEFAULTS.root,
     'and ticking it would offer the defaults, not an empty root');
+});
+
+// PINS THE EDIT-OPEN PREDICATE END TO END: a stored Port, key file, stored
+// password, or a custom mirror opens the group; a default mirror stays collapsed
+// with its state in the summary; a docker Run as with no mirror now opens it.
+test('the edit form opens Advanced for a stored advanced value or custom mirror, and not for a default one', async () => {
+  const opens = async (remote) => {
+    const { cards } = await mount({ remotes: [remote] });
+    cardFor(cards(), remote.remoteId).all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
+    return detailsOf(cardFor(cards(), remote.remoteId));
+  };
+  const open = d => 'open' in d.attrs;
+
+  assert.equal(open(await opens({ ...SSH_PLAIN, config: { host: 'h', port: '2222' } })), true, 'stored port');
+  assert.equal(open(await opens({ ...SSH_PLAIN, config: { host: 'h', identityFile: '/k' } })), true, 'stored key file');
+  assert.equal(open(await opens({ ...SSH_PLAIN, storedSecrets: ['password'] })), true, 'stored password');
+  assert.equal(open(await opens({ ...SSH_PLAIN, mirror: STORED_MIRROR })), true, 'custom mirror');
+  assert.equal(open(await opens(REMOTES.find(r => r.remoteId === 'off-up'))), true, 'docker Run as, no mirror');
+
+  const dflt = await opens({ ...SSH_PLAIN, mirror: MIRROR_DEFAULTS });
+  assert.equal(open(dflt), false, 'the default mirror stays collapsed');
+  assert.equal(summaryOf(dflt), 'Advanced · mirror /');
+});
+
+// PINS THAT AN UNCHANGED EDIT SAVES WHAT IS STORED: moving Port into Advanced
+// changes where it renders, not the PATCH body — dropping it would erase the
+// port and switch the remote off.
+test('Save of an unchanged ssh remote with a stored port re-sends the stored record', async () => {
+  const remote = { ...SSH_PLAIN, config: { host: 'h', port: '2222' }, mirror: STORED_MIRROR };
+  const { cards, calls } = await mount({ remotes: [remote] });
+  cardFor(cards(), 'ssh-plain').all(e => e.tagName === 'button' && e.text === 'Edit')[0].click();
+  cardFor(cards(), 'ssh-plain').all(e => e.tagName === 'button' && e.text === 'Save')[0].click();
+  await settle2();
+
+  const body = calls.find(c => c.method === 'PATCH' && c.path === 'api/remotes/ssh-plain')?.body;
+  assert.deepEqual(body, { label: 'Plain', config: { host: 'h', port: '2222' }, mirror: STORED_MIRROR });
 });
 
 // PINS THE CHECKBOX WIRING, both directions: it writes the draft and
 // re-renders, so the fields follow the box. A handler that re-rendered before
 // writing would leave them in the old state for a frame and lose the click.
-// Driven from ssh (unticked) for the tick, and from docker (ticked) for the untick.
+// The group's open state is the operator's (`toggle` writes the draft), not the box's.
 test('the box re-renders the mirror fields enabled when ticked, disabled when unticked', async () => {
   const { byId, cards } = await mount();
   byId.get('add').click();
+  detailsOf(cards().at(-1)).fire('toggle', { target: { open: true } });
   const toggle = (checked) => {
     const box = inputById(cards().at(-1), 'f-mirror-on');
     for (const fn of box.handlers.change ?? []) fn({ target: { checked } });
@@ -615,7 +705,23 @@ test('the box re-renders the mirror fields enabled when ticked, disabled when un
   assert.equal('checked' in inputById(ticked, 'f-mirror-on').attrs, true);
   assert.equal('disabled' in inputById(ticked, 'f-mirror-root').attrs, false);
   assert.equal('disabled' in textareaOf(ticked).attrs, false);
-  assert.equal('open' in detailsOf(ticked).attrs, true, 'and the group stays open across the re-render');
+  assert.equal('open' in detailsOf(unticked).attrs, true, 'the group the operator opened stays open when the box is unticked');
+  assert.equal('open' in detailsOf(ticked).attrs, true, 'and across the re-render that ticks it again');
+});
+
+// PINS THAT THE SUMMARY TRACKS THE FORM: typing a root rewrites the state in the
+// summary without a re-render, and a cleared root says so rather than "mirror ".
+test('typing a mirror root updates the Advanced summary', async () => {
+  const { byId, cards } = await mount();
+  byId.get('add').click();
+  const tile = cards().at(-1);
+  const summary = detailsOf(tile).all(e => e.tagName === 'summary')[0];
+  const read = () => summary.text.replace(/\s+/g, ' ');
+
+  inputById(tile, 'f-mirror-root').fire('input', { target: { value: '/srv' } });
+  assert.equal(read(), 'Advanced · mirror /srv');
+  inputById(tile, 'f-mirror-root').fire('input', { target: { value: '' } });
+  assert.equal(read(), 'Advanced · mirror (no root)');
 });
 
 // PINS THAT THE VALUE ACTUALLY LEAVES, in all three docker shapes: the
@@ -800,7 +906,7 @@ test('the add form shows labels and inputs, and every hint only in a linked tool
     for (const [inputId, hint] of [['f-id', REMOTE_ID_HINT], ...fieldHints.map((h, i) => [h.id, h.text])]) {
       const body = tooltipFor(tile, inputId);
       assert.notEqual(body, undefined, `${inputId} is described by a tooltip`);
-      assert.match(body.text, typeof hint === 'string' ? new RegExp(`^${hint}$`) : hint);
+      assert.match(body.text, hint instanceof RegExp ? hint : new RegExp(`^${String(hint).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
       const btn = tile.all(e => e.classList.contains('tip-btn') && e.attrs['aria-describedby'] === body.attrs.id)[0];
       assert.notEqual(btn, undefined, `${inputId}'s tooltip has a trigger`);
       assert.match(btn.attrs['aria-label'], /^About \S/);
@@ -816,7 +922,7 @@ test('the add form shows labels and inputs, and every hint only in a linked tool
 
   const select = cards().at(-1).all(e => e.tagName === 'select')[0];
   select.fire('change', { target: { value: 'ssh' } });
-  check(cards().at(-1), hints(['f-host', 'a Host alias'], ['f-user', 'optional']));
+  check(cards().at(-1), hints(...REAL_SSH.configFields.map(f => [`f-${f.name}`, f.hint])));
 });
 
 // PINS: the tip's behaviour — a tap toggles it; Escape or a body click dismisses
@@ -922,14 +1028,7 @@ test('Edit sends the retyped identity, and can clear it', async () => {
 
 // ── a secret config field (ssh's password) ───────────────────────────
 
-const SECRET_SSH = {
-  kind: 'ssh', label: 'SSH hosts', mirrorByDefault: false,
-  configFields: [
-    { name: 'host', label: 'Host', required: true, placeholder: 'my-box', hint: 'a Host alias' },
-    { name: 'user', label: 'User', required: false, placeholder: '', hint: 'optional' },
-    { name: 'password', label: 'Password', required: false, secret: true, hint: 'stored unencrypted' },
-  ],
-};
+const SECRET_SSH = REAL_SSH;
 const pwRemote = (storedSecrets) => ({
   remoteId: 'pw-box', kind: 'ssh', label: 'Pw box', enabled: false,
   config: { host: '10.0.0.5', user: 'dev' }, storedSecrets, mirror: null, baseline: unknownBaseline,

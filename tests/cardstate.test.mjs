@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import { kindDescriptors } from '../src/launcher/kinds/index.mjs';
 import {
   GATE_COPY, baselineNotice, cardAlert, configPayload, gateStatus, mirrorPayload,
-  mirrorSummary, probeStatus, routeFromSearch, searchForRoute,
+  mirrorSummary, probeStatus, advancedOpenOnEdit, advancedSummary, routeFromSearch, searchForRoute,
 } from '../frontend/cardState.mjs';
 
 const remote = (over = {}) => ({
@@ -232,4 +232,37 @@ test('configPayload omits blanks, never trims a secret, and sends null for a cle
   assert.deepEqual(configPayload({ host: 'box', password: 'new' }, { password: true }, secrets),
     { host: 'box', password: 'new' }, 'a typed replacement wins over a clear tick');
   assert.deepEqual(configPayload({ host: 'box' }, { password: false }, secrets), { host: 'box' });
+});
+
+// PINS the Advanced summary vocabulary: no mirror half, unticked, ticked, and a
+// ticked box with a cleared root each read differently, so the collapsed group
+// states what Create will register.
+test('advancedSummary states the mirror, and says so when there is no root', () => {
+  assert.equal(advancedSummary(null), 'Advanced');
+  assert.equal(advancedSummary({ on: false, root: '/', exclude: '' }), 'Advanced · no mirror');
+  assert.equal(advancedSummary({ on: true, root: ' /srv ', exclude: '' }), 'Advanced · mirror /srv');
+  assert.equal(advancedSummary({ on: true, root: '', exclude: '' }), 'Advanced · mirror (no root)');
+});
+
+// PINS the edit-open rule: only a stored advanced value or a mirror that is not
+// exactly the served default opens the group; a default or absent mirror does not.
+test('advancedOpenOnEdit opens for a stored advanced value or a non-default mirror only', () => {
+  const fields = kindDescriptors().find(d => d.kind === 'ssh').configFields;
+  const D = { root: '/', exclude: ['/proc', '/dev', '/sys'] };
+  const open = (r, defaults = D) => advancedOpenOnEdit({ config: { host: 'h' }, mirror: null, ...r }, fields, defaults);
+
+  assert.equal(open({}), false, 'nothing stored');
+  assert.equal(open({ mirror: { ...D, exclude: [...D.exclude] } }), false, 'the default mirror');
+  assert.equal(open({ config: { host: 'h', port: '22' } }), true, 'port');
+  assert.equal(open({ config: { host: 'h', identityFile: '/k' } }), true, 'key file');
+  assert.equal(open({ config: { host: 'h', port: '' } }), false, 'a blank value is not stored');
+  assert.equal(open({ storedSecrets: ['password'] }), true, 'stored password');
+  assert.equal(open({ config: { host: 'h', user: 'me' } }), false, 'user is not advanced for ssh');
+  assert.equal(open({ mirror: { root: '/srv', exclude: D.exclude } }), true, 'custom root');
+  assert.equal(open({ mirror: { root: '/', exclude: ['/proc'] } }), true, 'custom exclude');
+  assert.equal(open({ mirror: { root: '/', exclude: ['/dev', '/proc', '/sys'] } }), true, 'reordered exclude');
+  assert.equal(open({ mirror: { root: '/', exclude: 'x' } }), true, 'malformed exclude');
+  assert.equal(open({ mirror: { root: '/srv', exclude: [] } }, null), false, 'no served defaults: no mirror half to open for');
+  const docker = kindDescriptors().find(d => d.kind === 'docker').configFields;
+  assert.equal(advancedOpenOnEdit({ config: { container: 'c', user: 'node' }, mirror: null }, docker, D), true, 'docker Run as');
 });

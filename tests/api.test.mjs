@@ -433,6 +433,10 @@ test('GET /kinds serves one descriptor per registered kind, with its form', asyn
   const byName = Object.fromEntries(docker.configFields.map(f => [f.name, f]));
   assert.equal(byName.user.advanced, true, 'docker `user` is rendered in Advanced');
   assert.equal('advanced' in byName.container, false, 'and `container` is a connection field');
+  const ssh = res.body.kinds.find(k => k.kind === 'ssh');
+  assert.deepEqual(ssh.configFields.filter(f => f.advanced === true).map(f => f.name), ['port', 'password', 'identityFile']);
+  assert.equal(ssh.mirrorByDefault, true, 'ssh registers mirrored, like docker');
+  assert.equal(docker.mirrorByDefault, true);
   // GET /health keeps its PLAIN kind list: the conductor's liveness probe has
   // no use for descriptors.
   assert.deepEqual((await call('GET', '/health')).body.kinds, ['docker', 'ssh']);
@@ -649,13 +653,34 @@ test('POST with a custom root or custom excludes stores exactly that', async (t)
   }
 });
 
-// PINS THE OPT-IN: a kind without `mirrorByDefault` (ssh) still advertises
-// nothing when the registration omits `mirror`.
-test('POST of an ssh remote that omits mirror still stores null', async (t) => {
+// PINS THE ssh DEFAULT: ssh sets `mirrorByDefault` too, so an omitted `mirror`
+// stores DEFAULT_MIRROR — in the answer and on disk.
+test('POST of an ssh remote that omits mirror stores DEFAULT_MIRROR', async (t) => {
   const { call, store } = await withApi(t);
+  const expected = { root: DEFAULT_MIRROR.root, exclude: [...DEFAULT_MIRROR.exclude] };
   const made = await call('POST', '/remotes', { remoteId: 'box', kind: 'ssh', config: { host: 'box' } });
   assert.equal(made.status, 201);
+  assert.deepEqual(made.body.remote.mirror, expected);
+  assert.deepEqual((await stored(store, 'box')).mirror, expected);
+});
+
+// PINS: an explicit `null` still wins over ssh's default.
+test('POST of an ssh remote with mirror: null stores null', async (t) => {
+  const { call, store } = await withApi(t);
+  const made = await call('POST', '/remotes', { remoteId: 'box', kind: 'ssh', config: { host: 'box' }, mirror: null });
+  assert.equal(made.status, 201);
   assert.equal(made.body.remote.mirror, null);
+  assert.equal((await stored(store, 'box')).mirror, null);
+});
+
+// PINS NO RE-DEFAULTING OF EXISTING ssh REMOTES: a stored null survives a PATCH
+// that omits `mirror`.
+test('a PATCH that omits mirror keeps a stored null on ssh', async (t) => {
+  const { call, store } = await withApi(t);
+  await call('POST', '/remotes', { remoteId: 'box', kind: 'ssh', config: { host: 'box' }, mirror: null });
+  const patched = await call('PATCH', '/remotes/box', { label: 'Renamed' });
+  assert.equal(patched.status, 200);
+  assert.equal(patched.body.remote.mirror, null);
   assert.equal((await stored(store, 'box')).mirror, null);
 });
 

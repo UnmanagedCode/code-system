@@ -49,6 +49,9 @@ export const SSH_ENV = 'CODE_SYSTEM_SSH';
 export const KIND_META = {
   label: 'SSH hosts',
   identityField: 'host',
+  // A mirror of the whole host is the useful default, as for a container. Applied AT
+  // REGISTRATION ONLY (`mirrorsByDefault`).
+  mirrorByDefault: true,
   configFields: [
     {
       name: 'host',
@@ -56,11 +59,12 @@ export const KIND_META = {
       required: true,
       placeholder: 'my-box',
       hint: 'A `Host` alias from the ssh config of whoever runs the plugin. HostName, User,'
-        + ' IdentityFile and ProxyJump live in that file. With a password or key file below, a plain'
+        + ' IdentityFile and ProxyJump live in that file. With a password or key file under Advanced, a plain'
         + ' hostname or IP works too.',
     },
     {
       name: 'port',
+      advanced: true,
       label: 'Port',
       required: false,
       placeholder: '22',
@@ -77,6 +81,7 @@ export const KIND_META = {
     },
     {
       name: 'password',
+      advanced: true,
       label: 'Password',
       required: false,
       secret: true,
@@ -85,6 +90,7 @@ export const KIND_META = {
     },
     {
       name: 'identityFile',
+      advanced: true,
       label: 'Private key file',
       required: false,
       placeholder: '/home/me/.ssh/id_ed25519',
