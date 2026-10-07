@@ -29,6 +29,42 @@ function el(tag, attrs = {}, ...children) {
   return e;
 }
 
+// A "?" beside a label that opens the field's explanation. The body is always
+// in the DOM (display:none until shown), so `aria-describedby` on the trigger
+// AND on the field's input lets a screen reader read it without visiting the "?".
+// Not `title`: that never shows on touch or keyboard focus. Show rules live in
+// styles.css; this only toggles `open` (tap) and `dismissed` (Escape or a click
+// on the body). A dismissal holds until focus leaves the tip, a fresh hover
+// begins while it is unfocused, a fresh focus arrives, or the "?" is clicked again.
+function tip(id, name, text) {
+  const t = el('span', { class: 'tip' });
+  const cl = t.classList;
+  let focused = false;
+  const dismiss = () => { cl.remove('open'); cl.add('dismissed'); };
+  t.appendChild(el('button', {
+    type: 'button', class: 'tip-btn', 'aria-label': `About ${name}`, 'aria-describedby': id,
+    onclick: () => { cl.remove('dismissed'); cl.toggle('open'); },
+  }, '?'));
+  t.appendChild(el('span', { class: 'tip-body', role: 'tooltip', id, onclick: dismiss }, text));
+  t.addEventListener('keydown', (e) => { if (e.key === 'Escape') dismiss(); });
+  t.addEventListener('focusin', () => { focused = true; cl.remove('dismissed'); });
+  t.addEventListener('focusout', () => { focused = false; cl.remove('open'); cl.remove('dismissed'); });
+  t.addEventListener('mouseenter', () => { if (!focused) cl.remove('dismissed'); });
+  return t;
+}
+
+// The label row of a field: the label with its tip, or the bare label when
+// there is no hint. Returns the row and the id the field's input must describe.
+function fieldHead(inputId, labelText, hint) {
+  const label = el('label', { for: inputId }, labelText);
+  if (!hint) return { head: label, describedBy: undefined };
+  const id = `${inputId}-tip`;
+  return {
+    head: el('div', { class: 'field-head tip-anchor' }, label, tip(id, labelText, hint)),
+    describedBy: id,
+  };
+}
+
 const state = {
   remotes: [],
   kinds: [],
@@ -191,15 +227,15 @@ function formFor(mode) {
 
   const fields = [];
   if (mode === 'create') {
+    const idHead = fieldHead('f-id', 'Remote id',
+      'Lower-case letters, digits, dot, dash, underscore. This is what goes in a project\'s'
+      + ' Remote field, and it can never be renamed.');
     fields.push(el('div', { class: 'field' },
-      el('label', { for: 'f-id' }, 'Remote id'),
+      idHead.head,
       el('input', {
-        id: 'f-id', value: draft.remoteId, placeholder: 'app-ctr',
+        id: 'f-id', value: draft.remoteId, placeholder: 'app-ctr', 'aria-describedby': idHead.describedBy,
         oninput: e => { draft.remoteId = e.target.value; },
       }),
-      el('span', { class: 'hint' },
-        'Lower-case letters, digits, dot, dash, underscore. This is what goes in a project\'s'
-        + ' Remote field, and it can never be renamed.'),
     ));
     fields.push(el('div', { class: 'field' },
       el('label', { for: 'f-kind' }, 'Kind'),
@@ -234,10 +270,12 @@ function formFor(mode) {
   // blank keeps it, the checkbox removes it.
   const configField = f => {
     const stored = f.secret === true && mode === 'edit' && (draft.storedSecrets ?? []).includes(f.name);
+    const { head, describedBy } = fieldHead(`f-${f.name}`,
+      `${f.label}${f.required ? '' : ' (optional)'}`, f.hint);
     return el('div', { class: 'field' },
-      el('label', { for: `f-${f.name}` }, `${f.label}${f.required ? '' : ' (optional)'}`),
+      head,
       el('input', {
-        id: `f-${f.name}`, value: f.secret === true ? undefined : (draft.config[f.name] ?? ''),
+        id: `f-${f.name}`, 'aria-describedby': describedBy, value: f.secret === true ? undefined : (draft.config[f.name] ?? ''),
         placeholder: stored ? 'stored — leave blank to keep' : (f.placeholder ?? ''),
         ...(f.secret === true ? { type: 'password', autocomplete: 'new-password' } : {}),
         oninput: e => { draft.config[f.name] = e.target.value; },
@@ -247,7 +285,6 @@ function formFor(mode) {
           type: 'checkbox', checked: draft.clear?.[f.name] === true,
           onchange: e => { (draft.clear ??= {})[f.name] = e.target.checked; },
         }), ` Clear stored ${f.label.toLowerCase()}`) : null,
-      f.hint ? el('span', { class: 'hint' }, f.hint) : null,
     );
   };
 
@@ -269,10 +306,12 @@ function formFor(mode) {
   // the identity, so this reset is the only thing that re-probes the tooling
   // baseline as the new user.
   if (mode === 'edit') {
-    fields.push(el('div', { class: 'note' },
-      'Changing a connection value — including a password, a key file or Run as — switches this remote off: a different'
-      + ' config may point at a different target, or run as a different user. Saving with every'
-      + ' value unchanged, or editing only the label or the mirror settings below, does not.'));
+    fields.push(el('div', { class: 'note tip-anchor' },
+      'Changing a connection value switches this remote off. ',
+      tip('f-note-tip', 'changing a connection value',
+        'Including a password, a key file or Run as: a different config may point at a different'
+        + ' target, or run as a different user. Saving with every value unchanged, or editing only'
+        + ' the label or the mirror settings, does not.')));
   }
 
   // THE ADVANCED GROUP opens exactly when the draft's box is ticked:
@@ -288,43 +327,44 @@ function formFor(mode) {
   // kind's own descriptor and has nothing to prefill from, so it must not
   // disappear while the defaults are in flight.
   const m = draft.mirror;
+  const rootHead = m && fieldHead('f-mirror-root', 'Mirror root',
+    'code-conductor\'s session root becomes the image of this path, so a worker can read and'
+    + ' edit anywhere under it. / is the whole target.');
+  const excludeHead = m && fieldHead('f-mirror-exclude', 'Excluded paths',
+    'One absolute path per line, in normal form. These are never carried across — the defaults'
+    + ' are the target\'s pseudo-filesystems.');
   if (m || advancedFields.length > 0) fields.push(el('details', { class: 'advanced', open: m?.on === true },
     el('summary', {}, 'Advanced'),
     ...advancedFields.map(configField),
-    ...(m ? [el('div', { class: 'field check' },
+    ...(m ? [el('div', { class: 'field check tip-anchor' },
       el('input', {
-        id: 'f-mirror-on', type: 'checkbox', checked: m.on,
+        id: 'f-mirror-on', type: 'checkbox', checked: m.on, 'aria-describedby': 'f-mirror-on-tip',
         // WRITTEN BEFORE render(), like the kind <select>: the re-render reads
         // the draft, so an update after it would be a frame late.
         onchange: (e) => { m.on = e.target.checked === true; render(); },
       }),
       el('label', { for: 'f-mirror-on' }, 'Advertise a mirror root to code-conductor'),
+      tip('f-mirror-on-tip', 'the mirror root',
+        'code-conductor asks for the mirror once per provider connection, so a change to these'
+        + ' three fields reaches an already-running session only after the System reconnects.'
+        + ' Changing them does not switch this remote off.'),
     ),
     el('div', { class: 'field' },
-      el('label', { for: 'f-mirror-root' }, 'Mirror root'),
+      rootHead.head,
       el('input', {
         id: 'f-mirror-root', value: m.root, placeholder: '/', disabled: !m.on,
+        'aria-describedby': rootHead.describedBy,
         oninput: e => { m.root = e.target.value; },
       }),
-      el('span', { class: 'hint' },
-        'code-conductor\'s session root becomes the image of this path, so a worker can read and'
-        + ' edit anywhere under it. / is the whole target.'),
     ),
     el('div', { class: 'field' },
-      el('label', { for: 'f-mirror-exclude' }, 'Excluded paths'),
+      excludeHead.head,
       // A TEXTAREA'S CONTENT IS A CHILD NODE, not a `value` attribute.
       el('textarea', {
-        id: 'f-mirror-exclude', rows: 3, disabled: !m.on,
+        id: 'f-mirror-exclude', rows: 3, disabled: !m.on, 'aria-describedby': excludeHead.describedBy,
         oninput: e => { m.exclude = e.target.value; },
       }, m.exclude),
-      el('span', { class: 'hint' },
-        'One absolute path per line, in normal form. These are never carried across — the defaults'
-        + ' are the target\'s pseudo-filesystems.'),
     ),
-    el('span', { class: 'hint' },
-      'code-conductor asks for the mirror once per provider connection, so a change to these'
-      + ' three fields reaches an already-running session only after the System reconnects.'
-      + ' Changing them does not switch this remote off.'),
     ] : []),
   ));
 

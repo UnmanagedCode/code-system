@@ -101,3 +101,22 @@ test('controls take the host 6px radius', () => {
 test('no raw colour functions: tints derive from tokens', () => {
   assert.doesNotMatch(css, /\b(rgba?|hsla?)\(/);
 });
+
+// Pins the tooltip contract tip() in app.js relies on: hidden until hover (only
+// where hover exists), focus or tap; Escape's `dismissed` beats every show rule
+// by coming last; and the "?" never takes the accent.
+test('tooltips: hidden by default, shown by hover/focus/tap, dismissible, never the accent', () => {
+  assert.ok(declares('.tip-body', 'display', 'none'));
+  assert.ok(declares('.tip.open .tip-body', 'display', 'block'));
+  assert.ok(declares('.tip-btn:focus-visible + .tip-body', 'display', 'block'));
+  assert.match(css, /@media\s*\(hover:\s*hover\)\s*\{\s*\.tip:hover \.tip-body\s*\{[^}]*display:\s*block/);
+  assert.equal(bodiesFor('.tip:hover .tip-body').length, 1, 'hover is declared once, inside the media query');
+  assert.ok(declares('.tip.dismissed .tip-body', 'display', 'none'));
+  const at = (sel) => css.indexOf(`${sel} {`);
+  for (const show of ['.tip:hover .tip-body', '.tip-btn:focus-visible + .tip-body']) {
+    assert.ok(at('.tip.dismissed .tip-body') > css.indexOf(show), `dismissed comes after ${show}`);
+  }
+  for (const sel of ['.tip-btn', '.tip-body']) {
+    for (const b of bodiesFor(sel)) assert.doesNotMatch(b, /var\(--accent\)/, `${sel} uses the accent`);
+  }
+});
