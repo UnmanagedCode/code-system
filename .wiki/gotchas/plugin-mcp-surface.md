@@ -16,7 +16,7 @@ could mean anything. A `scope` in a manifest is a claim about routing that
 nothing implements. (The real, enforced scope enum is on manifest
 `conventions`, not on `mcp`.)
 
-## 2. `{text}` is the only raw-text channel, and it always arrives behind a `null` block
+## 2. `{text}` is the only raw-text channel; the block count depends on `meta`
 
 A success body may be `{result}` or `{text, meta?}`:
 
@@ -25,11 +25,18 @@ A success body may be `{result}` or `{text, meta?}`:
 - `{text}` is unwrapped into raw, unescaped text blocks. `text` wins if both are
   sent.
 
-`{text}` goes through `textPayload(meta ?? null, text)`, so **omitting `meta`
-does not omit the block** — the caller sees the literal `null` as `content[0]`
-and the rendering as `content[1]`. A single bare text block is **unreachable
-from a plugin**: the one API that produces it (`textResult`) brands its return
-with a `Symbol`, which cannot survive the JSON hop from a child process.
+What the caller receives for `{text}`:
+
+- a string `text` with `meta` omitted or `null` → **exactly one raw block** (the
+  bridge returns `textResult`). `list_remotes` sends this shape.
+- a non-null `meta` → a compact-JSON meta block first, then one raw block per
+  `text` entry (`textPayload`).
+- a `text` **list** with no `meta` → still a literal `null` block as
+  `content[0]` before the entries. Send one string, or send `meta`.
+
+The one-block shape is live only once the conductor has restarted on a cc that
+carries it; before that restart a `{text}` with no `meta` still arrives with the
+`null` block as `content[0]` and the rendering as `content[1]`.
 
 ## 3. A schema outside the flat subset makes the plugin *invalid at load*
 

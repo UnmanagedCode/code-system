@@ -38,9 +38,10 @@ a longer token the word boundary will not isolate.
 
 **The one deliberate exception is the `listRemotes` refusal** (`#listRemotes`,
 `src/launcher/session.mjs`): its `EUNKNOWN` passes the `readdir` reason through
-verbatim, errno token and all. The hazard lives on cc's exec path, and no cc
-source sends `listRemotes`, so no re-parser reads that message. Re-check this the
-day cc gains a sender.
+verbatim, errno token and all. The hazard lives on cc's exec path; cc's one
+sender (`ProviderSystem.listRemotes`) reports an error answer as a failed
+enumeration and shows the message as its reason, so no exec-path re-parser reads
+it. Re-check if cc routes that message through one.
 
 `tests/gate.test.mjs` pins this for the gate refusal, and builds its list from
 the shipped `FS_ERROR_CODES` rather than a hand-copied one, so a new FS code

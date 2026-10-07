@@ -1,10 +1,11 @@
-# The plugin is the only catalog a user sees — and `listRemotes` is not one
+# The plugin lists every record; cc's enumeration lists only the configured set
 
 **What:** cc's protocol carries `listRemotes` → `remoteList` (`systems-protocol.md`
-§2.2), and both shipped providers answer it. But **no cc surface enumerates
-remotes**: nothing in cc sends the frame, and cc only knows the `remoteId` string
-a project's *Remote* field is set to. So the card UI and the `list_remotes` MCP
-tool remain the only places a user can read which remotes exist.
+"Remote enumeration"), both shipped providers answer it, and cc sends it: its
+`enumerate_remotes` MCP tool and the project dialogs' Remote dropdown read the
+answer. That list is configured, not necessarily reachable, and omits records
+that are broken or switched off. The card UI and the `list_remotes` MCP tool
+remain the only places a user can read every record.
 
 **Three read surfaces, different membership, one writer.** All three read the
 same store (`src/store.mjs`), and the card UI is the only writer — a remote is

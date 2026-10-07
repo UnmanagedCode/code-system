@@ -194,8 +194,8 @@ export function createApi(deps = {}) {
     try {
       const id = req.params.id;
       // A remoteId is a hand-off contract to every project that names it, and
-      // cc cannot enumerate remotes on its own — so deleting one silently
-      // strands those projects.
+      // cc's enumeration lists configured ids, not the projects that name
+      // them — so deleting one silently strands those projects.
       const referencing = await projectsNaming(id, deps.registration ?? {});
       const gone = await deleteRemote(id);
       if (!gone) return res.status(404).json({ error: `no remote '${id}'` });

@@ -278,9 +278,9 @@ test('the gate note renders only for a kind with copy, and never empty', async (
     /the gate is what stops them, not the connection/i, 'ssh card shows its one sentence');
 });
 
-// PINS: the hand-off contract is ON the card. No cc surface enumerates remotes,
-// so this string is the only thing connecting a project to this remote — and the
-// card says where to paste it.
+// PINS: the hand-off contract is ON the card. cc's enumeration lists only the
+// configured set, so the card is where a user reads every remote's id — the
+// string that connects a project to it — and the card says where to paste it.
 test('every working card shows its remoteId and where it goes', async () => {
   const { cards } = await mount();
   for (const id of ['on-up', 'on-down', 'off-up', 'ssh-down']) {
