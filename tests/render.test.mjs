@@ -515,8 +515,8 @@ test('Copy confirms only after the write actually resolves', async () => {
 
 const inputById = (root, id) => root.all(e => e.tagName === 'input' && e.attrs.id === id)[0];
 const detailsOf = root => root.all(e => e.tagName === 'details')[0];
-// The stub joins sibling nodes with a space the real DOM does not have.
-const summaryOf = d => d.all(e => e.tagName === 'summary')[0].text.replace(/\s+/g, ' ');
+// The summary's state span, verbatim: its leading ' · ' separator is pinned, not normalised.
+const summaryOf = d => d.all(e => e.classList.contains('summary-state'))[0].text;
 const textareaOf = root => root.all(e => e.tagName === 'textarea')[0];
 
 // PINS: a new docker remote (the first kind, so the add form's default) starts
@@ -532,7 +532,7 @@ test('the add form for docker renders the Advanced group collapsed, ticked, pref
   const details = detailsOf(tile);
   assert.notEqual(details, undefined, 'the group is rendered');
   assert.equal('open' in details.attrs, false, 'collapsed on create, even with the box ticked');
-  assert.equal(summaryOf(details), 'Advanced · mirror /',
+  assert.equal(summaryOf(details), ' · mirror /',
     'and the summary states the mirror');
   assert.equal('checked' in inputById(tile, 'f-mirror-on').attrs, true);
   assert.equal(inputById(tile, 'f-mirror-root').attrs.value, MIRROR_DEFAULTS.root);
@@ -570,7 +570,7 @@ test('the ssh add form keeps Port, Password and Key file inside the collapsed Ad
   for (const id of ['f-port', 'f-password', 'f-identityFile']) assert.equal(inside.has(id), true, `${id} is inside`);
   assert.equal('open' in details.attrs, false);
   assert.equal('checked' in inputById(tile, 'f-mirror-on').attrs, true);
-  assert.equal(summaryOf(details), 'Advanced · mirror /');
+  assert.equal(summaryOf(details), ' · mirror /');
 });
 
 // PINS THE WIRE of an untouched ssh Create: the ticked default leaves as the
@@ -639,7 +639,7 @@ test('the edit form for an unmirrored remote leaves the group collapsed and unti
 
   assert.equal('open' in detailsOf(edited).attrs, false);
   assert.equal('checked' in inputById(edited, 'f-mirror-on').attrs, false);
-  assert.equal(summaryOf(detailsOf(edited)), 'Advanced · no mirror');
+  assert.equal(summaryOf(detailsOf(edited)), ' · no mirror');
   assert.equal(inputById(edited, 'f-mirror-root').attrs.value, MIRROR_DEFAULTS.root,
     'and ticking it would offer the defaults, not an empty root');
 });
@@ -663,7 +663,7 @@ test('the edit form opens Advanced for a stored advanced value or custom mirror,
 
   const dflt = await opens({ ...SSH_PLAIN, mirror: MIRROR_DEFAULTS });
   assert.equal(open(dflt), false, 'the default mirror stays collapsed');
-  assert.equal(summaryOf(dflt), 'Advanced · mirror /');
+  assert.equal(summaryOf(dflt), ' · mirror /');
 });
 
 // PINS THAT AN UNCHANGED EDIT SAVES WHAT IS STORED: moving Port into Advanced
@@ -715,13 +715,12 @@ test('typing a mirror root updates the Advanced summary', async () => {
   const { byId, cards } = await mount();
   byId.get('add').click();
   const tile = cards().at(-1);
-  const summary = detailsOf(tile).all(e => e.tagName === 'summary')[0];
-  const read = () => summary.text.replace(/\s+/g, ' ');
+  const summary = detailsOf(tile).all(e => e.classList.contains('summary-state'))[0];
 
   inputById(tile, 'f-mirror-root').fire('input', { target: { value: '/srv' } });
-  assert.equal(read(), 'Advanced · mirror /srv');
+  assert.equal(summary.text, ' · mirror /srv');
   inputById(tile, 'f-mirror-root').fire('input', { target: { value: '' } });
-  assert.equal(read(), 'Advanced · mirror (no root)');
+  assert.equal(summary.text, ' · mirror (no root)');
 });
 
 // PINS THAT THE VALUE ACTUALLY LEAVES, in all three docker shapes: the

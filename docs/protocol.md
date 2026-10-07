@@ -81,8 +81,8 @@ downstream of the answer changes.
 
 **A mirror edit is not live.** cc re-asks only on a new connection generation, so
 a change reaches an already-running session after the System reconnects. The
-mirror fields in the card's Advanced group say so (the group's other member,
-docker's `user`, is a config field and takes effect on the next operation).
+mirror fields in the card's Advanced group say so (the group's config fields, the descriptors' `advanced`-flagged
+entries, are ordinary config and take effect on the next operation).
 
 **Validated at the store's front door, never here.** `src/mirror.mjs`
 (`validateMirror`, bounded by `MIRROR_EXCLUDE_MAX` / `MIRROR_PATH_MAX` from
