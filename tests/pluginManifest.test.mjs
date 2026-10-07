@@ -48,6 +48,17 @@ test('mcp.tools is exactly the read-only roster', async () => {
   }
 });
 
+// PINS WHERE THE REMOTE-FIELD CLAIM LIVES. Which remoteIds a project can take
+// is `enumerate_remotes`' answer, in cc's description; a tool description is
+// system-prompt text in every session (.wiki/gotchas/plugin-mcp-surface.md),
+// so `list_remotes` points there instead of saying it a second time.
+test('list_remotes defers the Remote-field claim to enumerate_remotes', async () => {
+  const manifest = await readJson('conductor.plugin.json');
+  const { description } = manifest.mcp.tools.find(t => t.name === 'list_remotes');
+  assert.match(description, /`enumerate_remotes`/);
+  assert.doesNotMatch(description, /Remote field/);
+});
+
 // PINS THE OMISSION OF `mcp.scope`, which is a decision and not an oversight:
 // the conductor ACCEPTS the key, does not normalise it onto the plugin record
 // and does not enum-check it, and `toolsFor()` takes no caller argument — every
