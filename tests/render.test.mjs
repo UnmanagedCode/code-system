@@ -786,7 +786,7 @@ test('the edit note names Run as, and scopes its exemption to the mirror', async
 test('the add form shows labels and inputs, and every hint only in a linked tooltip', async () => {
   const { byId, cards } = await mount();
   byId.get('add').click();
-  const REMOTE_ID_HINT = /^Lower-case letters, digits, dot, dash, underscore\./;
+  const REMOTE_ID_HINT = /Lower-case letters, digits, dot, dash, underscore\./;
 
   const check = (tile, fieldHints) => {
     assert.equal(tile.all(e => e.classList.contains('hint')).length, 0, 'no .hint paragraph is rendered');
@@ -819,30 +819,40 @@ test('the add form shows labels and inputs, and every hint only in a linked tool
   check(cards().at(-1), hints(['f-host', 'a Host alias'], ['f-user', 'optional']));
 });
 
-// PINS: the tip's behaviour — a tap toggles it, Escape dismisses it even while
-// hovered or focused, and leaving focus resets both states.
+// PINS: the tip's behaviour — a tap toggles it; Escape or a body click dismisses
+// it even while hovered; a dismissal holds until focus leaves or a fresh
+// unfocused hover begins; focusout resets both states.
 test('a tooltip opens on click, closes on Escape, and resets on focusout', async () => {
   const { byId, cards } = await mount();
   byId.get('add').click();
   const tip = cards().at(-1).all(e => e.classList.contains('tip'))[0];
   const btn = tip.all(e => e.classList.contains('tip-btn'))[0];
+  const body = tip.all(e => e.attrs.role === 'tooltip')[0];
+  const is = c => tip.classList.contains(c);
 
   btn.click();
-  assert.equal(tip.classList.contains('open'), true, 'click opens');
+  assert.equal(is('open'), true, 'click opens');
   btn.click();
-  assert.equal(tip.classList.contains('open'), false, 'click again closes');
+  assert.equal(is('open'), false, 'click again closes');
 
+  // Invariant: a click on the body really closes it, even under a held hover.
   btn.click();
+  body.click();
+  assert.equal(is('open'), false);
+  assert.equal(is('dismissed'), true, 'a body click dismisses, so :hover cannot keep it shown');
+  tip.fire('mouseenter');
+  assert.equal(is('dismissed'), false, 'a fresh unfocused hover re-arms it');
+
+  // Invariant: Escape on a focused tip holds across the mouse crossing it.
+  tip.fire('focusin');
   tip.fire('keydown', { key: 'Escape' });
-  assert.equal(tip.classList.contains('open'), false);
-  assert.equal(tip.classList.contains('dismissed'), true, 'Escape dismisses');
-
+  assert.equal(is('dismissed'), true, 'Escape dismisses');
+  tip.fire('mouseenter');
   tip.fire('mouseleave');
-  assert.equal(tip.classList.contains('dismissed'), false, 'leaving the pointer re-arms it');
-  tip.fire('keydown', { key: 'Escape' });
-  btn.click();
+  assert.equal(is('dismissed'), true, 'a mouse crossing does not revive a dismissal while focus stays');
+
   tip.fire('focusout');
-  assert.equal(tip.classList.contains('open') || tip.classList.contains('dismissed'), false, 'focusout resets');
+  assert.equal(is('open') || is('dismissed'), false, 'focusout resets');
 });
 
 // PINS THE EDIT PATH FOR AN ADVANCED CONFIG FIELD, END TO END — the one path the

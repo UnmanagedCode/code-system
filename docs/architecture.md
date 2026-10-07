@@ -547,8 +547,9 @@ renders `span.tip > button.tip-btn[aria-describedby] + span.tip-body[role=toolti
 - **Show rules** (`styles.css`): `.tip:hover` only inside `@media (hover: hover)`
   (a phone's sticky `:hover` would pin it open), `.tip-btn:focus-visible + .tip-body`
   (a mouse click toggles `.open` instead), and `.tip.open`.
-- **Escape** adds `.dismissed`, declared last so it beats the equal-specificity
-  show rules; `focusout` and `mouseleave` reset it.
+- **Escape or a click on the body** adds `.dismissed`, declared last so it beats
+  the equal-specificity show rules. It holds until `focusout`, a `mouseenter` while
+  the tip is unfocused, or a click on the "?".
 - **Overflow:** `.tip-body` is absolutely positioned under `.tip-anchor`, so
   `.card:has(.form)` lifts the card's `overflow: hidden`.
 - **Tests:** `tests/render.test.mjs` (hint text only inside a linked tooltip, the

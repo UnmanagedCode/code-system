@@ -33,22 +33,23 @@ function el(tag, attrs = {}, ...children) {
 // in the DOM (display:none until shown), so `aria-describedby` on the trigger
 // AND on the field's input lets a screen reader read it without visiting the "?".
 // Not `title`: that never shows on touch or keyboard focus. Show rules live in
-// styles.css; this only toggles `open` (tap) and `dismissed` (Escape).
+// styles.css; this only toggles `open` (tap) and `dismissed` (Escape or a click
+// on the body). A dismissal holds until focus leaves the tip, a fresh hover
+// begins while it is unfocused, or the "?" is clicked again.
 function tip(id, name, text) {
   const t = el('span', { class: 'tip' });
   const cl = t.classList;
+  let focused = false;
+  const dismiss = () => { cl.remove('open'); cl.add('dismissed'); };
   t.appendChild(el('button', {
     type: 'button', class: 'tip-btn', 'aria-label': `About ${name}`, 'aria-describedby': id,
-    onclick: () => { cl.toggle('open'); },
+    onclick: () => { cl.remove('dismissed'); cl.toggle('open'); },
   }, '?'));
-  t.appendChild(el('span', {
-    class: 'tip-body', role: 'tooltip', id, onclick: () => { cl.remove('open'); },
-  }, text));
-  t.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { cl.remove('open'); cl.add('dismissed'); }
-  });
-  t.addEventListener('focusout', () => { cl.remove('open'); cl.remove('dismissed'); });
-  t.addEventListener('mouseleave', () => { cl.remove('dismissed'); });
+  t.appendChild(el('span', { class: 'tip-body', role: 'tooltip', id, onclick: dismiss }, text));
+  t.addEventListener('keydown', (e) => { if (e.key === 'Escape') dismiss(); });
+  t.addEventListener('focusin', () => { focused = true; });
+  t.addEventListener('focusout', () => { focused = false; cl.remove('open'); cl.remove('dismissed'); });
+  t.addEventListener('mouseenter', () => { if (!focused) cl.remove('dismissed'); });
   return t;
 }
 

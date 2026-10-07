@@ -16,7 +16,10 @@ trigger and the field's input point at it with `aria-describedby`. The descripto
 - **Keyboard show is `:focus-visible`**, not `:focus`: a mouse click focuses the
   button and would fight the click toggle.
 - **`.tip.dismissed` must be declared last.** It ties the show rules on
-  specificity, so source order is what makes Escape win (WCAG 1.4.13).
+  specificity, so source order is what makes Escape win (WCAG 1.4.13). A body
+  click sets it too, because `:hover` would otherwise keep the tip shown. It is
+  cleared by `focusout`, by `mouseenter` only while the tip is unfocused (so a
+  mouse crossing cannot revive a keyboard dismissal), or by clicking the "?".
 - **`.card:has(.form)` lifts `overflow: hidden`** so a tip near the card's bottom
   is not clipped.
 - **ssh Port/Password/Key file stay in the main block.** Moving them under
