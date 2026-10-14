@@ -394,7 +394,7 @@ else is working in:
 
 ```sh
 git clone --no-hardlinks <cc-checkout> /tmp/cc-pin && git -C /tmp/cc-pin checkout <pin>
-ln -s <cc-checkout>/node_modules /tmp/cc-pin/node_modules   # or: npm ci in the clone
+ln -s <cc-checkout>/node_modules /tmp/cc-pin/node_modules   # or: npm install in the clone
 CC_CHECKOUT=/tmp/cc-pin npm run conformance
 ```
 
