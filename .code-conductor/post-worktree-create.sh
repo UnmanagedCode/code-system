@@ -37,8 +37,9 @@ parent="$CC_PARENT_PATH"
 if [ ! -d "$parent/node_modules" ]; then
   (
     cd "$parent" || exit 1
-    # package-lock.json is tracked, so prefer the deterministic install;
-    # fall back if the lock ever drifts out of sync with package.json
+    # package-lock.json is untracked, so it exists only if the parent has one
+    # on disk; prefer the deterministic install when it does, and fall back if
+    # the lock ever drifts out of sync with package.json
     # (npm ci hard-fails there).
     if [ -f package-lock.json ]; then
       npm ci --no-audit --no-fund || npm install --no-audit --no-fund
