@@ -130,7 +130,7 @@ destination), check out the pin, and point `CC_CHECKOUT` at the clone:
 ```sh
 git clone --no-hardlinks <cc-worktree> /tmp/cc-pin
 git -C /tmp/cc-pin checkout <pin-sha>
-ln -s <cc-worktree>/node_modules /tmp/cc-pin/node_modules   # or npm ci in the clone
+ln -s <cc-worktree>/node_modules /tmp/cc-pin/node_modules   # or npm install in the clone
 CC_CHECKOUT=/tmp/cc-pin npm run conformance
 ```
 

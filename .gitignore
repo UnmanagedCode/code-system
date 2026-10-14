@@ -2,3 +2,4 @@ node_modules
 dist/
 *.log
 .conformance-tmp/
+package-lock.json
