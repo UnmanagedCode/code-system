@@ -75,7 +75,8 @@ test('no port: the whole argv is the pre-port literal', async (t) => {
   await withTmpdir(t);
   const tr = createSshTransport({ cli: ['ssh'], env: { PATH: '/bin' } });
   const base = (config) => [
-    '-T', '-o', `BatchMode=${config.password ? 'no' : 'yes'}`, '-o', 'ConnectTimeout=5',
+    '-T', '-o', `BatchMode=${config.password ? 'no' : 'yes'}`, '-o', 'StrictHostKeyChecking=accept-new',
+    '-o', 'ConnectTimeout=5',
     '-o', `ControlPath=${controlPathFor(config)}`, '-o', 'ControlMaster=no', '-o', 'ControlPersist=600',
   ];
   const a = tr.spawnPlan(AMBIENT, req()).args;
@@ -86,10 +87,10 @@ test('no port: the whole argv is the pre-port literal', async (t) => {
     ...base(KEY_CONFIG), '-i', '/keys/id', '-o', 'IdentitiesOnly=yes',
     '-o', 'PreferredAuthentications=publickey', '--', 'root@10.1.2.3']);
   const p = tr.spawnPlan(PASSWORD_CONFIG, req()).args;
-  assert.deepEqual(p.slice(0, 11), base(PASSWORD_CONFIG));
+  assert.deepEqual(p.slice(0, 13), base(PASSWORD_CONFIG));
   assert.equal(p.includes('-p'), false);
   assert.deepEqual(sshBaseArgs('/s', { master: 'no', config: AMBIENT }), [
-    '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', 'ControlPath=/s',
+    '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=5', '-o', 'ControlPath=/s',
     '-o', 'ControlMaster=no', '-o', 'ControlPersist=600',
   ]);
 });

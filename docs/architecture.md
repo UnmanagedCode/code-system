@@ -1311,10 +1311,11 @@ global.
     An agent with real keys is forwarded into this environment, so every
     generated `ssh_config` sets `IdentitiesOnly yes` and `IdentityAgent none`.
     The target's host key is read **out of band** with `docker exec` into a real
-    `known_hosts`: no trust-on-first-use anywhere, in the fixture or the
-    provider. The fixture also deliberately does **not** set
-    `StrictHostKeyChecking`, because the provider's policy rests on OpenSSH's
-    default — pinning it would test the fixture instead of the policy.
+    `known_hosts`, so every test starts from a known key; the tests of the
+    provider's trust-on-first-use and changed-key refusal empty or rewrite that
+    file themselves. The fixture deliberately does **not** set
+    `StrictHostKeyChecking`: the provider's policy is the `accept-new` on its own
+    command line, and pinning it in the fixture would test the fixture instead.
   - **Aliases are unique per target.** `controlPathFor` keys on the whole connection identity (user, host, port, credential),
     so two targets sharing an alias would share one master and a test could
     silently multiplex onto the previous test's container.

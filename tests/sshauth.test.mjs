@@ -82,11 +82,11 @@ test('validateConfig refuses both credentials, a bad key path and a bad password
 test('no credentials: argv is the pre-existing one and env is undefined', async (t) => {
   await withTmpdir(t);
   const p = createSshTransport({ cli: ['ssh'] }).spawnPlan(AMBIENT, req());
-  assert.deepEqual(p.args.slice(0, 11), [
-    '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', `ControlPath=${controlPathFor(AMBIENT)}`,
+  assert.deepEqual(p.args.slice(0, 13), [
+    '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=5', '-o', `ControlPath=${controlPathFor(AMBIENT)}`,
     '-o', 'ControlMaster=no', '-o', 'ControlPersist=600',
   ]);
-  assert.equal(p.args[11], '--', 'no auth args between the shared block and the terminator');
+  assert.equal(p.args[13], '--', 'no auth args between the shared block and the terminator');
   assert.equal(p.env, undefined);
   assert.deepEqual(sshAuth(AMBIENT, {}), { args: [], env: undefined });
 });
@@ -196,6 +196,9 @@ test('every ssh invocation of a password remote carries the auth args and env', 
   assert.equal(argv.filter(a => a === 'BatchMode=no').length, 6, 'six ssh dials, each BatchMode=no');
   assert.equal(argv.filter(a => a === 'BatchMode=yes').length, 0);
   assert.equal(argv.filter(a => a === 'NumberOfPasswordPrompts=1').length, 6);
+  // The host-key policy rides every password dial too: askpass is never asked a
+  // yes/no question, because `accept-new` asks none (measured).
+  assert.equal(argv.filter(a => a === 'StrictHostKeyChecking=accept-new').length, 6);
 });
 
 // PINS the version gate: an OpenSSH older than 8.4 would ignore

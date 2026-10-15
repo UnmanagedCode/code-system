@@ -350,16 +350,27 @@ port gets its own shared connection, so the same user and host on two ports are
 two remotes. Changing or removing the port switches the remote off, like any
 other connection change.
 
-**known_hosts is keyed by port.** On a non-22 port ssh looks the key up as
-`[host]:port`, so add it with `ssh-keyscan -p <port> <host>`. A `[host]:port`
-entry satisfies only that port; a bare `host` entry satisfies any port.
+**A new host's key is accepted on first connect; a changed one is refused.**
+The plugin runs ssh with `StrictHostKeyChecking=accept-new`, so:
 
-**Host keys are never accepted for you.** The plugin does not set
-`StrictHostKeyChecking` and does not point ssh at a `known_hosts` of its own, so
-ssh's own default applies — and because the plugin also never allows a prompt,
-an **unknown or changed host key fails** rather than being trusted on first use.
-The card shows the refusal and names the fix. Adding the key is your own action,
-in your own `known_hosts` (`ssh-keyscan`, or verifying the fingerprint by hand).
+- **First connect to a host** whose key is not in your `known_hosts`: the key is
+  accepted and written to **your own** `known_hosts` (the plugin keeps none of
+  its own), and every later connect checks against it.
+- **A host whose key has changed** since it was recorded is **refused**. Nothing
+  prompts, and your `known_hosts` is not touched. The card says the key
+  changed: verify the new key, remove the old entry with `ssh-keygen -R <host>`
+  (`ssh-keygen -R '[host]:port'` on a non-22 port), and connect again.
+- **This overrides a `StrictHostKeyChecking` in your `~/.ssh/config`.** To keep
+  strict checking, put it in the ssh invocation instead —
+  `CODE_SYSTEM_SSH='["ssh","-o","StrictHostKeyChecking=yes"]'` — and add keys
+  yourself with `ssh-keyscan`.
+- **A command run on a remote that is switched on but was never connected**
+  shows ssh's one-line `Warning: Permanently added …` in its stderr the first
+  time, because that command is what records the key.
+
+**known_hosts is keyed by port.** On a non-22 port the key is recorded and
+looked up as `[host]:port`. A `[host]:port` entry satisfies only that port; a
+bare `host` entry satisfies any port.
 
 **Connecting shares one authenticated connection.** The first connect opens an
 SSH ControlMaster and later commands ride it, so five commands cost one
@@ -401,9 +412,8 @@ A card cannot carry both a password and a key file — saving both is refused.
   (no group or world bits). A missing or too-open file is refused on Connect.
   **Passphrase-protected keys are not supported** — they fail immediately rather
   than prompting.
-- **Host keys are still never accepted for you.** With a password, an unknown
-  host key fails with `Host key verification failed`; add the key to your
-  `known_hosts` first.
+- **Host keys follow the same rule with a password**: a new host's key is
+  accepted on first connect without any prompt, and a changed key is refused.
 - **A wrong password or key fails fast** (no retry loop) and the card names the
   credential to fix.
 - **The password is stored unencrypted** in the remote's store file, which is

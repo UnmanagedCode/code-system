@@ -291,10 +291,14 @@ export async function ensureControlDir() {
  * EFFECTIVE `ask`, which `BatchMode=yes` cannot answer. One mechanism only,
  * from one builder.
  *
- * NO `StrictHostKeyChecking` AND NO `UserKnownHostsFile`: that is THE POLICY,
- * not an omission. OpenSSH's default `ask` plus the `BatchMode=yes` set here
- * makes an unknown or changed host key FAIL rather than prompt or
- * trust-on-first-use; repairing it is the operator's own out-of-band action.
+ * `StrictHostKeyChecking=accept-new` AND NO `UserKnownHostsFile`: that is THE
+ * known_hosts POLICY. An unknown host key is accepted on first use and recorded
+ * in the operator's own known_hosts (whichever file their config names; keyed
+ * `[host]:port` on a non-22 port), so later dials verify against it; a CHANGED
+ * key is refused, with no prompt on either credential path. Being on the command
+ * line it beats a `StrictHostKeyChecking` in `~/.ssh/config`; options in
+ * `CODE_SYSTEM_SSH` precede ours and win, which is how an operator keeps strict
+ * checking.
  *
  * `-T` IS LOAD-BEARING: we honour the operator's ssh config, so a `RequestTTY
  * force` in it would give us a pty, and a pty's CR translation corrupts
@@ -316,6 +320,7 @@ export function sshBaseArgs(controlPath, { master, config }) {
   return [
     '-T',
     '-o', `BatchMode=${config?.password ? 'no' : 'yes'}`,
+    '-o', 'StrictHostKeyChecking=accept-new',
     '-o', `ConnectTimeout=${CONNECT_TIMEOUT_S}`,
     '-o', `ControlPath=${controlPath}`,
     '-o', `ControlMaster=${master}`,
@@ -517,8 +522,9 @@ const NO_RESOLVE = 'ssh: Could not resolve hostname ';
 const BAD_HOSTNAME = 'hostname contains invalid characters';
 // NEITHER OF THESE TWO OPENS THE STREAM (measured), which is what makes them
 // the awkward pair. ssh prefixes the auth refusal with `<dest>: ` on its own
-// line, and prefixes the host-key refusal with a whole extra LINE when the
-// operator's config requests strict checking explicitly.
+// line, and prefixes the host-key refusal with a whole extra LINE when strict
+// checking is requested explicitly. Either may also follow the known_hosts
+// notice a first connect writes (`KEY_RECORDED`).
 //
 // So they are matched PER LINE, and only within ssh's own opening — see
 // `sshOwnLine`. An unanchored `includes` was the only thing that accepted both
@@ -530,11 +536,44 @@ const BAD_HOSTNAME = 'hostname contains invalid characters';
 const AUTH_DENIED = /^(\S+: )?Permission denied \([a-z,-]+\)/;
 const HOSTKEY_FAILED = /^Host key verification failed/;
 
-// The ONE multi-line preamble measured for the pair above. Deliberately not a
-// general "lines ssh might write" list: every entry here is a line a command's
-// own output is allowed to have in front of a match, so an unmeasured one is a
-// hole rather than robustness.
-const SSH_PREAMBLE = /^No \S+ host key is known for .* strict checking\.$/;
+// The notice `accept-new` writes when it records an unknown key — FIRST on
+// stderr, ahead of an auth refusal on the same dial (measured, CRLF).
+const KEY_RECORDED = /^Warning: Permanently added .+ to the list of known hosts\.$/;
+
+// The lead-in lines measured in front of the pair above: strict checking's
+// unknown-key line, and the known_hosts notice. Deliberately not a general
+// "lines ssh might write" list: every entry here is a line a command's own
+// output is allowed to have in front of a match, so an unmeasured one is a hole
+// rather than robustness.
+const SSH_PREAMBLE = [/^No \S+ host key is known for .* strict checking\.$/, KEY_RECORDED];
+
+// ssh's refusal of a host key that differs from the recorded one OPENS with
+// these two lines (measured, CRLF). Its `Host key verification failed.` is the
+// last line of ~900 bytes — past the 512-byte head session.mjs and run.mjs hand
+// `classifyFailure` — so the banner's opening is the only anchor that reaches it.
+const CHANGED_BANNER = [/^@+$/, /^@\s+WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!\s+@$/];
+
+function hostKeyChanged(stderr) {
+  const [a = '', b = ''] = allOf(stderr).split('\n');
+  return CHANGED_BANNER[0].test(a) && CHANGED_BANNER[1].test(b);
+}
+
+// ONE wording for a changed key, so `connect`'s throw and the exec path's
+// EUNKNOWN cannot drift. The banner's own `ssh-keygen -R` line names the exact
+// entry, but it falls past the classified head — so this names the shape.
+function changedKeyMessage(config) {
+  const host = String(config?.host ?? '');
+  const entry = config?.port !== undefined ? `'[${host}]:${config.port}'` : host;
+  return `ssh refused '${destFor(config)}': its host key has CHANGED since it was recorded in known_hosts,`
+    + ' which can mean a man-in-the-middle. Verify the new key out of band, then remove the stale entry'
+    + ` from the operator's own known_hosts (ssh-keygen -R ${entry}, using the name ssh dials) and retry`;
+}
+
+// The line worth quoting from a failed dial's stderr: its first, past the
+// known_hosts notice, which is never the failure.
+function failureLine(stderr) {
+  return allOf(stderr).split('\n').find(line => !KEY_RECORDED.test(line)) ?? '';
+}
 
 /**
  * The matched line, iff it is one of ssh's OWN opening lines — i.e. every line
@@ -561,7 +600,7 @@ const SSH_PREAMBLE = /^No \S+ host key is known for .* strict checking\.$/;
 function sshOwnLine(stderr, pattern) {
   for (const line of allOf(stderr).split('\n')) {
     if (pattern.test(line)) return line;
-    if (!SSH_PREAMBLE.test(line)) return null;
+    if (!SSH_PREAMBLE.some(p => p.test(line))) return null;
   }
   return null;
 }
@@ -896,8 +935,11 @@ export function createSshTransport({ cli, env = process.env } = {}) {
         argv0, [...sshBaseArgs(controlPath, { master: 'yes', config }), ...auth.args, '-N', '-f', '--', dest],
         { timeoutMs: CONNECT_TIMEOUT_MS, env: auth.env });
       if (res.code !== 0) {
+        if (hostKeyChanged(res.stderr)) {
+          throw new Error(`ssh could not open a master connection to '${dest}': ${changedKeyMessage(config)}`);
+        }
         throw new Error(`ssh could not open a master connection to '${dest}': `
-          + `${first(res.stderr) || res.error?.message
+          + `${failureLine(res.stderr) || res.error?.message
             || (res.signal ? `it was killed by ${res.signal} before answering`
               + ` (the bound is ${CONNECT_TIMEOUT_MS} ms)` : `exit ${res.code}`)}`);
       }
@@ -1055,24 +1097,26 @@ export function createSshTransport({ cli, env = process.env } = {}) {
             stderr: allOf(stderr),
           };
         }
-        // THE known_hosts POLICY, surfacing. We set no StrictHostKeyChecking
-        // and no UserKnownHostsFile, so OpenSSH's default `ask` plus our
-        // `BatchMode=yes` means an unknown or changed key FAILS here: this
-        // provider never prompts and never trusts on first use. Adding the key
-        // is the operator's out-of-band action.
-        // Both measured shapes are accepted: `Host key verification failed.`
-        // alone (the DEFAULT `ask`), and the same line preceded by
-        // `No ED25519 host key is known for <ip> and you have requested strict
-        // checking.` with both lines in CRLF (an explicit
-        // `StrictHostKeyChecking yes`). The MATCHED line is what the message
+        // THE known_hosts POLICY, surfacing. `accept-new` records an unknown
+        // key, so the one refusal it makes is a CHANGED key — matched on the
+        // banner's opening, because the classic wording is past the head.
+        if (hostKeyChanged(stderr)) {
+          return { code: 'EUNKNOWN', message: changedKeyMessage(config), stderr: allOf(stderr) };
+        }
+        // An UNKNOWN key refused: strict checking the operator forced through
+        // CODE_SYSTEM_SSH (their options precede ours, and ssh keeps the first
+        // value). Both measured shapes are accepted: `Host key verification
+        // failed.` alone (`ask`), and the same line preceded by `No ED25519
+        // host key is known for <ip> and you have requested strict checking.`
+        // with both lines in CRLF (`yes`). The MATCHED line is what the message
         // quotes — stderr's first line is the less diagnostic half here.
         const hostkeyLine = sshOwnLine(stderr, HOSTKEY_FAILED);
         if (hostkeyLine) {
           return {
             code: 'EUNKNOWN',
-            message: `ssh could not verify the host key for '${dest}'. This provider never prompts`
-              + ' and never trusts a key on first use — add it to the operator\'s own known_hosts'
-              + ` out of band (e.g. ${config?.port !== undefined ? `ssh-keyscan -p ${config.port}` : 'ssh-keyscan'}),`
+            message: `ssh could not verify the host key for '${dest}' under the strict checking`
+              + ` ${SSH_ENV} requests — add the key to the operator's own known_hosts out of band`
+              + ` (e.g. ${config?.port !== undefined ? `ssh-keyscan -p ${config.port}` : 'ssh-keyscan'}),`
               + ` then retry: ${hostkeyLine}`,
             stderr: allOf(stderr),
           };

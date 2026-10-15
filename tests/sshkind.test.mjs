@@ -157,6 +157,7 @@ test('spawnPlan: the whole argv, with the remote command as ONE element', async 
   assert.deepEqual(p.args, [
     '-T',
     '-o', 'BatchMode=yes',
+    '-o', 'StrictHostKeyChecking=accept-new',
     '-o', 'ConnectTimeout=5',
     '-o', `ControlPath=${cp}`,
     '-o', 'ControlMaster=no',
@@ -212,13 +213,16 @@ test('spawnPlan: `--` ends ssh\'s options right before the destination', async (
 // corrupts fileops' header parse. (`RequestTTY yes` alone does NOT reproduce it:
 // ssh declines a pty when stdin is not a terminal, which ours never is.)
 //
-// NO StrictHostKeyChecking AND NO UserKnownHostsFile IS THE POLICY, not an
-// omission — see the host-key test below, which measures what it produces.
+// `StrictHostKeyChecking=accept-new` IS THE known_hosts POLICY: an unknown key
+// is recorded on first use, a changed one is refused. NO `UserKnownHostsFile`
+// is set, so the key lands in the operator's own known_hosts — see the
+// host-key tests below and tests/ssh-live.test.mjs for what it produces.
 test('sshBaseArgs: every option earns its place, and none is a config value', () => {
   const args = sshBaseArgs('/tmp/cs/sock', { master: 'no' });
   assert.deepEqual(args, [
     '-T',
     '-o', 'BatchMode=yes',
+    '-o', 'StrictHostKeyChecking=accept-new',
     '-o', 'ConnectTimeout=5',
     '-o', 'ControlPath=/tmp/cs/sock',
     '-o', 'ControlMaster=no',
@@ -229,8 +233,9 @@ test('sshBaseArgs: every option earns its place, and none is a config value', ()
   const persist = args[args.indexOf('-o', args.indexOf('-o') + 1)];
   assert.ok(args.includes('ControlPersist=600'));
   assert.equal(/^ControlPersist=(yes|0)$/.test(String(persist)), false);
-  // THE POLICY, asserted as an absence: we set neither, deliberately.
-  assert.equal(args.some(a => a.startsWith('StrictHostKeyChecking')), false);
+  // THE POLICY: trust on first use, exactly once, and never a known_hosts of
+  // the provider's own.
+  assert.deepEqual(args.filter(a => a.startsWith('StrictHostKeyChecking')), ['StrictHostKeyChecking=accept-new']);
   assert.equal(args.some(a => a.startsWith('UserKnownHostsFile')), false);
   // The master mode is the ONLY thing that varies between call sites.
   assert.ok(sshBaseArgs('/tmp/cs/sock', { master: 'yes' }).includes('ControlMaster=yes'));
@@ -246,7 +251,8 @@ test('spawnPlan: no `-o` value is ever derived from stored config', async (t) =>
   const p = plan({}, { host: 'evil', user: 'nasty' });
   const oValues = p.args.flatMap((a, i) => (a === '-o' ? [p.args[i + 1]] : []));
   assert.deepEqual(oValues, [
-    'BatchMode=yes', 'ConnectTimeout=5', `ControlPath=${cp}`, 'ControlMaster=no', 'ControlPersist=600',
+    'BatchMode=yes', 'StrictHostKeyChecking=accept-new', 'ConnectTimeout=5', `ControlPath=${cp}`,
+    'ControlMaster=no', 'ControlPersist=600',
   ]);
   for (const v of oValues) {
     if (!v.startsWith('ControlPath=')) {
@@ -442,12 +448,12 @@ test('classifyFailure: a host that is not there is ENOREMOTE, naming the configu
 // ABSENT. `ENOREMOTE` for an auth or host-key failure would send a user to
 // rebuild a host that is perfectly fine.
 //
-// The host-key row is also THE POLICY, measured. We set no
-// `StrictHostKeyChecking` and no `UserKnownHostsFile`, so OpenSSH's default
-// (`ask`, measured with `ssh -G`) combines with the `BatchMode=yes` we DO set:
-// an unknown or changed host key FAILS — it never prompts and never
-// TOFU-accepts. Adding the key is the operator's out-of-band action, so the
-// message says so.
+// The `Host key verification failed` row is what an UNKNOWN key produces once
+// strict checking is in force — which our own `accept-new` never is, so it is
+// the operator's `CODE_SYSTEM_SSH` forcing `StrictHostKeyChecking=yes` (their
+// options precede ours, and ssh keeps the first value). The message names the
+// out-of-band fix and where the strictness came from. A CHANGED key is a
+// different shape with its own row — see the test after this one.
 test('classifyFailure: an auth or host-key failure is EUNKNOWN, never ENOREMOTE', () => {
   const denied = classify({
     code: 255, stdout: '',
@@ -458,10 +464,9 @@ test('classifyFailure: an auth or host-key failure is EUNKNOWN, never ENOREMOTE'
   assert.match(denied.message, /ssh config|agent/i, 'and the message names where the fix lives');
 
   // TWO MEASURED SHAPES, and the second is why the guard is `includes` rather
-  // than `startsWith`. With the DEFAULT StrictHostKeyChecking (`ask`, which is
-  // what this provider relies on) the refusal is that line alone; with an
-  // explicit `StrictHostKeyChecking yes` in the operator's config ssh PREFIXES
-  // it, and writes both lines with CRLF. A `startsWith` guard misses the
+  // than `startsWith`. With StrictHostKeyChecking `ask` the refusal is that line
+  // alone; with an explicit `StrictHostKeyChecking yes` ssh PREFIXES it, and
+  // writes both lines with CRLF. A `startsWith` guard misses the
   // prefixed shape and reports a host-key refusal as the command's own exit 255
   // — which is exactly what the live test caught before this fixture existed.
   for (const stderr of [
@@ -488,8 +493,70 @@ test('classifyFailure: an auth or host-key failure is EUNKNOWN, never ENOREMOTE'
   assert.notEqual(hostkey.code, 'ENOREMOTE');
   assert.match(hostkey.message, /known_hosts/,
     'the fix is adding the key out of band, and the message must say where');
-  assert.match(hostkey.message, /never prompts|BatchMode|no TOFU|never accept/i,
-    'and that this provider fails rather than trusting on first use');
+  assert.match(hostkey.message, /CODE_SYSTEM_SSH/,
+    'strict checking is only ever the operator\'s own override, and the message says so');
+  assert.equal(/never trusts|first use/i.test(hostkey.message), false,
+    'this provider DOES trust a key on first use, so the message must not claim otherwise');
+});
+
+// ssh's changed-host-key refusal, the MEASURED bytes (OpenSSH_10.0p2, against
+// the live fixture with a wrong ed25519 key on file): 903 bytes, CRLF lines with
+// one bare LF inside. `Host key verification failed.` is the LAST line, past the
+// 512-byte head that session.mjs and run.mjs hand the classifier — so the row is
+// anchored on the banner's first two lines, and this test feeds the head only.
+const CHANGED_KEY_STDERR = '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\r\n'
+  + '@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\r\n'
+  + '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\r\n'
+  + 'IT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!\r\n'
+  + 'Someone could be eavesdropping on you right now (man-in-the-middle attack)!\r\n'
+  + 'It is also possible that a host key has just been changed.\r\n'
+  + 'The fingerprint for the ED25519 key sent by the remote host is\n'
+  + 'SHA256:XxQgEuxKa9hP5gNMckj54V8E8jqOfdOqqVIQ2TaJnbo.\r\n'
+  + 'Please contact your system administrator.\r\n'
+  + 'Add correct host key in /tmp/code-system-docker-wsWJwS/known_hosts to get rid of this message.\r\n'
+  + 'Offending ED25519 key in /tmp/code-system-docker-wsWJwS/known_hosts:1\r\n'
+  + '  remove with:\r\n'
+  + "  ssh-keygen -f '/tmp/code-system-docker-wsWJwS/known_hosts' -R '172.17.0.4'\r\n"
+  + 'Host key for 172.17.0.4 has changed and you have requested strict checking.\r\n'
+  + 'Host key verification failed.\r\n';
+// The first-connect notice `accept-new` writes BEFORE anything else (measured,
+// CRLF), including before an authentication refusal.
+const KEY_RECORDED_LINE = "Warning: Permanently added '172.17.0.4' (ED25519) to the list of known hosts.\r\n";
+
+// PINS the changed-key row. Under `accept-new` this is the one host-key refusal
+// left on the provider's own policy, and it must read as what it is — a key
+// that differs from the recorded one — not as the command's own exit 255.
+test('classifyFailure: a CHANGED host key is EUNKNOWN naming the change, from the 512-byte head', () => {
+  const head = CHANGED_KEY_STDERR.slice(0, 512);
+  assert.equal(head.includes('Host key verification failed'), false,
+    'the premise: the classic wording is NOT in what the classifier receives');
+  const v = classify({ code: 255, stdout: '', stderr: head });
+  assert.equal(v?.code, 'EUNKNOWN');
+  assert.match(v.message, /CHANGED/);
+  assert.match(v.message, /known_hosts/, 'and the message says where the stale entry lives');
+  assert.match(v.message, /ssh-keygen -R/);
+  assert.equal(v.message.includes('\r'), false);
+  assert.equal(v.stderr.includes('\r'), false, 'the reported stderr is normalised');
+  // The guards every row shares.
+  assert.equal(classify({ code: 255, stdout: 'out', stderr: head }), null, 'stdout means a command ran');
+  assert.equal(classify({ code: 1, stdout: '', stderr: head }), null, 'ssh refuses with 255 only');
+  assert.equal(classify({ code: 255, stdout: '', stderr: `my own line\n${head}` }), null,
+    'the banner must OPEN stderr, or a command\'s own output got there first');
+});
+
+// PINS the first-connect lead-in. `accept-new` writes `Warning: Permanently
+// added …` before an authentication refusal, so without it among the measured
+// lead-in lines a first connect with a bad credential reads as the command's
+// own exit 255.
+test('classifyFailure: the known_hosts "Permanently added" lead-in does not hide an auth refusal', () => {
+  const v = classify({
+    code: 255, stdout: '',
+    stderr: `${KEY_RECORDED_LINE}root@172.17.0.4: Permission denied (publickey,password).\r\n`,
+  });
+  assert.equal(v?.code, 'EUNKNOWN');
+  assert.match(v.message, /Permission denied/, 'the message quotes the refusal, not the notice');
+  assert.equal(classify({ code: 255, stdout: '', stderr: KEY_RECORDED_LINE }), null,
+    'the notice alone classifies nothing');
 });
 
 // PINS §5's "a command that never started is an `error` frame, not an `exit`
@@ -828,6 +895,30 @@ test('connect refuses to report success when ssh says it degraded to no multiple
   // a failing check rather than from the degrade guard.
   assert.equal((await tr.reachability(CONFIG)).connected, true,
     'the premise: the check that connect refused to trust would have PASSED');
+});
+
+// PINS what a failed master open QUOTES. ssh's first stderr line is the wrong
+// one to quote in two measured shapes: a first connect writes the known_hosts
+// notice before an auth refusal, and a changed key opens with a row of `@`.
+test('connect quotes the refusal past the known_hosts notice, and names a CHANGED key', async (t) => {
+  await withTmpdir(t);
+  const denied = await stubSsh(t, {
+    master: true, connectExit: 255,
+    connectStderr: `${KEY_RECORDED_LINE}me@box: Permission denied (publickey).\r\n`,
+  });
+  await assert.rejects(() => createSshTransport({ cli: denied.cli }).connect(CONFIG), (e) => {
+    assert.match(e.message, /Permission denied/);
+    assert.equal(/Permanently added/.test(e.message), false, 'the notice is not the failure');
+    return true;
+  });
+
+  const changed = await stubSsh(t, { master: true, connectExit: 255, connectStderr: CHANGED_KEY_STDERR });
+  await assert.rejects(() => createSshTransport({ cli: changed.cli }).connect(CONFIG), (e) => {
+    assert.match(e.message, /CHANGED/);
+    assert.match(e.message, /known_hosts/);
+    assert.equal(/@@@/.test(e.message), false, 'a row of @ tells the operator nothing');
+    return true;
+  });
 });
 
 // PINS THE RULING on a ControlPath whose master is DEAD (SIGKILLed, or the box
