@@ -26,7 +26,10 @@ This is the load-bearing negative result, and every `classifyFailure` row in
 | unresolvable name | **255** | stderr | `ssh: Could not resolve hostname no-such-host-xyz.invalid: Name or service not known` |
 | leading-dash host, with `--` | **255** | stderr | `hostname contains invalid characters` |
 | wrong key | **255** | stderr | `root@172.17.0.5: Permission denied (publickey).` |
-| unknown host key | **255** | stderr | `Host key verification failed.` |
+| unknown host key, `StrictHostKeyChecking` `ask`/`yes` | **255** | stderr | `Host key verification failed.` |
+| unknown host key, `accept-new` | **0** (connects) | stderr | `Warning: Permanently added '<ip>' (ED25519) to the list of known hosts.` + CRLF, first; the key is appended to known_hosts |
+| unknown host key, `accept-new`, auth refused | **255** | stderr | that notice, THEN `<user>@<ip>: Permission denied (…)` — the notice precedes the refusal |
+| **changed** host key (any strict mode, `accept-new` included) | **255** | stderr | a 903-byte banner: `@`×59, `@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @`, `@`×59, … `Offending ED25519 key in <file>:1`, `  ssh-keygen -f '<file>' -R '<ip>'`, `Host key for <ip> has changed and you have requested strict checking.`, `Host key verification failed.` — CRLF lines, except one bare LF before the `SHA256:` fingerprint. known_hosts is not modified |
 | **the remote command's own `exit 255`** | **255** | — | *(the command's own output)* |
 
 **ssh forwards a remote command's exit status verbatim**, so the last row is
@@ -43,6 +46,13 @@ bug that shipped once and was caught by the live suite:
   <ip> and you have requested strict checking.`, and **both lines are written
   with CRLF**. With the default (`ask`) it is that second line alone, with LF.
   Both shapes are in `tests/sshkind.test.mjs`.
+- Under `accept-new` either may follow the `Warning: Permanently added …` notice,
+  so that notice is the second measured lead-in line (`KEY_RECORDED`).
+
+**The changed-key banner's `Host key verification failed.` sits at byte ~870**,
+past the 512-byte stderr head session.mjs and run.mjs pass to `classifyFailure`.
+Only the banner's opening two lines are reachable, so that is what the row
+matches (`CHANGED_BANNER`); the banner's own `ssh-keygen -R` line is cut off too.
 
 **And the auth prefix names the RESOLVED host, not the configured alias.**
 Measured with `Host my-alias-not-the-ip` / `HostName 172.17.0.5`: ssh printed
@@ -176,11 +186,13 @@ batchmode no          connecttimeout none      controlpersist no
 controlmaster false   requesttty auto          stricthostkeychecking ask
 ```
 
-`stricthostkeychecking ask` is the one the **known_hosts policy** rests on:
-combined with `BatchMode=yes`, an unknown or changed key **fails** rather than
-prompting or trusting on first use. That is why we set neither
-`StrictHostKeyChecking` nor `UserKnownHostsFile` — the policy is that
-interaction, not an omission. `docs/features.md` states the policy for a user.
+`stricthostkeychecking ask` is what `StrictHostKeyChecking=accept-new` changes:
+under `ask` with `BatchMode=yes` an unknown key fails, under `accept-new` it is
+recorded and the dial proceeds, and a changed key fails under both. No
+`UserKnownHostsFile` is set, so the key lands in the file the operator's config
+names (`~/.ssh/known_hosts` by default). A command-line `-o` beats the config
+file, and `CODE_SYSTEM_SSH` options precede ours (ssh keeps the first value).
+`docs/protocol.md` states the policy; `docs/features.md` states it for a user.
 
 ## 8. `-T` is load-bearing, and only `RequestTTY force` shows it
 
@@ -342,7 +354,10 @@ allows password auth for a non-root user.
 - **An unknown host key on the askpass path**: ssh hands the helper the prompt
   `The authenticity of host '<ip> (<ip>)' can't be established. … Are you sure you
   want to continue connecting (yes/no/[fingerprint])?`; the helper exits 1, and
-  ssh fails with `Host key verification failed.` + CRLF. No hang.
+  ssh fails with `Host key verification failed.` + CRLF. No hang. (That is under
+  `ask`.) **Under `accept-new` the helper is never called for a host key**: an
+  unknown key is recorded without a prompt, and a changed key fails with the
+  banner without one — a logging helper saw only the `password:` prompt.
 - **Prompts the helper sees**: `<user>@<ip>'s password: ` (matches `*[Pp]assword*`)
   and the host-key one above (its body mentions no "password", and is declined).
 - **`-i` paths are expanded by ssh**: `-i '/d/%u'` opens `/d/<local user>` (a
@@ -381,7 +396,12 @@ Measured against the test sshd listening on 22 and 2222.
   `Host key verification failed.`. With only a bare `ip <key>` entry, port 2222
   STILL connects: `-vv` shows `checking without port identifier` and `found
   matching key w/out port`. A bare entry satisfies any port; a `[host]:port`
-  entry only its own. No entry at all fails with the same single line.
+  entry only its own. No entry at all fails with the same single line (`ask`).
+- **`accept-new` records by the same keying**: an unknown key on port 2222 is
+  written `[ip]:2222 <key>` (notice: `Permanently added '[ip]:2222'`); with only
+  that entry on file a dial to port 22 records a bare `ip <key>` beside it; with a
+  bare entry on file a dial to 2222 records nothing. The recorded name is the
+  address ssh dials (the alias's `HostName`), not the alias.
 - **`-p` is ignored by `-O check`, `-O exit` and a multiplexed exec** under an
   explicit `ControlPath`: with a master on 2222, `-O check -p 2223` answers
   `Master running`, `-O exit -p 2223` exits it, and an exec with `-p 2223` ran

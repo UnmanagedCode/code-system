@@ -538,13 +538,14 @@ inherit branch the assignments are ours, but `<command…>[0]` is the frame's ow
 |---|---|
 | `<ssh-cli>` | `["ssh"]`, or the whole argv named by **`CODE_SYSTEM_SSH`** (JSON array of non-empty strings). The shipped default is bare `ssh` — **the operator's own `~/.ssh/config` and agent**, which is what makes a remote's `host` a Host *alias*. A malformed value throws at transport construction → launcher exit 2 before any frame |
 | `-T` | always. The operator's config may say `RequestTTY force`, and a pty applies CR translation that corrupts `fileops`' `CCSTAT` header parse (measured) |
-| `-o BatchMode=yes` | always. Nothing may wait on a human — for a passphrase or a host key |
+| `-o BatchMode=yes` | always (`no` only for a password remote, whose askpass it would disable). Nothing may wait on a human for a passphrase |
+| `-o StrictHostKeyChecking=accept-new` | always, on both credential paths. An unknown host key is accepted and recorded, a changed one refused — never a prompt. See *The `known_hosts` policy* |
 | `-o ConnectTimeout=5` | always. With `BatchMode`, this is what makes an unreachable host answer in seconds rather than hang past cc's deadline |
 | `-o ControlPath=<path>` | provider-computed, never configurable — formula in `docs/architecture.md` |
 | `-o ControlMaster` | **`no` on every operation**; `yes` only in `connect`, and only after its own `no` pre-check found no master. `no` means "use a master if one exists, never create one", so the exec path needs no directory and `spawnPlan` stays pure. **`-M` is never emitted**: doubled with `-o ControlMaster=yes` it means `ask`, which `BatchMode` cannot answer (measured) |
 | `-o ControlPersist=600` | finite, so a master orphaned by a crashed launcher reaps itself |
 | `-p <port>` | only when the card sets a `port`, as two argv elements right after `ControlPersist` and before any credential options. Part of the shared option block, so every dial carries it (exec, `-O check`, connect's master, `-O exit`, the kill relay); the `-V` probe does not dial and has none. Unset emits nothing, so ssh's own default (22, or the config's `Port`) applies. Under an explicit `ControlPath`, `-O check`, `-O exit` and a multiplexed exec ignore `-p` (measured); the port separates masters only through the ControlPath |
-| `StrictHostKeyChecking` / `UserKnownHostsFile` | **never set** — that is the policy, not an omission. See below |
+| `UserKnownHostsFile` | **never set**: keys are recorded in, and checked against, the operator's own `known_hosts`. See below |
 | `--chdir=<cwd>` | the frame's `cwd`, verbatim, **including `/`**. Replaces docker's `-w`, which has no ssh equivalent; a bad cwd then fails inside `env` with a wording we classify |
 | `env` absent (`null`) | no `-i`: the target keeps its own PATH/HOME/toolchain. The two plumbing variables ride as `env` operands |
 | `env` supplied | `-i` — a **replacement**, as §5 requires. `CC_REMOTE` and `CC_EXEC_TOKEN` are the last entries, so the provider's binding beats a frame-supplied one |
@@ -577,17 +578,31 @@ constant or the provider-computed ControlPath.
 
 ### The `known_hosts` policy
 
-**Stated explicitly, because "we set no option" is not by itself a policy.** The
-provider sets neither `StrictHostKeyChecking` nor `UserKnownHostsFile`, and
-relies on an interaction: OpenSSH's default is `StrictHostKeyChecking=ask`, and
-combined with the `BatchMode=yes` the provider *does* set, an unknown or changed
-host key **fails — it never prompts, and never trusts on first use**.
+**Trust on first use, refusal on change.** Every dial carries
+`-o StrictHostKeyChecking=accept-new` and no `UserKnownHostsFile`:
 
-Adding or repairing a key is the **operator's own out-of-band action** against
-their own `known_hosts` (`ssh-keyscan`, or a manual verification). The refusal is
-an id-addressed `EUNKNOWN` whose message says so. Pinned against a live target
-whose key has been removed by `tests/ssh-live.test.mjs` → *"an unknown host key
-FAILS — never a prompt, never trust-on-first-use"*.
+| Host key | Outcome |
+|---|---|
+| unknown | accepted, and recorded in the operator's default `known_hosts` (whatever their config's `UserKnownHostsFile` names). On a non-22 port the entry is `[host]:port`. Later dials verify against it |
+| matches the recorded one | connects |
+| **changed** | refused with no prompt, on both credential paths; `known_hosts` is left untouched. Exec: id-addressed `EUNKNOWN` naming the change; `connect`: a throw saying the same. Repairing it (`ssh-keygen -R`, after verifying the new key) is the operator's own out-of-band action |
+
+- **The recording dial writes one line to stderr first**: `Warning: Permanently
+  added '<host>' (<TYPE>) to the list of known hosts.` (CRLF). `connect`
+  discards it; an exec that dials without a master (an enabled remote never
+  connected) carries it in that one command's stderr. It is a measured lead-in
+  for the classifier, so an auth refusal behind it still classifies.
+- **Precedence.** A command-line `-o` beats `~/.ssh/config`, so `accept-new`
+  overrides a `StrictHostKeyChecking` there. Options in `CODE_SYSTEM_SSH` come
+  first and ssh keeps the first value, so
+  `CODE_SYSTEM_SSH='["ssh","-o","StrictHostKeyChecking=yes"]'` restores strict
+  checking (an unknown key is then refused with the `Host key verification
+  failed` row below).
+- Pinned against a live target by `tests/ssh-live.test.mjs` → *"an unknown host
+  key is accepted on first use and recorded in known_hosts"* and *"a CHANGED
+  host key is refused, named as a change, and the recorded key is untouched"*;
+  the password path by `tests/ssh-auth-live.test.mjs`, the `[host]:port` keying
+  by `tests/ssh-port-live.test.mjs`.
 
 ### How an ssh failure becomes a code
 
@@ -601,18 +616,23 @@ once, in `.wiki/gotchas/ssh-controlmaster-transport.md` §1.
 | 255 | stderr | `ssh: connect to host …` / `ssh: Could not resolve hostname …` | `ENOREMOTE`, naming the **configured** host |
 | 255 | stderr | `hostname contains invalid characters` | `ENOREMOTE`, naming the configured host |
 | 255 | stderr | `Permission denied (publickey…` on a line of ssh's own **opening**; ssh prefixes it on that line with `<user>@<host>: ` | `EUNKNOWN` naming `~/.ssh/config`, the agent and `CODE_SYSTEM_SSH` — **never `ENOREMOTE`**: our access failing is not the remote being absent |
-| 255 | stderr | `Host key verification failed` on a line of ssh's own **opening** — either the first line, or the second when ssh prefixes it (with CRLF) with `No <type> host key is known for … strict checking.` | `EUNKNOWN` naming the `known_hosts` policy, same reason |
+| 255 | stderr | `@@@…@` then `@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @` as the **first two lines** — a changed host key. ssh's `Host key verification failed.` closes this ~900-byte banner, past the 512-byte head the classifier receives, so the banner's opening is the anchor | `EUNKNOWN` naming the change and `ssh-keygen -R`, same reason |
+| 255 | stderr | `Host key verification failed` on a line of ssh's own **opening** — either the first line, or the second when ssh prefixes it (with CRLF) with `No <type> host key is known for … strict checking.` Reached only when `CODE_SYSTEM_SSH` forces strict checking | `EUNKNOWN` naming `known_hosts` and `CODE_SYSTEM_SSH`, same reason |
 | **127** | stderr | `env: '<argv0>': No such file or directory` | `ENOENT` — §5's "a command that never started is an `error` frame, not an `exit` frame" |
 | **125** | stderr | `env: cannot change directory to '<cwd>': …` | `ENOENT`, same reason. **Note the different exit code** — anchoring on 127 alone reports a bad cwd as a command that ran and exited |
 | anything else | — | — | **not a transport failure**: the command's own `exit` frame |
 
 **Two anchors are in use, and the difference is measured rather than stylistic.**
 The rows whose wording *opens the stream* are matched with `startsWith` on the
-stream — the strictest available. The auth and host-key rows cannot be: neither
+stream — the strictest available; the changed-key banner opens it too, and is
+matched as its first two whole lines. The auth and unknown-host-key rows cannot
+be: neither
 wording opens the stream (ssh prefixes the first on its line and the second with
 a whole line). They are matched **per line, within ssh's own opening**: the walk
 takes the first line that matches, and stops as soon as a line is neither a
-match nor that one measured preamble. Forging either therefore requires exiting
+match nor one of the measured lead-in lines (strict checking's `No <type> host
+key is known …`, and the `Warning: Permanently added …` notice a first
+connect writes). Forging either therefore requires exiting
 exactly 255 (or `env`'s 127/125), writing **nothing** to stdout, and putting
 ssh's exact bytes at the *start* of stderr. These rows report the **whole**
 normalised diagnostic as `stderr` and quote the **matched line** in the message,

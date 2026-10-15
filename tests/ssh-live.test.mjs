@@ -550,37 +550,68 @@ live('an unreachable host is an id-addressed ENOREMOTE with no exit frame, and t
   assert.equal(textOf(l.frames, 'ok'), 'still here');
 });
 
-// PINS [D3] — THE known_hosts POLICY, turned from a claim into a fact. We set
-// no StrictHostKeyChecking and no UserKnownHostsFile; OpenSSH's default is
-// `ask` (measured with `ssh -G`) and the `BatchMode=yes` we DO set turns that
-// into a REFUSAL. So an unknown host key must FAIL — never prompt, never
-// trust-on-first-use — and bounded, not a hang.
-//
-// A mutant adding `StrictHostKeyChecking=no` or `accept-new` reds here: it
-// would connect happily to a host whose key nobody has ever verified.
-live('an unknown host key FAILS — never a prompt, never trust-on-first-use', async (t, g) => {
+// PINS [D3] — THE known_hosts POLICY, turned from a claim into a fact. The
+// provider sets `StrictHostKeyChecking=accept-new` and no `UserKnownHostsFile`,
+// so an UNKNOWN host key is accepted on first use and recorded in the
+// operator's own known_hosts (the fixture's ssh_config names it), and later
+// connects verify against it. The fixture itself leaves the option unset, so
+// this measures the provider's flag and nothing else.
+live('an unknown host key is accepted on first use and recorded in known_hosts', async (t, g) => {
   const target = await withSshTarget(t, g);
   const store = await storeFor(t, target);
   // Empty its known_hosts AFTER readiness, so the key really is unknown at the
   // moment the provider connects. Readiness used ControlPath=none, so no master
   // exists to short-circuit the check.
   await fs.writeFile(target.knownHosts, '');
-  assert.equal((await fs.readFile(target.knownHosts, 'utf8')).trim(), '',
-    'the fixture must actually have removed the key, or this pins nothing');
+
+  const l = launcherFor(t, store, target.sshEnv);
+  await l.hello();
+  l.send({ type: 'exec', id: 'hk', remoteId: 'alpha', cwd: '/tmp', argv: ['printf', 'ran'] });
+  const exit = await l.waitFor(f => (f.type === 'exit' || f.type === 'error') && f.id === 'hk');
+  assert.equal(exit.type, 'exit', JSON.stringify(exit));
+  assert.equal(exit.code, 0);
+  assert.equal(textOf(l.frames, 'hk'), 'ran');
+
+  const blob = target.hostKey.split(/\s+/).slice(0, 2).join(' ');
+  const recorded = (await fs.readFile(target.knownHosts, 'utf8')).split('\n').filter(Boolean);
+  assert.deepEqual(recorded.map(line => line.split(/\s+/).slice(0, 3).join(' ')), [`${target.ip} ${blob}`],
+    'exactly the host\'s own key, under the address ssh dialled, in the operator\'s file');
+
+  // And the next dial VERIFIES against it rather than recording again.
+  l.send({ type: 'exec', id: 'hk2', remoteId: 'alpha', cwd: '/tmp', argv: ['true'] });
+  assert.equal((await l.waitFor(f => f.type === 'exit' && f.id === 'hk2')).code, 0);
+  assert.equal((await fs.readFile(target.knownHosts, 'utf8')).split('\n').filter(Boolean).length, 1);
+});
+
+// PINS the half of the policy that keeps a man-in-the-middle out: a key that
+// DIFFERS from the recorded one is refused — on exec as an id-addressed
+// EUNKNOWN naming the change, on connect as a throw saying the same — and the
+// recorded key is left exactly as it was. A mutant setting
+// `StrictHostKeyChecking=no` reds here: ssh would connect anyway.
+live('a CHANGED host key is refused, named as a change, and the recorded key is untouched', async (t, g) => {
+  const target = await withSshTarget(t, g);
+  const store = await storeFor(t, target);
+  // A different ed25519 key — the client key's own public half — on file for
+  // the target's address, so the host presents a key of the SAME type that does
+  // not match.
+  const wrong = (await fs.readFile(`${target.key}.pub`, 'utf8')).trim().split(/\s+/).slice(0, 2).join(' ');
+  const onFile = `${target.ip} ${wrong}\n`;
+  await fs.writeFile(target.knownHosts, onFile);
 
   const l = launcherFor(t, store, target.sshEnv);
   await l.hello();
   const started = Date.now();
   l.send({ type: 'exec', id: 'hk', remoteId: 'alpha', cwd: '/tmp', argv: ['printf', 'should-not-run'] });
   const err = await l.waitFor(f => f.type === 'error' && f.id === 'hk');
-
   assert.equal(err.code, 'EUNKNOWN', 'our access failing is NOT the remote being absent');
-  assert.notEqual(err.code, 'ENOREMOTE', 'ENOREMOTE would send a user to rebuild a host that is fine');
-  assert.match(err.stderr ?? '', /Host key verification failed/, err.stderr);
+  assert.match(err.message, /CHANGED/, err.message);
   assert.match(err.message, /known_hosts/, 'the fix is out of band, and the message says where');
   assert.ok(Date.now() - started < 15_000, 'it must FAIL, not sit on a prompt');
   assert.equal(l.frames.some(f => f.type === 'exit'), false, 'and never a plausible exit frame');
   assert.equal(textOf(l.frames, 'hk'), '', 'the command must not have run');
+
+  await assert.rejects(() => target.transport().connect(target.config), /CHANGED/);
+  assert.equal(await fs.readFile(target.knownHosts, 'utf8'), onFile, 'a refusal never rewrites known_hosts');
 });
 
 // PINS acceptance 6. A CC_REMOTE-only assertion passes even if both ids reach

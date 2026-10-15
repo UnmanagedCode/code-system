@@ -124,20 +124,26 @@ live('an unauthorized key fails fast, leaves nothing running, and names the key 
   });
 });
 
-// PINS that an unknown host key on the password path fails FAST with ssh's own
-// refusal wording and leaves nothing running. (That the askpass helper declines
-// non-password prompts is pinned in tests/sshauth.test.mjs, not here.)
-live('on the password path an unknown host key fails fast with the host-key refusal', async (t, g) => {
+// PINS that the password path gets the same known_hosts policy as a key: an
+// unknown host key is accepted on first use and recorded, with no prompt — the
+// askpass helper is never asked a yes/no question, because `accept-new` asks
+// none (measured). (That the helper declines non-password prompts is pinned in
+// tests/sshauth.test.mjs, not here.)
+live('on the password path an unknown host key is accepted and recorded', async (t, g) => {
   const { target } = await credentialTarget(t, g);
   const empty = path.join(target.dir, 'empty_known_hosts');
   await fs.writeFile(empty, '');
   const bare = await bareSshConfig(target.dir, empty);
   const transport = createSshTransport({ cli: [...g.ssh, '-F', bare] });
   const config = { host: target.ip, user: 'dev', password: PASSWORD };
+  t.after(() => transport.disconnect(config).catch(() => {}));
   const started = Date.now();
-  await assert.rejects(() => transport.connect(config), /Host key verification failed/);
+  await transport.connect(config);
   assert.ok(Date.now() - started < FAST_MS);
-  assert.equal((await controlPathProcs(controlPathFor(config))).count, 0);
+  assert.equal((await controlPathProcs(controlPathFor(config))).count, 1);
+  const blob = target.hostKey.split(/\s+/).slice(0, 2).join(' ');
+  assert.deepEqual((await fs.readFile(empty, 'utf8')).split('\n').filter(Boolean)
+    .map(line => line.split(/\s+/).slice(0, 3).join(' ')), [`${target.ip} ${blob}`]);
 });
 
 // PINS that a remote with NO credentials keys its master exactly as before this

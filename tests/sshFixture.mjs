@@ -117,9 +117,10 @@ async function ensureImage(cli) {
  * and every identity, port and known_hosts setting lives in the operator's own
  * ssh config. That is criterion 2 exercised rather than asserted.
  *
- * NO TRUST-ON-FIRST-USE ANYWHERE. The host key is read with `docker exec` and
- * written into a real known_hosts, so the provider's refusal to accept an
- * unknown key is never worked around by the fixture.
+ * THE HOST KEY IS WRITTEN OUT OF BAND. It is read with `docker exec` into a real
+ * known_hosts, so every test starts from a KNOWN key; a test about the
+ * provider's trust-on-first-use or changed-key refusal empties or rewrites
+ * `knownHosts` itself.
  */
 export async function withSshTarget(t, gate, {
   stem = 'box', alias = uniqueName('alias'), extraConfig = [], allowPassword = false,
@@ -189,9 +190,8 @@ export async function withSshTarget(t, gate, {
     '  IdentityAgent none',
     `  UserKnownHostsFile ${knownHosts}`,
     // DELIBERATELY NO `StrictHostKeyChecking`. The provider's known_hosts policy
-    // works by OpenSSH's DEFAULT (`ask`) combining with the `BatchMode=yes` the
-    // provider sets, so pinning the option here would test the fixture instead
-    // of the policy.
+    // is the `accept-new` it passes on its own command line, so pinning the
+    // option here would test the fixture instead of the policy.
     ...extraConfig,
   ]);
 

@@ -161,28 +161,34 @@ live('the same user@host on two ports gets two masters', async (t, g) => {
   assert.equal(await serverPort(transport, set), '2222');
 });
 
-// PINS how ssh keys known_hosts by port (MEASURED, not assumed): a `[host]:port`
-// entry satisfies only that port, while a bare `host` entry satisfies any port.
-live('known_hosts: a [host]:port entry covers only its port, a bare host entry any', async (t, g) => {
+// PINS how known_hosts is keyed by port (MEASURED, not assumed), as the
+// provider's `accept-new` writes it: an unknown key on a non-22 port is recorded
+// as `[host]:port`, a `[host]:port` entry does NOT cover port 22 (so dialling 22
+// records a bare entry beside it), and a bare `host` entry covers any port.
+live('known_hosts: accept-new records [host]:port on a non-22 port; a bare entry covers any port', async (t, g) => {
   const target = await withSshTarget(t, g, { ports: [22, 2222] });
-  const only = path.join(target.dir, 'kh_port_only');
-  await fs.writeFile(only, `[${target.ip}]:2222 ${target.hostKey}\n`);
-  const portOnly = createSshTransport({ cli: [...g.ssh, '-F', await bareSshConfig(target.dir, only)] });
+  const blob = target.hostKey.split(/\s+/).slice(0, 2).join(' ');
+  const entries = async (file) => (await fs.readFile(file, 'utf8')).split('\n').filter(Boolean)
+    .map(line => line.split(/\s+/).slice(0, 3).join(' '));
   const key = { host: target.ip, user: 'root', identityFile: target.key };
-  closing(t, portOnly, { ...key, port: 2222 });
-  await portOnly.connect({ ...key, port: 2222 });
-  await assert.rejects(() => portOnly.connect(key), /Host key verification failed/);
-  await assert.rejects(() => exec(portOnly, key, 'true'), (e) => {
-    assert.equal(e.code, 'EUNKNOWN');
-    assert.match(e.message, /host key/);
-    return true;
-  });
+
+  const kh = path.join(target.dir, 'kh_recorded');
+  await fs.writeFile(kh, '');
+  const tr = createSshTransport({ cli: [...g.ssh, '-F', await bareSshConfig(target.dir, kh)] });
+  closing(t, tr, { ...key, port: 2222 });
+  closing(t, tr, key);
+  await tr.connect({ ...key, port: 2222 });
+  assert.deepEqual(await entries(kh), [`[${target.ip}]:2222 ${blob}`], 'recorded under [host]:port only');
+  await tr.connect(key);
+  assert.deepEqual(await entries(kh), [`[${target.ip}]:2222 ${blob}`, `${target.ip} ${blob}`],
+    'the port entry did not cover 22, so 22 was recorded beside it');
 
   const bareEntry = path.join(target.dir, 'kh_bare_entry');
   await fs.writeFile(bareEntry, `${target.ip} ${target.hostKey}\n`);
   const bareOnly = createSshTransport({ cli: [...g.ssh, '-F', await bareSshConfig(target.dir, bareEntry)] });
   closing(t, bareOnly, { ...key, port: 2222 });
   await bareOnly.connect({ ...key, port: 2222 });
+  assert.equal((await entries(bareEntry)).length, 1, 'a bare entry satisfies port 2222: nothing new recorded');
 });
 
 // ── registration, and the count proof ────────────────────────────────
