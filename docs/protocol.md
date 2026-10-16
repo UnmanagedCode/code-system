@@ -843,7 +843,7 @@ only and re-derived at every start.
 | `POST /api/remotes/:id/disconnect` | 200 `{remote, warning?}` — the gate **first**, then the kind's `disconnect`. 404 / 409 as above |
 | `DELETE /api/remotes/:id` | delete, **warning** when any cc project still names this `remoteId` |
 | `POST /api/mcp` | the MCP surface — one read-only tool. Its own contract is **MCP surface** below |
-| *(router tail)* | every response is JSON, including express's own body-parser refusals — the client reads `{error}` off every status |
+| *(router tail)* | every response from a route under `/api` is JSON, including express's own body-parser refusals — the client reads `{error}` off every status |
 
 **Secret config fields.** A `configFields` entry may carry **`secret: true`**
 (ssh's `password`). No response — `GET /remotes`, `POST`, `PATCH`, connect,
@@ -878,6 +878,29 @@ Both answer with a card from a **real re-probe**, so the response *is* the probe
 rather than a claim. `refreshBaseline` is additionally gated on `enabled`: the
 tooling probe is the one backend path that execs into a target and it bypasses
 the launcher's gate entirely, so a disabled remote is never probed.
+
+### Static UI and headers
+
+Owned by `src/http.mjs` (`createApp`); `server.mjs` listens on **`127.0.0.1` only**.
+
+| Request | Answer |
+|---|---|
+| `GET /` | `frontend/dist/index.html` (`text/html`) |
+| `GET /theme-init.js`, `GET /assets/<name>` | the built file; asset names carry a content hash |
+| anything else outside `/api` — including `/pluginBridge.js`, `/pluginTheme.css` and a directory such as `/assets` | **404** `text/plain` `Not found`. No SPA fallback, no directory redirect |
+| any non-`/api` path while `frontend/dist/index.html` is missing | **503** `text/plain` `UI not built — run npm install` (`NOT_BUILT`); `/api/*` and `/api/health` still answer. Decided once, at backend start |
+| an error past the API router | **500** `text/plain` `Internal error` (the cause is logged, not sent); another status → `text/plain` with the error's message |
+
+**Every response** — 200, 404, 503, 500 and API JSON — carries
+`X-Content-Type-Options: nosniff` and this `Content-Security-Policy` (`CSP` in
+`src/http.mjs`):
+
+```
+default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'
+```
+
+`style-src 'unsafe-inline'` is there for Radix Dialog, whose scroll lock injects
+a `<style>` element. No `X-Powered-By`.
 
 ### Config values that become argv
 

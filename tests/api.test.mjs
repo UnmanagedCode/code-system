@@ -305,9 +305,10 @@ test('a config edit switches the remote off; a label-only edit does not', async 
   await call('POST', '/remotes/box/connect');
   assert.equal((await stored(store, 'box')).enabled, true);
 
-  // THE SHAPE THE UI ACTUALLY SENDS. frontend/app.js's edit form has no
-  // dirty-tracking: it always PATCHes `{label, config}`, with `config` spread
-  // from the stored record. A test that omits `config` exercises a request no
+  // THE SHAPE THE UI ACTUALLY SENDS. The card's edit form has no
+  // dirty-tracking (`submitRequest` in frontend/src/lib/cardState.mjs): it
+  // always PATCHes `{label, config}`, with `config` spread from the stored
+  // record. A test that omits `config` exercises a request no
   // client emits — which is exactly how the label-only path shipped broken.
   const relabelled = await call('PATCH', '/remotes/box', {
     label: 'The box', config: { host: 'box' },

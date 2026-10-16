@@ -1,71 +1,82 @@
-// PINS THE PLUGIN-COMPLIANCE ITEMS A UNIT TEST CAN REACH, by reading the files
-// off disk — cc's own tests/static.test.mjs does exactly this. Deterministic,
-// no browser, no server.
-//
-// These three are worth a test rather than a comment because each fails ONLY
-// once the plugin is mounted under code-conductor, which is the one place no
-// test in this repo runs.
+// Pins the host-contract and security rules a static read of the UI sources
+// can reach (plugin-ui.md Parts 1 and 2). Each fails only once the page is
+// mounted under cc, which is the one place no other test here runs.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { promises as fs } from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { REPO } from './helpers.mjs';
+import { FRONTEND, headTags, headUrls, ownFiles, sourceFiles } from './_frontendFiles.mjs';
 
-const FRONTEND = path.join(REPO, 'frontend');
-const read = name => fs.readFile(path.join(FRONTEND, name), 'utf8');
+const files = sourceFiles();
+const html = files.find(([n]) => n === 'index.html')[1];
 
-// PINS compliance item 4: the bridge tag, EXACTLY. cc serves /pluginBridge.js
-// itself, so this one URL is absolute by requirement, and the checklist asks
-// for this literal tag rather than an equivalent.
-test('index.html carries the pluginBridge tag verbatim', async () => {
-  const html = await read('index.html');
-  assert.ok(html.includes('<script src="/pluginBridge.js" defer></script>'),
-    'the compliance checklist asks for this exact tag');
-  assert.equal((html.match(/pluginBridge\.js/g) ?? []).length, 1, 'exactly once');
+// Invariant: <head> loads the bridge first as a blocking classic script, then
+// the host theme, then theme-init.js, then the module entry — each exactly once.
+test('index.html head order: bridge (blocking, first), theme, theme-init, entry — each once', () => {
+  assert.deepEqual(headUrls(html), ['/pluginBridge.js', '/pluginTheme.css', 'theme-init.js', './src/main.tsx']);
+  const tags = headTags(html);
+  const bridge = tags.find((t) => t.attrs.includes('/pluginBridge.js'));
+  assert.equal(tags.filter((t) => t.tag === 'script' || t.tag === 'link')[0], bridge, 'the bridge is the first script or link');
+  assert.doesNotMatch(bridge.attrs, /\b(?:defer|async|type=)/, 'blocking and classic');
+  for (const u of ['/pluginBridge.js', '/pluginTheme.css', 'theme-init.js', 'main.tsx']) {
+    assert.equal(html.split(u).length - 1, 1, `${u} appears exactly once`);
+  }
+  assert.match(tags.find((t) => t.attrs.includes('main.tsx')).attrs, /type="module"/);
 });
 
-// PINS compliance item 3, BASE-PATH COMPLIANCE. The plugin is served under an
-// X-Forwarded-Prefix it never learns, so any other absolute URL 404s the
-// instant it is mounted under cc — while working perfectly standalone, which is
-// what makes this failure mode so easy to ship.
-test('every asset URL except the bridge is relative, and resolves to a real file', async () => {
-  const html = await read('index.html');
-  const refs = [...html.matchAll(/(?:href|src)="([^"]+)"/g)].map(m => m[1]);
-  assert.ok(refs.length >= 3, 'the page references its own assets');
-
-  for (const ref of refs) {
-    if (ref === '/pluginBridge.js') continue;
-    assert.doesNotMatch(ref, /^\//, `'${ref}' is absolute — it would 404 under a forwarded prefix`);
-    assert.doesNotMatch(ref, /^[a-z][a-z0-9+.-]*:/i, `'${ref}' is a scheme URL`);
-    // A relative ref that names nothing is a 404 in both deployments.
-    await fs.access(path.join(FRONTEND, ref.split('?')[0]));
+// Invariant: every non-host URL index.html names is relative and names a real
+// file (theme-init.js is served from public/).
+test('index.html: the non-host refs are relative and exist', () => {
+  for (const u of headUrls(html).filter((x) => !x.startsWith('/'))) {
+    assert.doesNotMatch(u, /^[a-z][a-z0-9+.-]*:/i, u);
+    const onDisk = u === 'theme-init.js' ? path.join(FRONTEND, 'public', u) : path.join(FRONTEND, u);
+    assert.ok(existsSync(onDisk), `${u} resolves to ${onDisk}`);
   }
 });
 
-// PINS the same rule on the SIDE THE HTML CANNOT SHOW: every fetch app.js makes
-// is relative too. An absolute `/api/...` is the exact shape that works
-// standalone and breaks under the prefix.
-test('app.js fetches nothing absolute', async () => {
-  const js = await read('app.js');
-  for (const m of js.matchAll(/(?:api\(\s*'[A-Z]+'\s*,\s*|fetch\(\s*)(['"`])([^'"`]*)\1/g)) {
-    assert.doesNotMatch(m[2], /^\//, `fetch target '${m[2]}' is absolute`);
-    assert.doesNotMatch(m[2], /^[a-z][a-z0-9+.-]*:/i, `fetch target '${m[2]}' is a scheme URL`);
+// Invariant: every URL is relative (cc mounts the page under /plugins/code-system/),
+// except the two host URLs in index.html.
+test('frontend uses no root-relative URLs', () => {
+  const rootRel = /(?:src|href)\s*=\s*["']\/|['"`]\/api|fetch\(\s*['"`]\//g;
+  const HOST = new Set(['src="/pluginBridge.js"', 'href="/pluginTheme.css"']);
+  assert.ok(files.length > 10, 'scanned the UI sources');
+  for (const [n, src] of files) {
+    for (const m of src.matchAll(rootRel)) {
+      const at = src.slice(m.index).match(/^(?:src|href)\s*=\s*"[^"]*"/)?.[0];
+      assert.ok(n === 'index.html' && HOST.has(at), `${n}: ${at ?? m[0]}`);
+    }
   }
-  // And the template-literal paths, which the pattern above cannot see whole.
-  assert.doesNotMatch(js, /['"`]\/api\//, 'no absolute /api/ path anywhere');
 });
 
-// PINS THE SEAM the whole frontend test strategy rests on: cardState.mjs is
-// PURE. The moment it touches the DOM it stops being unit-testable with
-// `node --test`, and the card's decisions become browser-only again.
-test('cardState.mjs touches no browser global', async () => {
-  const js = await read('cardState.mjs');
-  for (const global of ['document', 'window', 'localStorage', 'navigator', 'fetch(']) {
-    assert.equal(js.includes(global), false,
-      `cardState.mjs must stay DOM-free; found '${global}'`);
+// Invariant: no HTML-string sinks, dynamic code, hash writes, parent scripting,
+// cc storage keys, or style written from script — anywhere in the UI source.
+test('frontend uses no HTML-string sinks, eval, style writes, hash writes, window.parent or cc keys', () => {
+  const banned = /innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\s*\(|new\s+Function|dangerouslySetInnerHTML|setAttribute\(\s*['"]style|\.setProperty\(|\bstyle\s*=|\bstyle=\{|location\.hash\s*=|window\.parent|code-conductor:/;
+  for (const [n, src] of files) assert.equal(banned.test(src), false, `${n}: ${src.match(banned)?.[0]}`);
+});
+
+// Invariant: the CSP forbids inline script, so the shell has none, and no inline style either.
+test('index.html has no inline script or style', () => {
+  assert.equal(/<script(?![^>]*\bsrc=)[^>]*>/.test(html), false, 'inline <script>');
+  assert.equal(/<style[\s>]/.test(html), false, '<style>');
+  assert.equal(/\sstyle\s*=/.test(html), false, 'style=');
+});
+
+// Invariant: the plugin's own code renders controls only through the components
+// copied from cc, so they take cc's radius, focus ring and disabled treatment.
+test('own code has no raw <button>, <input>, <select> or <textarea>', () => {
+  const raw = /<(?:button|input|select|textarea)\b/;
+  for (const [n, src] of ownFiles()) assert.equal(raw.test(src), false, `${n}: ${src.match(raw)?.[0]}`);
+});
+
+// Invariant: cardState.mjs is PURE — the seam that lets node --test pin every
+// card decision with no browser. `location` stays out too: routeFromSearch
+// takes the search string as an argument for exactly that reason.
+test('cardState.mjs touches no browser global', () => {
+  const js = files.find(([n]) => n === 'src/lib/cardState.mjs')?.[1];
+  assert.ok(js, 'src/lib/cardState.mjs exists');
+  for (const global of ['document', 'window', 'localStorage', 'navigator', 'fetch(', 'location.']) {
+    assert.equal(js.includes(global), false, `cardState.mjs must stay DOM-free; found '${global}'`);
   }
-  // `location` appears only in app.js: routeFromSearch takes the search string
-  // as an argument precisely so this module never reads it.
-  assert.equal(js.includes('location.'), false);
 });

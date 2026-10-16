@@ -68,7 +68,8 @@ export const KIND_META = {
       // THE ONLY RENDERING FLAG in a descriptor field, and it changes rendering
       // ONLY: this is an ordinary config field the kind validates and the store
       // keeps, so changing it resets the gate like any other config change.
-      // frontend/app.js routes a flagged field into the card's Advanced group.
+      // frontend/src/components/RemoteForm.tsx draws a flagged field inside the
+      // card's Advanced group.
       advanced: true,
       placeholder: 'node, 1000, or 1000:1000',
       hint: 'The identity every docker action on this remote runs as, passed to `docker exec -u`.'

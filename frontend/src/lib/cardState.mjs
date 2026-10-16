@@ -13,13 +13,14 @@
 // One word for two facts is exactly the confusion this file exists to prevent
 // (.wiki/gotchas/gate-versus-probe.md).
 //
-// EVERYTHING HERE IS PURE, so app.js can stay a thin DOM wiring and every
-// invariant above is testable with `node --test` and no browser
-// (tests/cardstate.test.mjs). This is code-hub's public/shareState.js pattern.
+// EVERYTHING HERE IS PURE, so the React components (frontend/src/components/,
+// App.tsx) stay thin wiring and every invariant above is testable with
+// `node --test` and no browser (tests/cardstate.test.mjs). Plain JS with JSDoc
+// rather than TypeScript for that reason: the components import it through
+// `allowJs`, and node runs it as it is.
 
 // Mirrors src/store.mjs's REMOTE_ID_RE. Only used to reject a route parameter
-// that could never name a remote, so a deep link cannot open an edit form on
-// nothing.
+// that could never name a remote, so it is read as the list.
 const REMOTE_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 // ── the gate ─────────────────────────────────────────────────────────
@@ -244,4 +245,220 @@ export function searchForRoute(route) {
   if (route?.view === 'add') return '?add';
   if (route?.view === 'edit') return `?edit=${encodeURIComponent(route.remoteId)}`;
   return '';
+}
+
+// ── busy keys ────────────────────────────────────────────────────────
+//
+// The busy set is keyed by remoteId. The create form and the registration
+// retry have no remoteId, so each gets a key with a leading space, which the
+// remoteId charset (it starts at [a-z0-9]) can never produce.
+export const NEW_KEY = ' new';
+export const REG_KEY = ' registration';
+
+// ── the form drafts ──────────────────────────────────────────────────
+
+/**
+ * The FORM's mirror state, which is not the wire shape: `exclude` is the raw
+ * textarea text, and `mirrorPayload` is what turns it back. An opted-out remote
+ * still gets the served defaults, so ticking the box offers them rather than an
+ * empty form.
+ *
+ * The box starts ticked for a NEW remote (`remote == null`) of a kind whose
+ * descriptor sets `mirrorByDefault`. An existing remote shows what is stored: a
+ * stored `null` is unticked whatever the kind, because the default applies at
+ * registration only.
+ * @param {{mirror?:unknown}|null} remote
+ * @param {{mirrorByDefault?:boolean}|null|undefined} descriptor
+ * @param {{root:string, exclude:string[]}|null|undefined} mirrorDefaults
+ * @returns {null|{on:boolean, root:string, exclude:string}}
+ */
+export function mirrorDraft(remote, descriptor, mirrorDefaults) {
+  // No defaults yet ⇒ no group to draft for. `mirrorPayload(null)` is
+  // `undefined`, so a form submitted in this state omits `mirror`: a POST takes
+  // the backend's kind default and a PATCH keeps what is stored. DELIBERATELY
+  // WITHOUT A LOCAL FALLBACK: a second copy of the default exclude list here is
+  // exactly the drift the backend's single source exists to prevent.
+  const d = mirrorDefaults;
+  if (!d) return null;
+  const m = remote?.mirror;
+  if (m && typeof m === 'object') {
+    // GUARDED LIKE `mirrorSummary`: only the backend writes this field, but a
+    // hand-edited record can hold anything, and `"x".join` is a TypeError that
+    // would blank the whole card list rather than one form.
+    const stored = /** @type {{root?:unknown, exclude?:unknown}} */ (m);
+    return {
+      on: true,
+      root: String(stored.root ?? ''),
+      exclude: Array.isArray(stored.exclude) ? stored.exclude.join('\n') : '',
+    };
+  }
+  return {
+    on: remote == null && descriptor?.mirrorByDefault === true,
+    root: String(d.root ?? '/'),
+    exclude: (d.exclude ?? []).join('\n'),
+  };
+}
+
+/**
+ * The Add draft: the FIRST SERVED kind, never a hardcoded one, with that kind's
+ * mirror default. Advanced is collapsed on create, whatever the mirror.
+ * @param {{kind:string, mirrorByDefault?:boolean}[]} kinds
+ * @param {{root:string, exclude:string[]}|null|undefined} mirrorDefaults
+ */
+export function createDraft(kinds, mirrorDefaults) {
+  const descriptor = kinds?.[0] ?? null;
+  return {
+    remoteId: '',
+    kind: descriptor?.kind ?? 'docker',
+    label: '',
+    config: {},
+    mirror: mirrorDraft(null, descriptor, mirrorDefaults),
+    advancedOpen: false,
+  };
+}
+
+/**
+ * The Edit draft, from the stored record. A SECRET is never prefilled: its name
+ * is dropped from `config`, so the form shows it blank and `configPayload` never
+ * re-sends a value the operator did not type. `storedSecrets` is what tells the
+ * form one is kept.
+ * @param {{remoteId:string, kind:string, label?:string, config?:Record<string,unknown>, storedSecrets?:string[], mirror?:unknown}} remote
+ * @param {{configFields?:{name:string, secret?:boolean, advanced?:boolean}[], mirrorByDefault?:boolean}|null|undefined} descriptor
+ * @param {{root:string, exclude:string[]}|null|undefined} mirrorDefaults
+ */
+export function editDraft(remote, descriptor, mirrorDefaults) {
+  const fields = descriptor?.configFields ?? [];
+  /** @type {Record<string,unknown>} */
+  const config = { ...remote.config };
+  for (const f of fields) if (f.secret === true) delete config[f.name];
+  return {
+    remoteId: remote.remoteId,
+    kind: remote.kind,
+    label: remote.label ?? '',
+    config,
+    storedSecrets: [...(remote.storedSecrets ?? [])],
+    clear: {},
+    mirror: mirrorDraft(remote, descriptor, mirrorDefaults),
+    advancedOpen: advancedOpenOnEdit(remote, fields, mirrorDefaults),
+  };
+}
+
+/**
+ * The create form's Kind switch: the config is the old kind's, so it goes, and
+ * the mirror is re-derived from the NEW kind's own default.
+ * @template {{kind:string}} D
+ * @param {D} draft
+ * @param {{kind:string, mirrorByDefault?:boolean}} descriptor
+ * @param {{root:string, exclude:string[]}|null|undefined} mirrorDefaults
+ * @returns {D}
+ */
+export function switchKind(draft, descriptor, mirrorDefaults) {
+  return { ...draft, kind: descriptor.kind, config: {}, mirror: mirrorDraft(null, descriptor, mirrorDefaults) };
+}
+
+/**
+ * A config field's label: optional fields say so rather than being hidden.
+ * @param {{label:string, required?:boolean}} field
+ */
+export function fieldLabel(field) {
+  return `${field.label}${field.required ? '' : ' (optional)'}`;
+}
+
+// ── the identity stripe ──────────────────────────────────────────────
+//
+// A card keeps the same stripe across refreshes, so it is recognisable at a
+// glance. The id picks ONE OF A FIXED SET of class names and never appears in
+// the output: a remoteId is operator-typed, and nothing typed may become a
+// class, a `style` or any other attribute (plugin-ui.md Part 2).
+
+export const STRIPE_COUNT = 8;
+
+function hueFor(id) {
+  const s = String(id ?? '');
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h % 360;
+}
+
+/** @returns {string} one of `stripe-0` … `stripe-${STRIPE_COUNT - 1}` */
+export function stripeClass(id) {
+  return `stripe-${hueFor(id) % STRIPE_COUNT}`;
+}
+
+// ── the requests ─────────────────────────────────────────────────────
+
+/**
+ * A remote's own API path. RELATIVE, never `/`-led: the page is served under a
+ * prefix it does not know, and a leading slash would reach cc's API instead.
+ * @param {string} id
+ * @param {'connect'|'disconnect'} [action]
+ */
+export function remotePath(id, action) {
+  return `api/remotes/${encodeURIComponent(id)}${action ? `/${action}` : ''}`;
+}
+
+/**
+ * The request a form's Create or Save sends. An empty optional field is
+ * OMITTED rather than sent as '' (`configPayload`); an undefined mirror omits
+ * its key, so a POST takes the backend's kind default and a PATCH keeps what is
+ * stored.
+ *
+ * The edit body is SENT WHENEVER THE FORM SAVES, `config` and `mirror` both:
+ * the form has no dirty-tracking. Safe because the backend's `sameConfig`
+ * compares values and keeps `mirror` outside it, so re-sending an unchanged
+ * record cannot reset the gate. The label goes untrimmed on edit, as typed.
+ * @param {'create'|'edit'} mode
+ * @param {{remoteId:string, kind:string, label:string, config:Record<string,unknown>, clear?:Record<string,boolean>, mirror:{on:boolean, root:string, exclude:string}|null}} draft
+ * @param {{configFields?:{name:string, secret?:boolean}[]}|null|undefined} descriptor
+ * @returns {{method:'POST'|'PATCH', path:string, body:Record<string,unknown>}}
+ */
+export function submitRequest(mode, draft, descriptor) {
+  const secretNames = (descriptor?.configFields ?? []).filter(f => f.secret === true).map(f => f.name);
+  const config = configPayload(draft.config, draft.clear, secretNames);
+  const mirror = mirrorPayload(draft.mirror);
+  if (mode === 'create') {
+    const label = draft.label.trim();
+    return {
+      method: 'POST',
+      path: 'api/remotes',
+      body: {
+        remoteId: draft.remoteId.trim(),
+        kind: draft.kind,
+        ...(label ? { label } : {}),
+        config,
+        ...(mirror !== undefined ? { mirror } : {}),
+      },
+    };
+  }
+  return {
+    method: 'PATCH',
+    path: remotePath(draft.remoteId),
+    body: { label: draft.label, config, ...(mirror !== undefined ? { mirror } : {}) },
+  };
+}
+
+// ── registration ─────────────────────────────────────────────────────
+
+/**
+ * The header pill and the banner for `GET /api/registration`. `skipped` is a
+ * NORMAL state — standalone-runnable is a compliance requirement — so it is a
+ * muted note, not an error. Otherwise a banner appears only when something is
+ * wrong, and it carries cc's OWN words verbatim: they already name the
+ * directory and the fix, and paraphrasing them would throw that away.
+ * @param {{state:string, detail?:string|null, rows?:{id:string, state:string, message:string}[]}|null|undefined} reg
+ * @returns {null|{pill:{text:string, tone:'ok'|'neutral'|'bad'}, banner:null|{kind:'muted', text:string}|{kind:'error', detail:string|null, rows:string[]}}}
+ */
+export function registrationView(reg) {
+  if (!reg) return null;
+  const benign = reg.state === 'ok' || reg.state === 'skipped' || reg.state === 'pending';
+  const pill = {
+    text: `registration: ${reg.state}`,
+    tone: /** @type {'ok'|'neutral'|'bad'} */ (reg.state === 'ok' ? 'ok' : benign ? 'neutral' : 'bad'),
+  };
+  if (reg.state === 'skipped' || reg.state === 'unsupported') {
+    return { pill, banner: { kind: 'muted', text: String(reg.detail ?? reg.state) } };
+  }
+  const rows = (reg.rows ?? []).filter(row => row.state !== 'ok').map(row => `${row.id}: ${row.message}`);
+  if (rows.length === 0 && !reg.detail) return { pill, banner: null };
+  return { pill, banner: { kind: 'error', detail: reg.detail ? String(reg.detail) : null, rows } };
 }

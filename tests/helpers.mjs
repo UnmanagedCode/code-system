@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createApi } from '../src/api.mjs';
+import { createApp } from '../src/http.mjs';
 import { NdjsonDecoder, encodeFrame } from '../src/launcher/protocol.mjs';
 import { SCHEMA } from '../src/store.mjs';
 
@@ -139,11 +140,11 @@ export async function fakeConductor(handler) {
   };
 }
 
-// The backend under test, on a real ephemeral port, over a fresh temp store.
-// SHARED because every HTTP surface the backend serves needs the same
-// fixture: the same store isolation, and the same CLI pinning that keeps a
-// card render off any real docker or ssh on the machine running the suite.
-export async function withApi(t, deps = {}, env = {}) {
+// A fresh temp store, and the environment every backend test runs under,
+// restored by `t.after`. SHARED because every HTTP surface the backend serves
+// needs the same isolation, and the same CLI pinning that keeps a card render
+// off any real docker or ssh on the machine running the suite.
+export async function pinTestEnv(t, env = {}) {
   const store = await tempStore();
   const set = {
     CODE_SYSTEM_STORE: store.dir,
@@ -162,18 +163,29 @@ export async function withApi(t, deps = {}, env = {}) {
   };
   const prior = {};
   for (const [k, v] of Object.entries(set)) { prior[k] = process.env[k]; process.env[k] = v; }
-  const app = express();
-  app.use('/api', createApi(deps));
-  const server = app.listen(0, '127.0.0.1');
-  await new Promise(r => server.once('listening', r));
-  const base = `http://127.0.0.1:${server.address().port}/api`;
   t.after(async () => {
     for (const [k, v] of Object.entries(prior)) {
       if (v === undefined) delete process.env[k]; else process.env[k] = v;
     }
-    await new Promise(r => server.close(r));
     await store.cleanup();
   });
+  return store;
+}
+
+async function listenLoopback(t, app) {
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise(r => server.once('listening', r));
+  t.after(() => new Promise(r => server.close(r)));
+  return `http://127.0.0.1:${server.address().port}`;
+}
+
+// The backend's API router under test, on a real ephemeral port, over a fresh
+// temp store.
+export async function withApi(t, deps = {}, env = {}) {
+  const store = await pinTestEnv(t, env);
+  const app = express();
+  app.use('/api', createApi(deps));
+  const base = `${await listenLoopback(t, app)}/api`;
   const call = async (method, url, body) => {
     const res = await fetch(`${base}${url}`, {
       method,
@@ -184,6 +196,15 @@ export async function withApi(t, deps = {}, env = {}) {
   // A raw fetch, for the paths where the point is that the body IS json.
   const raw = (url, init) => fetch(`${base}${url}`, init);
   return { call, raw, store, base };
+}
+
+// The WHOLE HTTP app (src/http.mjs: headers, API, static UI, tail) on a real
+// ephemeral loopback port, over a fresh temp store. `opts` reaches `createApp`
+// (`distDir`, `api`, `log`).
+export async function withHttpApp(t, opts = {}) {
+  const store = await pinTestEnv(t);
+  const base = await listenLoopback(t, createApp(opts));
+  return { base, store };
 }
 
 // ── The stub CLIs, shared by the kind suites and the API suite ───────
