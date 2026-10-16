@@ -6,15 +6,40 @@
   "description": "code-conductor plugin: Docker and SSH System providers, run entirely from cc's host",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test \"tests/*.test.mjs\"",
+    "test": "node --test \"tests/*.test.mjs\" && npm run typecheck && npm run test:web",
     "conformance": "node tests/conformance.mjs",
-    "conformance:docker": "node tests/conformance-docker.mjs"
+    "conformance:docker": "node tests/conformance-docker.mjs",
+    "prepare": "vite build --config frontend/vite.config.ts",
+    "dev": "vite --config frontend/vite.config.ts",
+    "typecheck": "tsc -p frontend",
+    "test:web": "vitest run --config frontend/vitest.config.ts"
   },
   "dependencies": {
     "express": "^4.22.2"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.12"
   },
-  "license": "AGPL-3.0-or-later"
+  "license": "AGPL-3.0-or-later",
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.8",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "happy-dom": "^20.14.6",
+    "lucide-react": "^1.57.0",
+    "radix-ui": "^1.8.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tailwind-merge": "^3.7.0",
+    "tailwindcss": "^4.3.3",
+    "tw-animate-css": "^1.4.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  }
 }

@@ -7,6 +7,12 @@
 # checkout is not. So we pay the npm install once in the parent and symlink
 # it into every worktree, instead of every worker paying its own install.
 #
+# The UI is built, not tracked (frontend/dist is gitignored), so after linking
+# the hook also builds the WORKTREE's own UI with `npm run prepare` — from its
+# own sources, into its own frontend/dist. A parent node_modules installed
+# before the UI had a build has no vite; then the hook says so and builds
+# nothing, rather than installing into the parent behind its back.
+#
 # CAUTION: the worktree's node_modules is a symlink to the PARENT's. Running
 # npm install/ci from inside any worktree writes through the symlink into the
 # parent's node_modules, which every other worktree also shares. Only this
@@ -63,3 +69,13 @@ fi
 parent_abs="$(cd "$parent" && pwd)"
 ln -s "$parent_abs/node_modules" "$worktree/node_modules"
 echo "symlinked $worktree/node_modules -> $parent_abs/node_modules"
+
+if [ -x "$worktree/node_modules/.bin/vite" ]; then
+  if (cd "$worktree" && npm run prepare); then
+    echo "built the UI into $worktree/frontend/dist"
+  else
+    echo "npm run prepare failed in $worktree: the backend will answer 503 until the UI is built"
+  fi
+else
+  echo "parent node_modules predates the UI build: run npm install in $parent, then npm run prepare here"
+fi

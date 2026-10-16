@@ -21,8 +21,18 @@ That makes `remoteId` a hand-off contract:
 - it is **human-typable** (`^[a-z0-9][a-z0-9._-]{0,63}$`), because a user reads it
   off a card and pastes it into cc;
 - it is **never renamed** once created — everything else on a card is editable;
-- **deleting a remote warns** when cc projects still name it, listing them.
-  Nothing else would tell you which projects you just stranded.
+- **deleting a remote asks first** (a confirm dialog: *"Delete remote '<id>'? This
+  cannot be undone."*), and **warns** afterwards when cc projects still name it,
+  listing them. Nothing else would tell you which projects you just stranded.
+
+**A record the page cannot draw costs one card.** It shows as a broken card with
+the remote's id, *"This card could not be shown: …"* and a Delete button; the
+rest of the page is unaffected, and the card comes back once the record is fixed.
+
+**The page follows cc's theme.** Inside cc it takes cc's light or dark theme and
+changes with it live (the sidebar toggle, or the OS while cc's theme is
+"system"). Opened standalone (`npm start`, then `http://127.0.0.1:<port>/`), it
+follows the OS theme. It has no theme switch of its own.
 
 ## An agent can list the remotes
 
@@ -210,6 +220,12 @@ The add and edit forms show only labels, inputs and buttons. Each field's
 explanation is behind the **?** beside its label: it opens on hover, on keyboard
 focus and on tap, and Escape dismisses it. The one warning kept visible is the
 edit form's *"Changing a connection value switches this remote off."*
+
+- **Enter submits** the form from any single-line field; in *Excluded paths* it
+  starts a new line.
+- **A refused Create or Save shows its reason inside the form**, above the
+  buttons, and the form stays open with what you typed. A card action's failure
+  (Connect, Disconnect, Delete) shows in the banner at the top of the page.
 
 ## Advanced card settings
 

@@ -12,7 +12,7 @@
 // a surface built on this must not create (.wiki/gotchas/gate-versus-probe.md).
 
 import { refreshBaseline } from './baseline.mjs';
-import { createTransport, redactConfig } from './launcher/kinds/index.mjs';
+import { createTransport, redactConfig, unknownKindMessage } from './launcher/kinds/index.mjs';
 import { listRemotes, writeRemote } from './store.mjs';
 
 /**
@@ -51,7 +51,7 @@ export async function cardFor(entry, { baseline = true, reachability = 'always' 
 
   const transport = createTransport(record.kind);
   if (!transport) {
-    return { ...publicRecord(record), reachability: { connected: false, detail: `unknown kind '${record.kind}'`, fingerprint: null } };
+    return { ...publicRecord(record), reachability: { connected: false, detail: unknownKindMessage(record.kind), fingerprint: null } };
   }
   let reach;
   try { reach = await transport.reachability(record.config ?? {}); }

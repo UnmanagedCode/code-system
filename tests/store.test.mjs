@@ -12,7 +12,7 @@ import { migrate } from '../src/migrate.mjs';
 import { quarantineDir, remotesDir } from '../src/paths.mjs';
 import { remoteIdDefect } from '../src/launcher/protocol.mjs';
 import {
-  SCHEMA, deleteRemote, isValidRemoteId, listRemoteIds, listRemotes, makeRecord, readRemote, writeRemote,
+  MAX_RECORD_DEPTH, SCHEMA, deleteRemote, isValidRemoteId, listRemoteIds, listRemotes, makeRecord, readRemote, writeRemote,
 } from '../src/store.mjs';
 import { tempStore } from './helpers.mjs';
 
@@ -424,5 +424,74 @@ test('a records-dir chmod that fails warns and carries on', async (t) => {
     assert.equal(warnings.length, 1, 'warned once for the directory, not per write');
     assert.match(warnings[0], /could not be made private/);
     assert.equal((await readRemote('a')).ok, true, 'the write still landed');
+  });
+});
+
+// ── records the readers must refuse by name ──────────────────────────
+
+// A record file whose `config` nests `levels` objects deep, as TEXT: a record
+// this deep cannot be built with JSON.stringify, which is the point.
+const deepRecordText = (remoteId, levels) => {
+  const head = JSON.stringify({ schema: SCHEMA, remoteId, kind: 'docker', label: 'deep', enabled: false, mirror: null });
+  return `${head.slice(0, -1)},"config":${'{"k":'.repeat(levels)}"leaf"${'}'.repeat(levels)}}`;
+};
+
+// PINS THE DEPTH REFUSAL AND ITS BOUND. A record that parses but nests past
+// MAX_RECORD_DEPTH is refused as 'too-deep' — the case measured at 5 000 levels,
+// which parsed but could not be re-serialised and failed the whole listing —
+// and the bound sits exactly where the constant says (the record object is level 1,
+// `config` level 2, its leaf one past the last object).
+test('readRemote refuses a record nested past MAX_RECORD_DEPTH as too-deep', async (t) => {
+  await withStore(t, async () => {
+    await fs.mkdir(remotesDir(), { recursive: true });
+    const write = (id, levels) => fs.writeFile(path.join(remotesDir(), `${id}.json`), deepRecordText(id, levels));
+    await write('huge', 5000);
+    await write('at-limit', MAX_RECORD_DEPTH - 2);
+    await write('over-limit', MAX_RECORD_DEPTH - 1);
+
+    const huge = await readRemote('huge');
+    assert.equal(huge.ok, false);
+    assert.equal(huge.reason, 'too-deep');
+    assert.equal(huge.message, `remote 'huge' nests deeper than ${MAX_RECORD_DEPTH} levels`);
+    assert.equal((await readRemote('over-limit')).reason, 'too-deep');
+    assert.equal((await readRemote('at-limit')).ok, true, 'a record at the bound reads');
+    assert.equal(MAX_RECORD_DEPTH, 32);
+  });
+});
+
+// PINS THAT A RECORD IS ADDRESSED BY ITS FILENAME. A copy of off-up.json saved
+// as evil.json would otherwise read as a second `off-up`, and every action on
+// its card — Delete included — would reach the real one.
+test('readRemote refuses a record whose remoteId is not its filename as id-mismatch', async (t) => {
+  await withStore(t, async () => {
+    await writeRemote(makeRecord({ remoteId: 'off-up', kind: 'docker', label: 'real', config: { container: 'c' } }));
+    const real = await fs.readFile(path.join(remotesDir(), 'off-up.json'), 'utf8');
+    await fs.writeFile(path.join(remotesDir(), 'evil.json'), real);
+
+    const evil = await readRemote('evil');
+    assert.equal(evil.ok, false);
+    assert.equal(evil.reason, 'id-mismatch');
+    assert.match(evil.message, /^remote 'evil' is stored as evil\.json but its record names remoteId "off-up"/);
+    assert.equal((await readRemote('off-up')).ok, true, 'the real record is untouched');
+    const listed = await listRemotes();
+    assert.deepEqual(listed.map(e => [e.ok ? e.record.remoteId : e.remoteId, e.ok, e.reason]),
+      [['evil', false, 'id-mismatch'], ['off-up', true, undefined]], 'one record per file, each under its own name');
+  });
+});
+
+// PINS what the migrate comment promises: the startup pass moves both refusals
+// aside (never deletes them), and leaves the real record where it is.
+test('the startup pass quarantines too-deep and id-mismatch records, and nothing else', async (t) => {
+  await withStore(t, async () => {
+    await writeRemote(makeRecord({ remoteId: 'off-up', kind: 'docker', label: 'real', config: { container: 'c' } }));
+    await fs.writeFile(path.join(remotesDir(), 'evil.json'), await fs.readFile(path.join(remotesDir(), 'off-up.json'), 'utf8'));
+    await fs.writeFile(path.join(remotesDir(), 'huge.json'), deepRecordText('huge', 5000));
+
+    const r = await migrate();
+    assert.deepEqual(r.quarantined.map(q => [q.remoteId, q.reason]), [['evil', 'id-mismatch'], ['huge', 'too-deep']]);
+    assert.deepEqual(await fs.readdir(remotesDir()), ['off-up.json']);
+    const aside = await fs.readdir(quarantineDir());
+    assert.equal(aside.length, 2, 'moved aside, not deleted');
+    assert.equal((await readRemote('off-up')).record.label, 'real');
   });
 });

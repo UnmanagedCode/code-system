@@ -53,7 +53,7 @@ import { SCHEMA, ensureRemotesDir, isValidRemoteId, readRemote, writeRemote } fr
 // as opposed to "this file is not there" or "the disk refused us". Only these
 // are moved aside; an unreadable-because-of-permissions record is a host
 // problem and destroying it would not help.
-const QUARANTINE_REASONS = new Set(['malformed', 'schema']);
+const QUARANTINE_REASONS = new Set(['malformed', 'too-deep', 'schema', 'id-mismatch']);
 
 // Rewrite a schema-1 record as schema 2.
 //

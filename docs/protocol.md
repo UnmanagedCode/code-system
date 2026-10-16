@@ -836,14 +836,14 @@ only and re-derived at every start.
 | `GET /api/registration` | `{state, rows:[{id,state,httpStatus,message}], checkedAt}` — `blocked`/`unreachable` messages are rendered verbatim |
 | `POST /api/registration/retry` | the only retry; user-driven |
 | `GET /api/kinds` | `{kinds:[{kind,label,configFields,mirrorByDefault}], mirrorDefaults:{root,exclude}}` — the card UI's form definition, per registered kind, plus the Advanced group's prefill from `src/mirror.mjs`'s `DEFAULT_MIRROR`. **`mirrorByDefault`** is always a boolean, read from the kind's `KIND_META` (`true` for docker and ssh): whether a new remote's create form starts with the mirror box ticked. A `configFields` entry may carry **`advanced: true`** (docker's `user`; ssh's `port`, `password`, `identityFile`): render it in the card's Advanced group instead of the connection block. It is otherwise an ordinary config field — same validator, same store, same reset-on-change. `GET /api/health` keeps a **plain** kind-name list: a liveness probe has no use for descriptors or defaults |
-| `GET /api/remotes` | every stored remote, each with a live `reachability`, a `baseline` and its `mirror`; an unreadable record appears as `{remoteId, broken:{reason,message}}` rather than being hidden. Its `kinds` field is the **descriptor array**, the same shape `GET /api/kinds` serves, and it carries the same `mirrorDefaults` |
+| `GET /api/remotes` | every stored remote, each with a live `reachability`, a `baseline` and its `mirror`; a record `readRemote` refuses appears as `{remoteId, broken:{reason,message}}` under its **filename stem**, rather than being hidden; `reason` is one of `unreadable`, `malformed`, `too-deep` (nested past `MAX_RECORD_DEPTH` in `src/store.mjs`), `schema` or `id-mismatch` (the record's `remoteId` is not its filename). A record whose `kind` names no registered kind — including a name inherited from `Object.prototype` such as `constructor` or `__proto__`, which the lookup never falls through to — is listed with `reachability: {connected: false, detail: "unknown kind '<kind>'", fingerprint: null}`, never a 500. Its `kinds` field is the **descriptor array**, the same shape `GET /api/kinds` serves, and it carries the same `mirrorDefaults` |
 | `POST /api/remotes` | create — validates the `remoteId` charset, delegates `config` to the kind, and validates `mirror` with `src/mirror.mjs` (**400**, message quoting the offending value and an exclude entry's index). An **absent** `mirror` stores `DEFAULT_MIRROR` for a kind with `mirrorByDefault` (docker, ssh) and `null` otherwise; an explicit `mirror: null` stores `null`. The default applies at creation only: a `PATCH` that omits `mirror` keeps the stored value, and no stored record is re-defaulted. Created **`enabled: false`**. 400 / 409 |
-| `PATCH /api/remotes/:id` | edit everything **except** `remoteId`; a changed `config` resets `baseline` to `unknown` **and `enabled` to `false`**; a label-only edit preserves both. **A `mirror` change resets neither** — it names the same target — and an omitted `mirror` preserves the stored one. An invalid `mirror` is a 400 and writes nothing. The Advanced group is **not** uniformly reset-free: an Advanced-rendered *config* field (docker `user`) is a config change and resets both |
-| `POST /api/remotes/:id/connect` | 200 `{remote}` — the kind's `connect` **first**, then the gate. 404 absent / 409 unreadable / **502** `{error, remote}` on a transport refusal |
-| `POST /api/remotes/:id/disconnect` | 200 `{remote, warning?}` — the gate **first**, then the kind's `disconnect`. 404 / 409 as above |
+| `PATCH /api/remotes/:id` | edit everything **except** `remoteId`; a changed `config` resets `baseline` to `unknown` **and `enabled` to `false`**; a label-only edit preserves both. **A `mirror` change resets neither** — it names the same target — and an omitted `mirror` preserves the stored one. An invalid `mirror` is a 400 and writes nothing. A `config` on a record whose stored kind no transport answers to is **409** `{error: "unknown kind '<k>'"}` and writes nothing. The Advanced group is **not** uniformly reset-free: an Advanced-rendered *config* field (docker `user`) is a config change and resets both |
+| `POST /api/remotes/:id/connect` | 200 `{remote}` — the kind's `connect` **first**, then the gate. 404 absent / 409 unreadable / **409** `{error: "unknown kind '<k>'"}` for a stored kind no transport answers to (gate left off) / **502** `{error, remote}` on a transport refusal |
+| `POST /api/remotes/:id/disconnect` | 200 `{remote, warning?}` — the gate **first**, then the kind's `disconnect`. 404 / 409 as above. An unknown stored kind still switches the gate off, with `warning: "unknown kind '<k>'"` |
 | `DELETE /api/remotes/:id` | delete, **warning** when any cc project still names this `remoteId` |
 | `POST /api/mcp` | the MCP surface — one read-only tool. Its own contract is **MCP surface** below |
-| *(router tail)* | every response is JSON, including express's own body-parser refusals — the client reads `{error}` off every status |
+| *(router tail)* | every response from a route under `/api` is JSON, including express's own body-parser refusals — the client reads `{error}` off every status. The rule: every **5xx** is logged. A 5xx whose error is **not** marked `expose: true` is answered `{error: "Internal error"}`, so no internal message (a TypeError, a stack overflow) reaches a client. Every other error answers `{error: <its message>}`: a **4xx** is a refusal meant for the client (body-parser's malformed JSON is 400, a body past 256kb is 413), and an exposed 5xx was written for the operator — `operatorError` in `src/launcher/kinds/config.mjs`, used for a malformed `CODE_SYSTEM_SSH` / `CODE_SYSTEM_DOCKER`, which reaches the card UI's "Backend unreachable" banner verbatim |
 
 **Secret config fields.** A `configFields` entry may carry **`secret: true`**
 (ssh's `password`). No response — `GET /remotes`, `POST`, `PATCH`, connect,
@@ -878,6 +878,29 @@ Both answer with a card from a **real re-probe**, so the response *is* the probe
 rather than a claim. `refreshBaseline` is additionally gated on `enabled`: the
 tooling probe is the one backend path that execs into a target and it bypasses
 the launcher's gate entirely, so a disabled remote is never probed.
+
+### Static UI and headers
+
+Owned by `src/http.mjs` (`createApp`); `server.mjs` listens on **`127.0.0.1` only**.
+
+| Request | Answer |
+|---|---|
+| `GET /` | `frontend/dist/index.html` (`text/html`) |
+| `GET /theme-init.js`, `GET /assets/<name>` | the built file; asset names carry a content hash |
+| anything else outside `/api` — including `/pluginBridge.js`, `/pluginTheme.css` and a directory such as `/assets` | **404** `text/plain` `Not found`. No SPA fallback, no directory redirect |
+| any non-`/api` path while `frontend/dist/index.html` is missing | **503** `text/plain` `UI not built — run npm install` (`NOT_BUILT`); `/api/*` and `/api/health` still answer. Decided once, at backend start |
+| an error past the API router | **500** `text/plain` `Internal error` (the cause is logged, not sent); another status → `text/plain` with the error's message |
+
+**Every response** — 200, 404, 503, 500 and API JSON — carries
+`X-Content-Type-Options: nosniff` and this `Content-Security-Policy` (`CSP` in
+`src/http.mjs`):
+
+```
+default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'
+```
+
+`style-src 'unsafe-inline'` is there for Radix Dialog, whose scroll lock injects
+a `<style>` element. No `X-Powered-By`.
 
 ### Config values that become argv
 

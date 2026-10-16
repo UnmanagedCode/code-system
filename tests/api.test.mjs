@@ -8,7 +8,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_MIRROR } from '../src/mirror.mjs';
 import { SCHEMA } from '../src/store.mjs';
-import { fakeConductor, stubDockerCli, stubSshCli, withApi } from './helpers.mjs';
+import { createTransport } from '../src/launcher/kinds/index.mjs';
+import { operatorError } from '../src/launcher/kinds/config.mjs';
+import { dockerCliArgv } from '../src/launcher/kinds/docker.mjs';
+import { sshCliArgv } from '../src/launcher/kinds/ssh.mjs';
+import { fakeConductor, record, stubDockerCli, stubSshCli, withApi, writeRecord } from './helpers.mjs';
 
 // What a GNU coreutils target answers the baseline probe, so a stub-driven
 // probe lands on a definite verdict rather than an incidental one.
@@ -305,9 +309,10 @@ test('a config edit switches the remote off; a label-only edit does not', async 
   await call('POST', '/remotes/box/connect');
   assert.equal((await stored(store, 'box')).enabled, true);
 
-  // THE SHAPE THE UI ACTUALLY SENDS. frontend/app.js's edit form has no
-  // dirty-tracking: it always PATCHes `{label, config}`, with `config` spread
-  // from the stored record. A test that omits `config` exercises a request no
+  // THE SHAPE THE UI ACTUALLY SENDS. The card's edit form has no
+  // dirty-tracking (`submitRequest` in frontend/src/lib/cardState.mjs): it
+  // always PATCHes `{label, config}`, with `config` spread from the stored
+  // record. A test that omits `config` exercises a request no
   // client emits — which is exactly how the label-only path shipped broken.
   const relabelled = await call('PATCH', '/remotes/box', {
     label: 'The box', config: { host: 'box' },
@@ -450,20 +455,24 @@ test('GET /kinds serves one descriptor per registered kind, with its form', asyn
 test('an unexpected error answers JSON, never express\'s HTML page', async (t) => {
   const { raw } = await withApi(t);
 
-  for (const [label, body] of [
-    ['a malformed body', '{not json'],
-    ['an oversized body', JSON.stringify({ remoteId: 'a', kind: 'docker', config: { container: 'x'.repeat(300 * 1024) } })],
+  // PINS THAT A CLIENT REFUSAL CARRIES ITS OWN DIAGNOSTIC through the tail —
+  // body-parser's own words for what was wrong with the request — never the
+  // generic body reserved for an internal 5xx.
+  for (const [label, body, status, says] of [
+    ['a malformed body', '{not json', 400, /JSON/],
+    ['an oversized body', JSON.stringify({ remoteId: 'a', kind: 'docker', config: { container: 'x'.repeat(300 * 1024) } }), 413, /too large/i],
   ]) {
     const res = await raw('/remotes', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body,
     });
-    assert.ok(res.status >= 400, `${label}: refused`);
+    assert.equal(res.status, status, `${label}: refused`);
     assert.match(res.headers.get('content-type') ?? '', /application\/json/, `${label}: content-type`);
     const parsed = await res.json();
     assert.equal(typeof parsed.error, 'string', `${label}: the client can read {error}`);
-    assert.ok(parsed.error.length > 0);
+    assert.match(parsed.error, says, `${label}: its own diagnostic`);
+    assert.notEqual(parsed.error, 'Internal error', `${label}: not the generic body`);
   }
 });
 
@@ -966,4 +975,198 @@ test('changing or removing an ssh port resets the gate; re-sending it does not',
   assert.equal(removed.body.remote.enabled, false, 'dropping the port is a change');
   assert.equal(removed.body.remote.baseline.state, 'unknown');
   assert.equal('port' in (await stored(store, 'box')).config, false);
+});
+
+// ── a stored kind named like an Object.prototype member ──────────────
+
+const PROTO_KINDS = ['constructor', '__proto__', 'hasOwnProperty', 'valueOf', 'toString'];
+
+// PINS THAT A KIND IS LOOKED UP AS AN OWN PROPERTY. A record's `kind` is
+// whatever its file says, and a plain object inherits these names: `constructor`
+// built a truthy non-transport (so the client read `transport.reachability is
+// not a function`) and `__proto__` threw out of `cardFor`, failing the whole
+// list. Each must be an unknown kind instead, and degrade one card.
+test('createTransport resolves own kinds only: an inherited name is null', () => {
+  for (const kind of PROTO_KINDS) assert.equal(createTransport(kind), null, kind);
+  assert.notEqual(createTransport('docker'), null);
+});
+
+test('a stored prototype-named kind degrades to its own card, never a 500 or an internal TypeError', async (t) => {
+  const { call, store } = await withApi(t);
+  await writeRecord(store.dir, record('healthy', { kind: 'docker', config: { container: 'c' }, enabled: false }));
+  for (const [i, kind] of PROTO_KINDS.entries()) await writeRecord(store.dir, record(`odd-${i}`, { kind }));
+
+  const res = await call('GET', '/remotes');
+  assert.equal(res.status, 200);
+  const byId = new Map(res.body.remotes.map(r => [r.remoteId, r]));
+  assert.equal(byId.get('healthy').kind, 'docker', 'the healthy remote is listed');
+  assert.equal(byId.get('healthy').broken, undefined);
+  for (const [i, kind] of PROTO_KINDS.entries()) {
+    const card = byId.get(`odd-${i}`);
+    assert.ok(card, `${kind}: listed`);
+    assert.deepEqual(card.reachability, { connected: false, detail: `unknown kind '${kind}'`, fingerprint: null }, kind);
+  }
+  assert.doesNotMatch(JSON.stringify(res.body), /is not a function|TypeError|Cannot read/,
+    'no internal error text reaches the client');
+
+  const mcp = await call('POST', '/mcp', { tool: 'list_remotes', arguments: {} });
+  assert.equal(mcp.status, 200);
+  assert.equal(mcp.body.error, undefined, 'the MCP listing still answers');
+  for (const i of PROTO_KINDS.keys()) assert.ok(mcp.body.text.includes(`odd-${i}`), `odd-${i} is listed`);
+  assert.doesNotMatch(mcp.body.text, /is not a function|TypeError|Cannot read/);
+});
+
+const INTERNAL = /is not a function|TypeError|Cannot read|null \(reading|Maximum call stack|RangeError/;
+
+// PINS that EVERY route turning a stored kind into a transport refuses an
+// unknown or prototype-named kind with the one `unknown kind '<k>'` message —
+// never a TypeError on a null transport. Disconnect still switches the gate
+// off (disabling must not be blockable) and names the kind in its warning;
+// connect is refused and the gate stays off; a config PATCH is refused and
+// nothing is written.
+test('connect, disconnect and a config PATCH on an unknown kind answer unknown kind, never an internal error', async (t) => {
+  const { call, store } = await withApi(t);
+  const { promises: fs } = await import('node:fs');
+  const path = await import('node:path');
+  for (const kind of [...PROTO_KINDS, 'telnet']) {
+    const id = `k-${PROTO_KINDS.indexOf(kind) + 1}`;
+    const file = path.join(store.dir, 'remotes', `${id}.json`);
+    const msg = `unknown kind '${kind}'`;
+
+    // A gate-OFF record, so a connect that wrote anything would visibly flip it.
+    await writeRecord(store.dir, record(id, { kind, enabled: false, config: { host: 'h' } }));
+    const untouched = await fs.readFile(file, 'utf8');
+    const refused = await call('POST', `/remotes/${id}/connect`);
+    assert.deepEqual([refused.status, refused.body], [409, { error: msg }], `${kind}: connect`);
+    assert.equal(await fs.readFile(file, 'utf8'), untouched, `${kind}: a refused connect writes nothing`);
+
+    await writeRecord(store.dir, record(id, { kind, enabled: true, config: { host: 'h' } }));
+    const off = await call('POST', `/remotes/${id}/disconnect`);
+    assert.equal(off.status, 200, `${kind}: disconnect`);
+    assert.equal(off.body.warning, msg, `${kind}: disconnect warning`);
+    assert.equal(off.body.remote.enabled, false, `${kind}: the gate is off`);
+
+    const beforePatch = await fs.readFile(file, 'utf8');
+    const patch = await call('PATCH', `/remotes/${id}`, { label: 'x', config: { host: 'other' } });
+    assert.deepEqual([patch.status, patch.body], [409, { error: msg }], `${kind}: config PATCH`);
+    assert.equal(await fs.readFile(file, 'utf8'), beforePatch, `${kind}: the refused PATCH wrote nothing`);
+
+    for (const body of [refused.body, off.body, patch.body]) assert.doesNotMatch(JSON.stringify(body), INTERNAL, kind);
+  }
+});
+
+// PINS THE ROUTER TAIL'S 500: an error the API did not mean is logged, and the
+// client reads `Internal error`, not the error's own (internal) message.
+test('an unexpected 500 sends Internal error and logs the cause', async (t) => {
+  const logged = [];
+  const { call, store } = await withApi(t, { log: m => logged.push(m) });
+  const { promises: fs } = await import('node:fs');
+  const path = await import('node:path');
+  // A store whose records directory is a FILE: listing it fails with ENOTDIR,
+  // an error the route hands to the tail.
+  await fs.writeFile(path.join(store.dir, 'remotes'), 'not a directory');
+  const res = await call('GET', '/remotes');
+  assert.equal(res.status, 500);
+  assert.deepEqual(res.body, { error: 'Internal error' });
+  assert.ok(logged.some(m => m.includes('ENOTDIR')), 'the cause is logged');
+  assert.doesNotMatch(JSON.stringify(res.body), /ENOTDIR|remotes/);
+});
+
+// PINS THE OTHER HALF OF THE TAIL'S RULE: an error written for the operator
+// (`operatorError`, marked `expose: true`) survives a 5xx verbatim. A malformed
+// CODE_SYSTEM_SSH / CODE_SYSTEM_DOCKER names the variable, its expected shape and
+// the value, and is the only thing that tells the operator how to fix it — on
+// every route that builds that kind's transport.
+test('a malformed CLI override reaches the client verbatim, on every route that builds the transport', async (t) => {
+  for (const [env, kind, config, argv] of [
+    ['CODE_SYSTEM_SSH', 'ssh', { host: 'h' }, sshCliArgv],
+    ['CODE_SYSTEM_DOCKER', 'docker', { container: 'c' }, dockerCliArgv],
+  ]) {
+    await t.test(env, async (t2) => {
+      const logged = [];
+      const { call, store } = await withApi(t2, { log: m => logged.push(m) }, { [env]: 'not-json' });
+      await writeRecord(store.dir, record('r', { kind, config, enabled: true }));
+      let thrown;
+      try { argv({ [env]: 'not-json' }); } catch (e) { thrown = e; }
+      assert.equal(thrown.expose, true, 'the throw site marks it for the operator');
+      for (const [m, u] of [['GET', '/remotes'], ['POST', '/remotes/r/connect'], ['POST', '/remotes/r/disconnect']]) {
+        const res = await call(m, u);
+        assert.equal(res.status, 500, `${m} ${u}`);
+        assert.deepEqual(res.body, { error: thrown.message }, `${m} ${u}: verbatim`);
+        assert.match(res.body.error, new RegExp(`^${env} is not valid JSON\\. It must be a JSON array of non-empty strings`));
+        assert.ok(res.body.error.endsWith('Got "not-json"'), `${m} ${u}: names the value`);
+      }
+      assert.ok(logged.length >= 3, 'every 5xx is still logged');
+    });
+  }
+});
+
+test('operatorError marks an Error for the operator, and nothing else is marked', () => {
+  const e = operatorError('fix X');
+  assert.ok(e instanceof Error);
+  assert.equal(e.message, 'fix X');
+  assert.equal(e.expose, true);
+  assert.equal(new Error('internal').expose, undefined);
+});
+
+// A record file whose `config` nests `levels` objects deep, as TEXT (it cannot
+// be built with JSON.stringify).
+const deepRecordText = (remoteId, levels) => {
+  const head = JSON.stringify(record(remoteId, { kind: 'docker' })).slice(0, -1).replace(/,"config":\{\}/, '');
+  return `${head},"config":${'{"k":'.repeat(levels)}"leaf"${'}'.repeat(levels)}}`;
+};
+
+// PINS "one record costs at most one card" for a record too deep to
+// re-serialise (measured: 5 000 levels made GET /api/remotes a 500 for the
+// whole listing): it is one broken card, reason too-deep, on REST and MCP alike.
+test('a record nested too deep is one broken card on REST and MCP, not a failed listing', async (t) => {
+  const { call, store } = await withApi(t);
+  await writeRecord(store.dir, record('healthy', { kind: 'docker', config: { container: 'c' }, enabled: false }));
+  const { promises: fs } = await import('node:fs');
+  const path = await import('node:path');
+  await fs.writeFile(path.join(store.dir, 'remotes', 'huge.json'), deepRecordText('huge', 5000));
+
+  const res = await call('GET', '/remotes');
+  assert.equal(res.status, 200);
+  const huge = res.body.remotes.find(r => r.remoteId === 'huge');
+  assert.equal(huge.broken.reason, 'too-deep');
+  assert.equal(res.body.remotes.find(r => r.remoteId === 'healthy').broken, undefined);
+  assert.doesNotMatch(JSON.stringify(res.body), INTERNAL);
+
+  assert.equal((await call('POST', '/remotes/huge/connect')).status, 409);
+  const mcp = await call('POST', '/mcp', { tool: 'list_remotes', arguments: {} });
+  assert.equal(mcp.status, 200);
+  assert.match(mcp.body.text, /not readable\s+huge/);
+  assert.match(mcp.body.text, /healthy/);
+});
+
+// PINS THAT A SERVED RECORD'S remoteId IS THE ID IT IS ADDRESSED BY (measured:
+// evil.json carrying "remoteId":"off-up" served a second off-up card whose
+// Delete removed the real one). The impostor is one broken card under its OWN
+// name; the real remote is listed once; acting on the impostor never reaches it.
+test('a record whose remoteId disagrees with its filename is a broken card under its own name', async (t) => {
+  const { call, store } = await withApi(t);
+  const real = await writeRecord(store.dir, record('off-up', { kind: 'docker', config: { container: 'c' }, enabled: false }));
+  const { promises: fs } = await import('node:fs');
+  const path = await import('node:path');
+  await fs.writeFile(path.join(store.dir, 'remotes', 'evil.json'), JSON.stringify(real));
+
+  const res = await call('GET', '/remotes');
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.remotes.map(r => [r.remoteId, r.broken?.reason]), [['evil', 'id-mismatch'], ['off-up', undefined]]);
+  assert.equal(res.body.remotes.filter(r => r.remoteId === 'off-up').length, 1, 'the real remote is listed once');
+
+  const mcp = await call('POST', '/mcp', { tool: 'list_remotes', arguments: {} });
+  const lines = mcp.body.text.split('\n').filter(Boolean);
+  assert.equal(lines.filter(l => l.includes('off-up')).length, 1, 'one MCP line for the real remote');
+  assert.match(lines.find(l => l.includes('evil')), /not readable\s+evil/, 'the impostor is a not-readable line under its own name');
+
+  for (const [method, url] of [['POST', '/remotes/evil/connect'], ['POST', '/remotes/evil/disconnect'], ['PATCH', '/remotes/evil']]) {
+    assert.equal((await call(method, url, method === 'PATCH' ? { label: 'x' } : undefined)).status, 409, `${method} ${url}`);
+  }
+  assert.equal((await call('DELETE', '/remotes/evil')).status, 200);
+  const after = await call('GET', '/remotes');
+  assert.deepEqual(after.body.remotes.map(r => [r.remoteId, r.broken?.reason, r.label]), [['off-up', undefined, 'off-up']],
+    'deleting the impostor removed only evil.json');
+
 });

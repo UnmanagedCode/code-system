@@ -3,7 +3,8 @@
 // Everything a card must get right is a DECISION, not a rendering — which word
 // the toggle shows, whether a disagreement between the gate and the probe is a
 // warning or an error, what the copy is allowed to claim. Those live in
-// frontend/cardState.mjs, which is pure, and app.js only wires them to the DOM.
+// frontend/src/lib/cardState.mjs, which is pure, and the React components only
+// wire them to the DOM.
 // That split is what makes the card testable without a browser rig.
 //
 // THE INVARIANT UNDERNEATH ALL OF THEM: a card carries TWO states that disagree
@@ -13,9 +14,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { kindDescriptors } from '../src/launcher/kinds/index.mjs';
 import {
-  GATE_COPY, baselineNotice, cardAlert, configPayload, gateStatus, mirrorPayload,
-  mirrorSummary, probeStatus, advancedOpenOnEdit, advancedSummary, routeFromSearch, searchForRoute,
-} from '../frontend/cardState.mjs';
+  GATE_COPY, STRIPE_COUNT, baselineNotice, gateCopy, own, cardAlert, configPayload, createDraft, editDraft, fieldLabel, gateStatus,
+  mirrorDraft, mirrorPayload, mirrorSummary, probeStatus, advancedOpenOnEdit, advancedSummary, registrationView,
+  remotePath, routeFromSearch, searchForRoute, stripeClass, submitRequest, switchKind,
+} from '../frontend/src/lib/cardState.mjs';
 
 const remote = (over = {}) => ({
   remoteId: 'app-ctr',
@@ -265,4 +267,165 @@ test('advancedOpenOnEdit opens for a stored advanced value or a non-default mirr
   assert.equal(open({ mirror: { root: '/srv', exclude: [] } }, null), false, 'no served defaults: no mirror half to open for');
   const docker = kindDescriptors().find(d => d.kind === 'docker').configFields;
   assert.equal(advancedOpenOnEdit({ config: { container: 'c', user: 'node' }, mirror: null }, docker, D), true, 'docker Run as');
+});
+
+// ── the drafts, the stripe, the requests and registration ────────────
+
+const KINDS = kindDescriptors();
+const DOCKER = KINDS.find(d => d.kind === 'docker');
+const SSH = KINDS.find(d => d.kind === 'ssh');
+const DEFAULTS = { root: '/', exclude: ['/proc', '/dev', '/sys'] };
+
+// PINS the Add draft: the FIRST SERVED kind (never a hardcoded docker), its
+// own mirror default ticked from the served list, and Advanced collapsed; with
+// no served defaults there is no mirror half to draft.
+test('createDraft drafts the first served kind with its mirror default, collapsed', () => {
+  assert.deepEqual(createDraft([SSH, DOCKER], DEFAULTS), {
+    remoteId: '', kind: 'ssh', label: '', config: {},
+    mirror: { on: true, root: '/', exclude: '/proc\n/dev\n/sys' }, advancedOpen: false,
+  });
+  assert.equal(createDraft([{ ...DOCKER, mirrorByDefault: false }], DEFAULTS).mirror.on, false,
+    'a kind that does not mirror by default starts unticked');
+  assert.equal(createDraft([DOCKER], null).mirror, null, 'no served defaults: no mirror half');
+  assert.equal(createDraft([], DEFAULTS).kind, 'docker', 'an empty catalog still yields a draft');
+});
+
+// PINS the Edit draft: a stored secret is NEVER prefilled and never re-sent
+// unless typed (its name leaves `config`, `storedSecrets` keeps the fact), and
+// Advanced opens by the same predicate the card form uses.
+test('editDraft drops secret values from config, keeps storedSecrets, and opens Advanced by predicate', () => {
+  const remote = {
+    remoteId: 'pw', kind: 'ssh', label: 'Pw', config: { host: 'h', password: 'leaked', port: 22 },
+    storedSecrets: ['password'], mirror: null,
+  };
+  const d = editDraft(remote, SSH, DEFAULTS);
+  assert.deepEqual(d.config, { host: 'h', port: 22 }, 'the secret is gone, the rest is the record');
+  assert.deepEqual(d.storedSecrets, ['password']);
+  assert.deepEqual(d.clear, {});
+  assert.equal(d.advancedOpen, true, 'a stored port opens it');
+  assert.deepEqual(d.mirror, { on: false, root: '/', exclude: '/proc\n/dev\n/sys' }, 'a stored null stays unticked');
+  assert.equal(editDraft({ ...remote, config: { host: 'h' }, storedSecrets: [] }, SSH, DEFAULTS).advancedOpen, false);
+  assert.equal(d.label, 'Pw');
+  assert.equal(editDraft({ remoteId: 'x', kind: 'ssh', config: { host: 'h' } }, SSH, DEFAULTS).label, '');
+  assert.equal(remote.config.password, 'leaked', 'the record itself is not mutated');
+});
+
+// PINS the hand-edited-record guard: a malformed stored mirror degrades the
+// form instead of throwing, which would blank every card.
+test('mirrorDraft degrades a hand-edited mirror instead of throwing', () => {
+  assert.deepEqual(mirrorDraft({ mirror: { root: '/srv', exclude: 'not-an-array' } }, DOCKER, DEFAULTS),
+    { on: true, root: '/srv', exclude: '' });
+  assert.deepEqual(mirrorDraft({ mirror: { exclude: ['/a'] } }, DOCKER, DEFAULTS), { on: true, root: '', exclude: '/a' });
+});
+
+// PINS the Kind switch: the old kind's config goes, and the mirror is the NEW
+// kind's own default, not the old kind's.
+test('switchKind clears config and re-derives the mirror for the new kind', () => {
+  const draft = { ...createDraft([DOCKER], DEFAULTS), remoteId: 'x', config: { container: 'c' } };
+  draft.mirror.on = false;
+  const next = switchKind(draft, { ...SSH, mirrorByDefault: true }, DEFAULTS);
+  assert.equal(next.kind, 'ssh');
+  assert.deepEqual(next.config, {});
+  assert.equal(next.mirror.on, true, 'the new kind\'s default, not the unticked box of the old one');
+  assert.equal(next.remoteId, 'x', 'what the operator typed elsewhere survives');
+  assert.equal(switchKind(draft, { ...SSH, mirrorByDefault: false }, DEFAULTS).mirror.on, false);
+});
+
+// PINS the optional suffix: an optional field is labelled as such, never hidden.
+test('fieldLabel marks optional fields only', () => {
+  assert.equal(fieldLabel({ label: 'Host', required: true }), 'Host');
+  assert.equal(fieldLabel({ label: 'User', required: false }), 'User (optional)');
+  assert.equal(fieldLabel({ label: 'Port' }), 'Port (optional)');
+});
+
+// PINS THE IDENTITY STRIPE: deterministic per id, and drawn ONLY from the fixed
+// set of class names — whatever the id holds, it never reaches the output.
+test('stripeClass is deterministic and drawn only from the fixed set', () => {
+  assert.equal(STRIPE_COUNT, 8);
+  const ids = ['on-up', 'app-ctr', 'a', 'z.z-z_z', 'x" style="color:red', 'bg-primary stripe-9', '<img src=x>', '', ' ',
+    ...Array.from({ length: 200 }, (_, i) => `remote-${i}`)];
+  const seen = new Set();
+  for (const id of ids) {
+    const c = stripeClass(id);
+    assert.match(c, /^stripe-[0-7]$/, JSON.stringify(id));
+    assert.equal(stripeClass(id), c, 'same id, same class');
+    seen.add(c);
+  }
+  assert.equal(seen.size, STRIPE_COUNT, 'a sample of ids reaches every class');
+  for (const odd of [undefined, null, 42, {}]) assert.match(stripeClass(odd), /^stripe-[0-7]$/);
+});
+
+// PINS the relative-path rule on every per-remote route: encoded, never `/`-led.
+test('remotePath is relative and encodes the id', () => {
+  assert.equal(remotePath('a.b'), 'api/remotes/a.b');
+  assert.equal(remotePath('a b/c', 'connect'), 'api/remotes/a%20b%2Fc/connect');
+  assert.equal(remotePath('x', 'disconnect'), 'api/remotes/x/disconnect');
+  assert.doesNotMatch(remotePath('/x'), /^\//);
+});
+
+// PINS THE WIRE SHAPES the forms send: create trims the id and label and omits
+// an empty label; edit sends the label as typed; blank config is omitted, a
+// cleared secret is null; an undefined mirror omits its key on both.
+test('submitRequest builds the exact POST and PATCH bodies', () => {
+  const draft = {
+    remoteId: '  box ', kind: 'ssh', label: '  ', config: { host: 'h', user: ' ', password: ' pw ' }, clear: {},
+    mirror: { on: true, root: ' / ', exclude: '/proc\n\n/dev\n' },
+  };
+  assert.deepEqual(submitRequest('create', draft, SSH), {
+    method: 'POST', path: 'api/remotes',
+    body: { remoteId: 'box', kind: 'ssh', config: { host: 'h', password: ' pw ' }, mirror: { root: '/', exclude: ['/proc', '/dev'] } },
+  });
+  assert.equal(submitRequest('create', { ...draft, label: ' Box ' }, SSH).body.label, 'Box');
+  const create = submitRequest('create', { ...draft, mirror: null }, SSH);
+  assert.equal('mirror' in create.body, false, 'no mirror half: the key is omitted');
+  assert.equal(submitRequest('create', { ...draft, mirror: { on: false, root: '/', exclude: '' } }, SSH).body.mirror, null);
+
+  const edit = submitRequest('edit', { ...draft, remoteId: 'box', label: ' Box ', config: { host: 'h' }, clear: { password: true } }, SSH);
+  assert.deepEqual(edit, {
+    method: 'PATCH', path: 'api/remotes/box',
+    body: { label: ' Box ', config: { host: 'h', password: null }, mirror: { root: '/', exclude: ['/proc', '/dev'] } },
+  });
+  assert.equal('mirror' in submitRequest('edit', { ...draft, remoteId: 'box', mirror: null }, SSH).body, false);
+});
+
+// PINS the registration vocabulary: the pill's tone per state, the muted note
+// for a normal skip, no banner while everything is fine, and cc's own words
+// (detail and each non-ok row) otherwise.
+test('registrationView maps each state to its pill tone and banner', () => {
+  assert.equal(registrationView(null), null);
+  const ok = registrationView({ state: 'ok', rows: [{ id: 'docker', state: 'ok', message: 'ok' }] });
+  assert.deepEqual(ok, { pill: { text: 'registration: ok', tone: 'ok' }, banner: null });
+  assert.deepEqual(registrationView({ state: 'skipped', detail: 'CONDUCTOR_URL is not set' }), {
+    pill: { text: 'registration: skipped', tone: 'neutral' }, banner: { kind: 'muted', text: 'CONDUCTOR_URL is not set' },
+  });
+  assert.deepEqual(registrationView({ state: 'unsupported' }).banner, { kind: 'muted', text: 'unsupported' });
+  assert.equal(registrationView({ state: 'unsupported' }).pill.tone, 'bad');
+  assert.deepEqual(registrationView({ state: 'pending', rows: [] }), { pill: { text: 'registration: pending', tone: 'neutral' }, banner: null });
+  assert.deepEqual(registrationView({
+    state: 'blocked', detail: 'cc said no',
+    rows: [{ id: 'docker', state: 'blocked', message: "'/x' is a git repository" }, { id: 'ssh', state: 'ok', message: 'ok' }],
+  }), {
+    pill: { text: 'registration: blocked', tone: 'bad' },
+    banner: { kind: 'error', detail: 'cc said no', rows: ["docker: '/x' is a git repository"] },
+  });
+  assert.deepEqual(registrationView({ state: 'unreachable', rows: [{ id: 'ssh', state: 'unreachable', message: 'ECONNREFUSED' }] }).banner,
+    { kind: 'error', detail: null, rows: ['ssh: ECONNREFUSED'] });
+});
+
+// PINS THAT EVERY TABLE LOOKUP KEYED BY A RECORD FIELD IS AN OWN-PROPERTY
+// LOOKUP. A kind named like an `Object.prototype` member would otherwise
+// resolve to a function: a word table that is not one, an alert "text" that
+// is a function, a gate note React cannot render.
+test('a prototype-named kind gets the defaults, never an inherited member', () => {
+  for (const kind of ['constructor', '__proto__', 'hasOwnProperty', 'valueOf', 'toString']) {
+    const r = remote({ kind, enabled: true, reachability: { connected: false, detail: `unknown kind '${kind}'`, fingerprint: null } });
+    assert.deepEqual(probeStatus(r), { level: 'down', word: 'not reachable', detail: `unknown kind '${kind}'` }, kind);
+    assert.deepEqual(probeStatus({ ...r, reachability: { connected: true, detail: '' } }).word, 'reachable', kind);
+    assert.deepEqual(cardAlert(r), { level: 'warn', text: `The target is not reachable: unknown kind '${kind}'` }, kind);
+    assert.equal(gateCopy(kind), null, kind);
+    assert.equal(own({ a: 1 }, kind), undefined, kind);
+  }
+  assert.equal(gateCopy('ssh'), GATE_COPY.ssh, 'an own entry is still found');
+  assert.equal(gateCopy('docker'), null);
+  assert.equal(own({ a: 1 }, 'a'), 1);
 });

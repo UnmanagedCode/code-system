@@ -32,6 +32,7 @@ an absolute path — which is what forces the store location below.
 | `src/registration.mjs` | auto-registration of the two cc System rows |
 | `src/baseline.mjs` | the tooling-baseline probe and its fingerprint cache |
 | `src/cards.mjs` | the card view — a record plus a live reachability, composed once for both read surfaces |
+| `src/http.mjs` | the HTTP app: headers, the API mount, the built UI or its 503, the plain-text 404/500 tail ("Serving and headers" below) |
 | `src/api.mjs` | the REST surface (`docs/protocol.md` has the routes) |
 | `src/mcp.mjs` | the MCP tool catalog and the `list_remotes` rendering |
 | `src/launcher/protocol.mjs` | NDJSON codec, spec-fixed constants, stderr→code table |
@@ -456,6 +457,22 @@ other, and delete is an `unlink`. The record's fields are in
 `makeRecord` (`src/store.mjs`); `config` is **opaque** to the store and owned by
 the kind's `validateConfig`.
 
+**`readRemote` is the single read validator**, and a refusal is a named
+`reason`, never a guess:
+
+| `reason` | When | Moved aside at startup |
+|---|---|---|
+| `invalid-id` | the requested id fails `REMOTE_ID_RE` | — |
+| `absent` | no `<id>.json` | — |
+| `unreadable` | the file exists but cannot be read (permissions, I/O) | no: a host problem |
+| `malformed` | not JSON, or not a JSON object | yes |
+| `too-deep` | parses, but nests past `MAX_RECORD_DEPTH`. A record far deeper (measured at 5 000 levels) still parses but cannot be re-serialised, which would fail every surface that serves it — the whole listing, not one card — and `writeRemote` | yes |
+| `schema` | `schema` is not `SCHEMA` | yes |
+| `id-mismatch` | the record's `remoteId` is not its filename stem. The file is addressed by its name, so a copy of `a.json` saved as `b.json` would otherwise serve a second card for `a` whose Delete removes the real `a` | yes |
+
+A refused record is still listed, as `{remoteId: <stem>, broken: {reason,
+message}}`: one broken card on REST and one `not readable` line on MCP.
+
 **`mirror` sits beside `enabled`, not inside `config`**, and for the same reason:
 it is **kind-agnostic operator policy**, not connection details the kind owns.
 `null` means the remote advertises nothing. Keeping it out of `config` also keeps
@@ -513,101 +530,160 @@ entirely, so `enabled` is part of `refreshBaseline`'s condition
 
 ### The card UI
 
-Four files under `frontend/`, vanilla ES modules, no build step — code-hub's
-layout.
+A React + Vite + Tailwind v4 + shadcn/Radix page under `frontend/`, following
+cc's reference setup (`docs/plugin-ui.md` Part 3 in a code-conductor checkout).
+`npm install` builds it into `frontend/dist` (the `prepare` script); the backend
+serves that build ("Serving and headers" below).
 
-| File | Owns |
+| Path (under `frontend/`) | Owns |
 |---|---|
-| `index.html` | the static shell |
-| `styles.css` | all styling. cc injects **no CSS and no tokens** across the iframe and hard-codes `#plugin-frame { background: #fff }` while its own shell is dark, so the token block is load-bearing, not decoration. Its `:root` values are copied from the `:root` block of code-conductor's shell stylesheet (`public/styles.css`); `tests/frontend-styles.test.mjs` pins the token contract |
-| `app.js` | fetch, poll, state, `render()` — **DOM only** |
-| `cardState.mjs` | **pure, DOM-free**: the gate/probe vocabulary, the alerts, the routing, and the mirror form↔wire conversion |
+| `index.html` | the shell. `<head>` order: `/pluginBridge.js` (blocking, first), `/pluginTheme.css`, `theme-init.js`, `./src/main.tsx` |
+| `public/theme-init.js` | standalone only: follow the OS theme. Returns at once when the bridge has set `data-cc-theme` |
+| `src/index.css` | Tailwind, cc's `@theme inline` block verbatim, the safe-area padding, and the identity-stripe set (`--cs-stripe-N`, `.stripe-N`) |
+| `src/cc-theme-fallback.css` | a one-time snapshot of cc's `web/src/themeTokens.css` inside `@layer base`, so the page is legible standalone. Embedded, cc's unlayered `/pluginTheme.css` wins. Never re-synced |
+| `src/lib/cardState.mjs` | **pure, DOM-free, plain JS with JSDoc**: every decision a card or form makes — the gate/probe vocabulary, the alerts, the drafts (`createDraft`, `editDraft`, `switchKind`, `mirrorDraft`), the request bodies (`submitRequest`, `remotePath`), `registrationView`, `stripeClass`, the routing, and the mirror form↔wire conversion |
+| `src/lib/api.ts` | `api(path, init)` + `ApiError` + `json(method, body)`. Throws on a `/`-led path; every request is `cache: 'no-store'` |
+| `src/lib/useRemotes.ts` | the polled data (`GET api/remotes` + `GET api/registration` in parallel) and `refresh()`; `POLL_MS` |
+| `src/lib/tone.ts` | the status palette: `TONE`, `DOT`, `GATE_ON_BUTTON`, `DANGER_BUTTON` |
+| `src/lib/types.ts` | the wire shapes the UI reads |
+| `src/App.tsx` | the state owner: route, draft, notice, busy map, in-form error, pending delete; `go`, `runAction`, `gateAction`, `submitForm` |
+| `src/components/` | `AppHeader`, `RegistrationPanel` (notices + registration banner), `RemoteCard` / `BrokenCard`, `CardBoundary`, `CredRow`, `RemoteForm`, `HintTip`, `DeleteDialog` — wiring only |
+| `src/components/ui/` | components copied from cc's `web/src/components/ui/`, plus `src/lib/{utils,modalFocus,textEntry}.ts`. A copy is ours; nothing syncs it |
 
-**The split is the test strategy.** Every decision a card makes lives in
-`cardState.mjs` and is unit tested with `node --test` and no browser
-(`tests/cardstate.test.mjs`); `app.js` is wiring. `tests/frontend.test.mjs`
-additionally reads the files off disk for the compliance items that fail only
-once mounted under cc, and asserts `cardState.mjs` touches no browser global —
-the moment it does, the seam is gone. `tests/frontend-styles.test.mjs` reads
-`styles.css` as text and pins the palette contract: dark-only, the host's token
-names on `:root`, status on `--green`/`--amber`/`--red` and never `--accent`, the
-accent fill on a form's submit only, the host's control radius and disabled
-treatment, and no raw colour functions.
+**`cardState.mjs` is the test seam.** It stays plain JS so `node --test` runs it
+with no build (`tests/cardstate.test.mjs`); TypeScript imports it through
+`allowJs` (`checkJs` off), reading its JSDoc types. `tests/frontend.test.mjs`
+asserts it touches no browser global — the moment it does, the seam is gone.
 
-**Field explanations are tooltips** (`tip()` and `fieldHead()`, `frontend/app.js`).
-`formFor` prints no hint paragraph: each descriptor `hint`, the Remote id text, the
-mirror texts and the edit note's detail go through `tip(id, name, text)`, which
-renders `span.tip > button.tip-btn[aria-describedby] + span.tip-body[role=tooltip]`.
+**One record costs at most one card.** Every table lookup keyed by a record field
+(the kind's probe words, disagreement text and gate note in `cardState.mjs`; the
+kind icon and baseline badge in `RemoteCard`) goes through `cardState.mjs` →
+`own`, so a prototype-named kind reads as an unknown one. And each card renders
+inside a `CardBoundary` (`src/components/CardBoundary.tsx`): a record that still
+throws while rendering is drawn as a broken card — its id, *"This card could not
+be shown: <reason>"*, and Delete — and is tried again when the record or its open
+form changes. `App` has no page-level boundary because nothing above the cards
+renders record content.
 
-- **Linking:** the field's own `<input>`/`<textarea>` carries the same
-  `aria-describedby` as the trigger (`<inputId>-tip`; `f-note-tip` for the edit
-  note), so a screen reader reads the hint from the input.
-- **Not `title`:** it never shows on touch or keyboard focus and cannot take the
-  palette.
-- **Show rules** (`styles.css`): `.tip:hover` only inside `@media (hover: hover)`
-  (a phone's sticky `:hover` would pin it open), `.tip-btn:focus-visible + .tip-body`
-  (a mouse click toggles `.open` instead), and `.tip.open`.
-- **Escape or a click on the body** adds `.dismissed`, declared last so it beats
-  the equal-specificity show rules. It holds until `focusout`, a `mouseenter` while
-  the tip is unfocused, a fresh `focusin`, or a click on the "?".
-- **Overflow:** `.tip-body` is absolutely positioned under `.tip-anchor`, so
-  `.card:has(.form)` lifts the card's `overflow: hidden`.
-- **Tests:** `tests/render.test.mjs` (hint text only inside a linked tooltip, the
-  open/dismiss/reset behaviour) and `tests/frontend-styles.test.mjs` (the rule contract).
+**Colour roles** (`src/lib/tone.ts`, pinned by `src/palette.test.tsx`): status is
+`success` / `warning` / `destructive` and never `primary`; the `primary` fill
+(Button `variant="default"`) is a form's Create/Save only. A card's Connect is an
+outline button tinted `success`, Disconnect and Delete outline tinted
+`destructive`. The kind badge is `outline` plus a lucide icon (`BoxIcon` docker,
+`TerminalIcon` ssh).
 
-**The Advanced group** (`formFor`, `frontend/app.js`) is the first and only
-`<details>` in this UI, and it holds **two kinds of member**:
+**The identity stripe.** Each working card has a 6px left border whose colour is
+`stripeClass(remoteId)` — the id's hash reduced to one of `STRIPE_COUNT` fixed
+classes, `stripe-0`…`stripe-N`. Each class reads one named property
+`--cs-stripe-N`, declared in `index.css` for `:root` (light) and `.dark` — the
+plugin's only custom properties, categorical hues with no host equivalent. No
+content reaches a class or a `style`. A broken card's stripe is
+`border-l-destructive`, the add tile's `border-l-muted-foreground`.
 
-- an **advanced config field** — a `configFields` entry from the kind's own
-  descriptor flagged `advanced: true` (docker's `user`; ssh's `port`, `password`, `identityFile`). `formFor` builds every
-  config field with one `configField(f)` helper and routes the flagged ones here
-  instead of into the connection block; nothing else about them differs. It is
-  validated and stored by the kind exactly like a connection field, which means
+**Field explanations are tooltips** (`HintTip`, `src/components/HintTip.tsx`).
+The form prints no hint paragraph: each descriptor `hint`, the Remote id text, the
+mirror texts and the edit note's detail are a `role="tooltip"` body behind a "?"
+button.
+
+- **Linking:** the "?" and the field's own control carry `aria-describedby`
+  (`<inputId>-tip`; `f-note-tip` for the edit note; `f-mirror-on-tip` on the
+  mirror checkbox). The body is always in the DOM, `hidden` until shown.
+- **Visibility is derived in JS:** `!dismissed && (open || kbd || (hovered && hoverCapable))`.
+  `open` is the tap/click toggle; `kbd` is a focus no `pointerdown` preceded;
+  hover counts only where `matchMedia('(hover: hover)')` matches.
+- **Escape or a click on the body** sets `dismissed`. It holds until focus leaves,
+  a `mouseenter` while unfocused, a fresh focus, or a click on the "?".
+- **Not Radix Tooltip:** it unmounts its content while closed (breaking the
+  input's `aria-describedby`) and does not open on tap.
+- The tip is absolutely positioned under its `relative` label row; cards do not
+  clip overflow.
+
+**The Advanced group** (`RemoteForm`) is a native `<details>`, and it holds **two
+kinds of member**:
+
+- an **advanced config field** — a `configFields` entry flagged `advanced: true`
+  (docker's `user`; ssh's `port`, `password`, `identityFile`). One `configField(f)`
+  builder renders every config field; flagged ones go here instead of into the
+  connection block. Validated and stored like any connection field, so
   **changing it resets the gate and the baseline** (`sameConfig`, `src/api.mjs`).
-- the **mirror form** — top-level operator policy beside the config: a checkbox
-  gating a root `<input>` and an exclude `<textarea>`. The draft holds **form
-  state** — `{on, root, exclude}` with `exclude` as raw newline-separated text —
-  and `mirrorPayload` / `mirrorSummary` in `cardState.mjs` convert to the wire
-  shape and to the card badge, for the same reason every other card decision
-  lives there. **Changing it resets neither**: it names the same target.
+- the **mirror form** — a Radix checkbox (`f-mirror-on`) gating a root input and an
+  exclude textarea. The draft holds **form state** — `{on, root, exclude}` with
+  `exclude` as raw newline-separated text — and `mirrorPayload` / `mirrorSummary`
+  convert to the wire shape and the card badge. **Changing it resets neither**.
 
-**Open state lives in the draft, not in the checkbox.** `draft.advancedOpen` is set
-once when the draft is built — `false` on create, `advancedOpenOnEdit(remote,
-configFields, mirrorDefaults)` on edit — and the `<details>` writes it back on
-`toggle`. A derived state would collapse the group under the cursor when the mirror
-checkbox re-renders. `advancedOpenOnEdit` is true for a stored advanced config value
-(or a name in `storedSecrets`) or a mirror that is not exactly `mirrorDefaults`
-(root, exclude order and content). `advancedSummary(formMirror)` builds the summary
-line from `mirrorPayload` / `mirrorSummary`; the root input rewrites the
-`.summary-state` span as it is typed. `advancedOpen` is never sent.
+**Open state lives in the draft, not in the checkbox.** `draft.advancedOpen` is
+`false` from `createDraft` and `advancedOpenOnEdit(remote, configFields,
+mirrorDefaults)` from `editDraft`; the `<details>` writes it back on `toggle`. A
+derived state would collapse the group under the cursor when the checkbox
+changes. `advancedOpenOnEdit` is true for a stored advanced config value (or a
+name in `storedSecrets`) or a mirror that is not exactly `mirrorDefaults`. The
+summary's state span is `advancedSummary(draft.mirror)`, recomputed as the
+operator types. `advancedOpen` is never sent.
 
-The mirror prefill comes from the `mirrorDefaults` on `GET /api/remotes`, so the
-frontend holds no second copy of the default list — and the **mirror half alone**
-is absent until that answer lands. The create draft's checkbox comes from the
-kind descriptor's `mirrorByDefault` (`mirrorDraft(null, kind)`), and the Kind
-`<select>` re-derives it; an edit draft reflects only the stored record. With no
-mirror half rendered, `mirrorPayload` returns `undefined`, so the key is omitted
-from the body: a POST takes the backend's kind default (`mirrorsByDefault`,
-`src/launcher/kinds/index.mjs`) and a PATCH keeps what is stored. The group itself is not: an advanced config
-field comes from the descriptor and has nothing to prefill from, so gating the
-whole `<details>` on the defaults would hide a stored value with no error
-anywhere (`tests/render.test.mjs`). There is no per-field
-error display: a 400 from the validator reaches the operator through the existing
-top-of-page banner, which is why `validateMirror`'s messages quote the offending
-value and an entry's index.
+The mirror prefill comes from the `mirrorDefaults` on `GET /api/remotes`, kept
+once served (a later response without it does not clear it), so the frontend
+holds no second copy of the default list — and the **mirror half alone** is
+absent until that answer lands. With no mirror half, `mirrorPayload` returns
+`undefined` and `submitRequest` omits the key: a POST takes the backend's kind
+default (`mirrorsByDefault`, `src/launcher/kinds/index.mjs`) and a PATCH keeps
+what is stored. The group itself is not gated on the defaults: an advanced config
+field has nothing to prefill from.
 
-Two divergences from code-hub, each with its reason:
+**Forms.** Create renders in a trailing "New remote" tile, Edit inside its own
+card; one open draft at a time, and Add or Edit replaces it. Each is a real
+`<form>`: Enter in a single-line field submits (every other button is
+`type="button"`; Enter in the exclude textarea is a newline). A secret field's
+value is dropped from the edit draft, so it is never prefilled or re-sent unless
+typed. **A refused Create/Save shows `error.message` inside the form**, above its
+actions, and the form stays open with its values; card actions report through the
+page's notice banner instead. The validator's messages quote the offending value
+and an entry's index for that reason.
 
-- **The poll is 10 s and visible-tab-only** (code-hub polls a flat 2 s). Each
-  refresh costs one `docker inspect` / `ssh -O check` **per remote**, each
-  bounded at 5 s. The manual refresh and the refresh after every action are
-  unconditional.
-- **Routing is query-string only** (`?add`, `?edit=<id>`), never a path segment.
-  cc's proxy guarantees a trailing slash by `301`, but relative URLs resolve
-  wrongly under a no-trailing-slash deep link; a constant path makes that
-  hazard unreachable. `history.replaceState` plus a `popstate` listener, because
-  cc's bridge demotes `pushState` to `replaceState` and delivers its own
-  navigation as a synthetic `popstate`.
+**Card actions are not optimistic.** `runAction` marks the card busy (its buttons
+disabled, `aria-busy`), runs the request, puts a failure in the notice banner,
+then refreshes. A gate route's or a delete's `warning` becomes a Warning notice.
+Delete asks first in a Radix `Dialog`.
+
+**The poll** (`useRemotes`) re-reads every `POLL_MS` (10 s), only while
+`document.visibilityState === 'visible'`: each refresh costs one `docker inspect`
+/ `ssh -O check` **per remote**, each bounded at 5 s. The manual refresh and the
+refresh after every action are unconditional. The poll **keeps rendering under an
+open form**: the draft is separate state, so cards update and typed values stay.
+Overlapping refreshes land newest-first only (a sequence counter), so a slow
+earlier answer cannot put back a gate the operator just moved.
+
+**Routing** is query-string only (`?add`, `?edit=<id>`), written with
+`history.replaceState` — never `pushState` (cc's bridge demotes it anyway) and
+never the hash (a hash change adds a joint history entry). The document stays at
+the plugin root, so relative URLs keep resolving. A `popstate` (cc's `navigate`)
+re-reads the route and drops the draft. **Deep links are deliberately not
+honoured:** a loaded `?add` or `?edit=<id>` reads the route but opens no form,
+because a form needs a draft and only Add and Edit build one; the URL is left as
+it was.
+
+### Serving and headers
+
+`src/http.mjs` → `createApp({api, distDir, log})` builds the Express app;
+`server.mjs` only migrates, calls it, and listens on **`127.0.0.1`** (never
+`0.0.0.0`: the API has no authentication). In order:
+
+1. `x-powered-by` off;
+2. `Content-Security-Policy: CSP` and `X-Content-Type-Options: nosniff` on every
+   response — set first, so the API, the 404, the 503 and the error tail carry
+   them too;
+3. the API router at `/api`;
+4. if `distDir/index.html` exists, `express.static(distDir, {redirect: false})`;
+   otherwise log `UI not built: <path> is missing — run npm install` once and
+   answer every remaining path `503 text/plain` `NOT_BUILT`;
+5. terminal `404 text/plain` `Not found` — **no SPA fallback**, so the two host
+   URLs 404 standalone;
+6. error tail: `text/plain`, `Internal error` for a 500 (the cause is logged),
+   else the error's message.
+
+`CSP` adds `style-src 'unsafe-inline'` to plugin-ui.md's minimum because Radix
+Dialog's scroll lock injects a `<style>` element. Nothing of ours writes a
+`style` attribute or element (`tests/frontend.test.mjs`). The built check runs
+once, at `createApp`.
 
 ### `KIND_META` and `kindDescriptors()`
 
@@ -641,6 +717,17 @@ draws a flagged field inside its Advanced `<details>`, and the kind validates,
 stores and resets it exactly like any other config field.
 `tests/kindmeta.test.mjs` pins that last part, so the flag cannot become a
 second, weaker class of field.
+
+**Every lookup by kind name is an own-property lookup** (`own` in
+`src/launcher/kinds/index.mjs`: `createTransport`, `secretFieldsFor`,
+`mirrorsByDefault`, `identityFieldFor`, `kindDescriptors`). A record's `kind` is
+whatever its file says, and a plain object inherits `constructor`, `__proto__`
+and the rest from `Object.prototype`, so `createTransport` answers `null` for
+those and `cardFor` takes its `unknown kind` path. The routes that act through a
+transport answer the same `unknownKindMessage(kind)`: connect and a config PATCH
+refuse **409** `{error: "unknown kind '<k>'"}`, and disconnect still switches the
+gate off and returns it as its `warning`. `tests/api.test.mjs` pins it over the
+prototype names.
 
 ### The environment seams
 
@@ -680,8 +767,9 @@ surfaces.
 | `CODE_SYSTEM_STORE` | `src/paths.mjs` | store root; else `<homedir>/.code-system`. Test isolation |
 | `CONDUCTOR_URL` | `src/registration.mjs` → `register`, `src/api.mjs` → `projectsNaming` | cc's base URL. **Unset is a normal state, not a failure**: registration reports `skipped` and `projectsNaming` answers `[]`, because standalone-runnable is a plugin-compliance requirement |
 | `PORT` | `server.mjs` | the backend's listen port, conductor-allocated. Default `4310`, for the same standalone-runnable reason |
-| `CODE_SYSTEM_DOCKER` | `kinds/docker.mjs` → `dockerCliArgv` | the **whole docker invocation** as a JSON array, e.g. `["sudo","-n","docker"]`. Default `["docker"]` — no `sudo` in the shipped default. Malformed → throws → launcher exit 2 before any frame |
-| `CODE_SYSTEM_SSH` | `kinds/ssh.mjs` → `sshCliArgv` | the **whole ssh invocation** as a JSON array, e.g. `["ssh","-F","/path/ssh_config"]`. Default `["ssh"]` — the operator's own `~/.ssh/config` and agent. Malformed → throws → launcher exit 2 before any frame |
+| `PLUGIN_BACKEND` | `frontend/vite.config.ts` | `npm run dev` only: the backend the Vite dev server proxies `/api` to. Default `http://127.0.0.1:4310` |
+| `CODE_SYSTEM_DOCKER` | `kinds/docker.mjs` → `dockerCliArgv` | the **whole docker invocation** as a JSON array, e.g. `["sudo","-n","docker"]`. Default `["docker"]` — no `sudo` in the shipped default. Malformed → throws an `operatorError` naming the variable, its expected shape and the value → launcher exit 2 before any frame; the backend answers 500 with that message verbatim |
+| `CODE_SYSTEM_SSH` | `kinds/ssh.mjs` → `sshCliArgv` | the **whole ssh invocation** as a JSON array, e.g. `["ssh","-F","/path/ssh_config"]`. Default `["ssh"]` — the operator's own `~/.ssh/config` and agent. Malformed → throws an `operatorError` naming the variable, its expected shape and the value → launcher exit 2 before any frame; the backend answers 500 with that message verbatim |
 | `CODE_SYSTEM_ALLOW_HOST_KIND` | `kinds/host.mjs` | permits `--kind host` at all |
 | `CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED` | `kinds/host.mjs` | permits `--kind host` with no `--remote` fence. **No shipped path sets it** |
 | `CODE_SYSTEM_FAKE_TRANSPORT` | `main.mjs` | module path for `--kind fake`. Tests only |
@@ -717,7 +805,9 @@ schema-1 record advertised nothing, so `upgradeToSchema2` rewrites it as
 had, and every other field deep-equal. It is **exact-version** (`raw.schema !== 1`
 falls straight through), which is what makes a second run rewrite no bytes with
 no marker file. Unparsable JSON, a non-object, or a record whose `remoteId` does
-not match its filename all answer `'skip'` and fall into the quarantine branch.
+not match its filename all answer `'skip'` and fall into the quarantine branch,
+which moves aside every record `readRemote` refuses as `malformed`, `too-deep`,
+`schema` or `id-mismatch` (`QUARANTINE_REASONS`).
 That last one matters — `writeRemote` addresses the file *by* the record's
 `remoteId`, so rewriting a mismatched record would write the wrong file.
 
@@ -1271,12 +1361,24 @@ global.
   server. That is the only way to model `docker stop` / `ssh -O exit` happening
   behind the plugin's back without a daemon, and it is what proves the probe
   re-asks rather than serving a cached verdict.
-- **A DOM stub for the frontend** (`tests/render.test.mjs`) — about 60 lines,
-  no layout and no CSS. It exists because `cardState.mjs` covers every
-  *decision* but leaves `app.js` with no *execution* coverage, and a
-  ReferenceError in `card()` is a blank page nothing else here would catch. It
-  answers one question: does the render path run, and does what it produces
-  carry both states.
+- **The whole HTTP app** (`tests/helpers.mjs` → `withHttpApp`): `createApp` on
+  an ephemeral loopback port over a temp store, with an injectable `distDir`,
+  `api` and `log`. `tests/http.test.mjs` drives it over a fixture dist;
+  `tests/dist.test.mjs` over the real build. `pinTestEnv` is the env pinning
+  both helpers share.
+- **The UI under vitest** (`frontend/src/**/*.test.{ts,tsx}`, happy-dom +
+  Testing Library + user-event). `src/test/fixtures.ts` → `stubFetch` installs a
+  recording `fetch` that answers from fixtures, with a `reply` hook to script any
+  route; `renderApp` renders `<App />` and waits for the first answer. The
+  backend's own kind descriptors reach the tests through `vitest.config.ts`'s
+  `provide` (`src/test/backend.ts` → `inject`): under the test environment's web
+  transform the backend module itself does not load. Poll tests fake only
+  `setInterval`/`clearInterval`. `src/test/setup.ts` unmounts, unstubs globals,
+  restores spies and resets the URL after each test.
+- **Static reads of the UI sources** (`tests/frontend.test.mjs`,
+  `tests/frontend-theme.test.mjs`, walking `tests/_frontendFiles.mjs`): head
+  order, relative URLs, banned sinks and style writes, the token contract, the
+  stripe set and its contrast.
 - **In-container assertions read `/proc`, never `ps`** — `node:24-slim` has no
   `ps`. The marker being counted is passed to the scanning shell **in its
   environment**, so the scanner's own `/proc/<pid>/cmdline` cannot match and

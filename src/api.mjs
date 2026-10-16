@@ -5,7 +5,7 @@ import express from 'express';
 import { unknownBaseline } from './baseline.mjs';
 import { cardFor, publicRecord, remoteCards } from './cards.mjs';
 import {
-  REGISTERED_KINDS, createTransport, isKnownKind, kindDescriptors, mergeSecrets, mirrorsByDefault,
+  REGISTERED_KINDS, createTransport, isKnownKind, kindDescriptors, mergeSecrets, mirrorsByDefault, unknownKindMessage,
 } from './launcher/kinds/index.mjs';
 import { handle } from './mcp.mjs';
 import { DEFAULT_MIRROR, validateMirror } from './mirror.mjs';
@@ -157,8 +157,12 @@ export function createApi(deps = {}) {
       if (config !== undefined) {
         // BEFORE validation, so `sameConfig` sees a kept secret as unchanged and a
         // new one as a change (which resets the gate).
+        // A stored kind no transport answers to (a hand-written record) is the
+        // same one refusal `cardFor` shows, never a TypeError on null.
+        const transport = createTransport(record.kind);
+        if (!transport) return res.status(409).json({ error: unknownKindMessage(record.kind) });
         let v;
-        try { v = createTransport(record.kind).validateConfig(mergeSecrets(record.kind, config, record.config)); }
+        try { v = transport.validateConfig(mergeSecrets(record.kind, config, record.config)); }
         catch (e) { return res.status(400).json({ error: e.message }); }
         if (!v.ok) return res.status(400).json({ error: v.error });
         nextConfig = v.config;
@@ -230,6 +234,8 @@ export function createApi(deps = {}) {
       const record = await forGate(req, res);
       if (!record) return;
       const transport = createTransport(record.kind);
+      // Nothing to connect through: refused, and the gate stays off.
+      if (!transport) return res.status(409).json({ error: unknownKindMessage(record.kind) });
 
       // THE KIND'S SEAM FIRST, THE GATE SECOND. On a throw the gate stays OFF:
       // "enabled" must never mean "enabled but we could not". For `ssh` this
@@ -268,9 +274,15 @@ export function createApi(deps = {}) {
       const updated = { ...record, enabled: false, updatedAt: new Date().toISOString() };
       await writeRemote(updated);
 
+      // An unknown kind has no channel to close: the gate is still off, and the
+      // warning says why nothing else happened.
       let warning;
-      try { await createTransport(record.kind).disconnect(record.config ?? {}); }
-      catch (e) { warning = e instanceof Error ? e.message : String(e); }
+      const transport = createTransport(record.kind);
+      if (!transport) warning = unknownKindMessage(record.kind);
+      else {
+        try { await transport.disconnect(record.config ?? {}); }
+        catch (e) { warning = e instanceof Error ? e.message : String(e); }
+      }
 
       res.json({
         remote: await cardFor({ ok: true, record: updated }),
@@ -292,10 +304,23 @@ export function createApi(deps = {}) {
   // JSON parse error and shows the user nothing about what went wrong. It
   // catches express's own body-parser refusals (malformed JSON, a body past the
   // 256kb limit) as well as anything `next(e)` hands it.
+  //
+  // THE RULE: every 5xx is logged. A 5xx whose error is NOT marked
+  // `expose: true` is our own fault with an internal message (a TypeError, a
+  // stack overflow), so the client reads a generic `Internal error`. Every
+  // other error answers its own message: a 4xx is a refusal meant for the
+  // client (body-parser's malformed JSON, its 413), and an exposed 5xx was
+  // written for the operator (`operatorError`, e.g. a malformed
+  // CODE_SYSTEM_SSH naming its expected shape).
   // eslint-disable-next-line no-unused-vars
   r.use((err, _req, res, _next) => {
     const status = Number(err?.status ?? err?.statusCode) || 500;
-    res.status(status).json({ error: err instanceof Error ? err.message : String(err) });
+    const message = err instanceof Error ? err.message : String(err);
+    if (status >= 500) {
+      (deps.log ?? console.error)(`api: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+      if (err?.expose !== true) return res.status(status).json({ error: 'Internal error' });
+    }
+    res.status(status).json({ error: message });
   });
 
   return r;

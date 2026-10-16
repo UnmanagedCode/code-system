@@ -135,6 +135,13 @@ const METAS = {
   ssh: SSH_META,
 };
 
+// EVERY LOOKUP BY KIND NAME IS AN OWN-PROPERTY LOOKUP. A kind comes off a
+// stored record, which a hand edit can set to anything, and a plain object
+// inherits `constructor`, `__proto__`, `toString` and the rest from
+// `Object.prototype`: `FACTORIES.constructor` is a truthy function that builds
+// no transport. Same guard, same reason, as the MCP tool lookup.
+const own = (table, kind) => (Object.hasOwn(table, kind) ? table[kind] : undefined);
+
 /**
  * What `GET /api/kinds` serves and the card UI renders: each registered kind's
  * human label and the fields its form needs.
@@ -148,7 +155,7 @@ const METAS = {
  */
 export function kindDescriptors(kinds = REGISTERED_KINDS) {
   return kinds.map((kind) => {
-    const meta = METAS[kind];
+    const meta = own(METAS, kind);
     if (!meta) {
       throw new Error(`kind '${kind}' has no KIND_META — every registered kind needs a label and`
         + ' configFields, or the card UI cannot render a form for it');
@@ -164,7 +171,7 @@ export function kindDescriptors(kinds = REGISTERED_KINDS) {
  * on its `KIND_META.configFields` entry.
  */
 export function secretFieldsFor(kind) {
-  return (METAS[kind]?.configFields ?? []).filter(f => f.secret === true).map(f => f.name);
+  return (own(METAS, kind)?.configFields ?? []).filter(f => f.secret === true).map(f => f.name);
 }
 
 /**
@@ -209,7 +216,7 @@ export function mergeSecrets(kind, incoming, stored) {
  * simply opted out.
  */
 export function mirrorsByDefault(kind) {
-  return METAS[kind]?.mirrorByDefault === true;
+  return own(METAS, kind)?.mirrorByDefault === true;
 }
 
 /**
@@ -225,13 +232,19 @@ export function mirrorsByDefault(kind) {
  * `GET /api/kinds` wire shape, which this does not change.
  */
 export function identityFieldFor(kind) {
-  const field = METAS[kind]?.identityField;
+  const field = own(METAS, kind)?.identityField;
   if (!field) {
     throw new Error(`kind '${kind}' has no KIND_META.identityField — every registered kind needs the name`
       + ' of the config field that identifies its target');
   }
   return field;
 }
+
+// The one refusal for a stored kind no transport answers to — an unregistered
+// name, or one only `Object.prototype` has. Every surface that turns a record's
+// kind into a transport says exactly this, so nothing internal (a TypeError on a
+// null transport) reaches a client.
+export const unknownKindMessage = (kind) => `unknown kind '${kind}'`;
 
 export function isKnownKind(kind) {
   return Object.hasOwn(FACTORIES, kind);
@@ -244,6 +257,6 @@ export function isKnownKind(kind) {
  * @returns {Transport|null}
  */
 export function createTransport(kind, opts = {}) {
-  const make = FACTORIES[kind];
+  const make = own(FACTORIES, kind);
   return make ? make(opts) : null;
 }

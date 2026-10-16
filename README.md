@@ -37,21 +37,26 @@ See [`docs/features.md`](docs/features.md) for what a card tells you and what th
 
 ### Stack
 
-Plain ESM JavaScript (`.mjs`), Node ≥ 20, no build step. Not TypeScript, for one hard reason: cc spawns the launcher with `spawn(argv[0], argv.slice(1))` and no shell, so running `.ts` directly would depend on the *host* node's type-stripping support — and that node is cc's, not ours. `node main.mjs` works on every Node ≥ 18 with no flags. The backend depends on `express`; **the launcher has zero dependencies** — it is spawned per System row, so a dependency tree there is startup cost on every reconnect.
+- **Backend and launcher:** plain ESM JavaScript (`.mjs`), no build step. Not TypeScript, for one hard reason: cc spawns the launcher with `spawn(argv[0], argv.slice(1))` and no shell, so running `.ts` directly would depend on the *host* node's type-stripping support — and that node is cc's, not ours. `node main.mjs` works on every Node ≥ 18 with no flags. The backend depends on `express`; **the launcher has zero dependencies** — it is spawned per System row, so a dependency tree there is startup cost on every reconnect.
+- **Card UI** (`frontend/`): React + Vite + Tailwind v4 + shadcn/Radix components, cc's reference setup (`docs/plugin-ui.md` Part 3 in a code-conductor checkout). It follows cc's light/dark theme live, and the OS theme when run standalone. It is **built on install**: `npm install` runs the `prepare` script, which writes `frontend/dist` (never committed). All UI packages are `devDependencies`.
+- **Node:** `>=22.12` to install, build and test (Vite 8, Vitest 5). The launcher itself still runs on any Node ≥ 18.
 
 ### Quick start
 
 In a cc-created worktree, `.code-conductor/post-worktree-create.sh` runs automatically after
-creation: it installs `node_modules` into the **parent** checkout once (if absent) and
-symlinks it into the worktree, so the worktree already has its dependencies and you can
-skip the `npm install` step below. Caution: because the worktree's `node_modules` is a
+creation: it installs `node_modules` into the **parent** checkout once (if absent),
+symlinks it into the worktree, and builds the worktree's UI with `npm run prepare`, so the
+worktree already has its dependencies and its `frontend/dist` and you can skip the
+`npm install` step below. If the parent's `node_modules` has no `vite` (installed before the
+UI had a build), the hook builds nothing and says to run `npm install` in the parent. Caution: because the worktree's `node_modules` is a
 symlink, running `npm install`/`npm ci` *inside* a worktree anyway writes through into the
 parent, which every other worktree shares. Kill-switch: `ORCH_DISABLE_POST_WORKTREE_HOOK=1`.
 
 ```sh
-npm install
-npm start                 # backend on $PORT, default 4310
-npm test                  # deterministic: no docker, no ssh, no network
+npm install               # installs, then builds the UI into frontend/dist (prepare)
+npm start                 # backend on 127.0.0.1:$PORT, default 4310
+npm run dev               # Vite dev server for the UI; proxies /api to $PLUGIN_BACKEND (default http://127.0.0.1:4310)
+npm test                  # node suite + tsc + vitest; deterministic: no docker, no ssh, no network
 CC_CHECKOUT=/path/to/code-conductor npm run conformance
 
 # On a host where the docker CLI needs a prefix — this also makes the live
@@ -65,7 +70,8 @@ CODE_SYSTEM_DOCKER='["sudo","-n","docker"]' npm test
 |---|---|
 | **Launcher** (`src/launcher/`) | the System protocol: frames, ids, routing, chunking, error codes, timeouts, killing children |
 | **Config store** (`src/store.mjs`) | per-`remoteId` connection config, one JSON file per remote |
-| **Backend** (`server.mjs`, `src/api.mjs`) | the REST API, the card UI, auto-registration, the tooling-baseline probe |
+| **Backend** (`server.mjs`, `src/http.mjs`, `src/api.mjs`) | the REST API, serving the built card UI, auto-registration, the tooling-baseline probe |
+| **Card UI** (`frontend/`) | the React page cc embeds; its decisions are pure functions in `frontend/src/lib/cardState.mjs` |
 | **MCP surface** (`src/mcp.mjs`) | one read-only tool, `list_remotes`, rendering the remote catalog as plain text |
 | `conductor.plugin.json` | the plugin manifest: `backend`, `frontend` and `mcp` |
 
@@ -90,7 +96,7 @@ See [`.wiki/decisions/architecture-shape.md`](.wiki/decisions/architecture-shape
 
 ### Testing
 
-`npm test` is deterministic and needs no docker, no ssh and no network; every test gets its own temp store. The two real-target suites — `tests/docker-live.test.mjs` against a real container and `tests/ssh-live.test.mjs` against a real sshd — **skip cleanly and loudly**, each skip naming what was tried and the `CODE_SYSTEM_DOCKER` override that would run it. The docker suite's gate is a Docker daemon; the ssh suite needs **both** a daemon (to host the sshd) *and* a runnable `ssh` client, and skips if either is missing. The ssh suite additionally **proves by count that its tests really ran** (or really all skipped), so a silently-skipping live suite cannot pass as a green run. `npm run conformance` runs **code-conductor's own conformance suite** — the definition of a valid provider — against this launcher's `host` kind, gated on `CC_CHECKOUT` and skipping cleanly without it. It first runs `tests/protocol-constants.test.mjs` with that checkout and aborts on drift, so a conformance run also proves our mirrored protocol constants still match cc's.
+`npm test` is deterministic and needs no docker, no ssh and no network; every test gets its own temp store. It runs three stages in order: the `node --test` suite (`tests/*.test.mjs`, which includes checks on the real `frontend/dist`, so build first), `npm run typecheck` (`tsc -p frontend`), and `npm run test:web` (vitest + happy-dom over `frontend/src/**/*.test.{ts,tsx}`). The two real-target suites — `tests/docker-live.test.mjs` against a real container and `tests/ssh-live.test.mjs` against a real sshd — **skip cleanly and loudly**, each skip naming what was tried and the `CODE_SYSTEM_DOCKER` override that would run it. The docker suite's gate is a Docker daemon; the ssh suite needs **both** a daemon (to host the sshd) *and* a runnable `ssh` client, and skips if either is missing. The ssh suite additionally **proves by count that its tests really ran** (or really all skipped), so a silently-skipping live suite cannot pass as a green run. `npm run conformance` runs **code-conductor's own conformance suite** — the definition of a valid provider — against this launcher's `host` kind, gated on `CC_CHECKOUT` and skipping cleanly without it. It first runs `tests/protocol-constants.test.mjs` with that checkout and aborts on drift, so a conformance run also proves our mirrored protocol constants still match cc's.
 
 ## Known limitations
 
@@ -104,6 +110,8 @@ See [`.wiki/decisions/architecture-shape.md`](.wiki/decisions/architecture-shape
 
 - **An ssh password is stored unencrypted.** It lives in the remote's store file (mode 0600), so it is readable by that user, by root and by any backup of the store; the API never returns it. See [`docs/features.md`](docs/features.md).
 - **Plugin must live on the `local` system (`PLUGIN_BACKEND_LOCAL_ONLY`).** The plugin backend itself is not relocatable to a remote System.
+- **The UI build needs the devDependencies.** A cc started with `NODE_ENV=production` or `npm_config_omit=dev` makes the Library's `npm install` skip them, so `prepare` fails and there is no `frontend/dist`. The backend still starts, logs `UI not built: <path> is missing — run npm install`, and answers every UI path with `503 text/plain` `UI not built — run npm install`; the API keeps working.
+- **The built check happens at backend start.** After building by hand (`npm run prepare`), restart the backend to stop the 503.
 
 ## License
 

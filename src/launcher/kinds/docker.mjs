@@ -9,7 +9,7 @@
 // there is no docker-specific file-transfer code here and never should be.
 
 import { spawn } from 'node:child_process';
-import { asObject, execEnv, operand } from './config.mjs';
+import { asObject, execEnv, operand, operatorError } from './config.mjs';
 // The kill relay's far-side script is SHARED with `ssh`: identical mechanism,
 // identical reason (a far-side child is not this process's OS descendant).
 import { REAP_TAG, TOKEN_VAR, buildReapScript } from './reapscript.mjs';
@@ -68,7 +68,8 @@ export const KIND_META = {
       // THE ONLY RENDERING FLAG in a descriptor field, and it changes rendering
       // ONLY: this is an ordinary config field the kind validates and the store
       // keeps, so changing it resets the gate like any other config change.
-      // frontend/app.js routes a flagged field into the card's Advanced group.
+      // frontend/src/components/RemoteForm.tsx draws a flagged field inside the
+      // card's Advanced group.
       advanced: true,
       placeholder: 'node, 1000, or 1000:1000',
       hint: 'The identity every docker action on this remote runs as, passed to `docker exec -u`.'
@@ -107,7 +108,7 @@ const IDENTITY_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]*(:[A-Za-z0-9_][A-Za-z0-9._-]*)?
 export function dockerCliArgv(env = process.env) {
   const raw = typeof env[DOCKER_ENV] === 'string' ? env[DOCKER_ENV].trim() : '';
   if (raw === '') return [...DEFAULT_CLI];
-  const bad = (why) => new Error(
+  const bad = (why) => operatorError(
     `${DOCKER_ENV} ${why}. It must be a JSON array of non-empty strings — the WHOLE docker`
     + ` invocation, e.g. ${DOCKER_ENV}='["sudo","-n","docker"]'. Got ${JSON.stringify(raw)}`);
   let parsed;

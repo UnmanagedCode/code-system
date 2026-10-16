@@ -1,0 +1,97 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import './cc-theme-fallback.css';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-plan: var(--plan);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}
+
+@layer base {
+  body {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* Categorical identity hues for the per-remote card stripe. cc's tokens have
+     no categorical palette, so these are this plugin's own; they are not status
+     colours. A card picks one by class (stripeClass in lib/cardState.mjs). */
+  :root {
+    --cs-stripe-0: oklch(0.55 0.17 25);
+    --cs-stripe-1: oklch(0.55 0.17 70);
+    --cs-stripe-2: oklch(0.55 0.17 115);
+    --cs-stripe-3: oklch(0.55 0.17 160);
+    --cs-stripe-4: oklch(0.55 0.17 205);
+    --cs-stripe-5: oklch(0.55 0.17 250);
+    --cs-stripe-6: oklch(0.55 0.17 295);
+    --cs-stripe-7: oklch(0.55 0.17 340);
+  }
+  .dark {
+    --cs-stripe-0: oklch(0.72 0.15 25);
+    --cs-stripe-1: oklch(0.72 0.15 70);
+    --cs-stripe-2: oklch(0.72 0.15 115);
+    --cs-stripe-3: oklch(0.72 0.15 160);
+    --cs-stripe-4: oklch(0.72 0.15 205);
+    --cs-stripe-5: oklch(0.72 0.15 250);
+    --cs-stripe-6: oklch(0.72 0.15 295);
+    --cs-stripe-7: oklch(0.72 0.15 340);
+  }
+}
+
+@layer components {
+  .stripe-0 { border-left-color: var(--cs-stripe-0); }
+  .stripe-1 { border-left-color: var(--cs-stripe-1); }
+  .stripe-2 { border-left-color: var(--cs-stripe-2); }
+  .stripe-3 { border-left-color: var(--cs-stripe-3); }
+  .stripe-4 { border-left-color: var(--cs-stripe-4); }
+  .stripe-5 { border-left-color: var(--cs-stripe-5); }
+  .stripe-6 { border-left-color: var(--cs-stripe-6); }
+  .stripe-7 { border-left-color: var(--cs-stripe-7); }
+}
