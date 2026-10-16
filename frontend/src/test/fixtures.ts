@@ -88,8 +88,17 @@ export interface Backend {
   reply?: Reply;
 }
 
-/** Every fetch that did not come through lib/api.ts, for the check in setup.ts. */
+/** Every fetch that did not come through lib/api.ts, for `assertNoFetchOutsideApi`. */
 export const fetchOutsideApi: string[] = [];
+
+/**
+ * The backstop setup.ts runs after every test: fails it when a fetch bypassed lib/api.ts, even if
+ * the code under test swallowed the stub's refusal (a refresh's catch, say). Drains the list.
+ */
+export function assertNoFetchOutsideApi() {
+  const outside = fetchOutsideApi.splice(0);
+  if (outside.length > 0) throw new Error(`fetch reached outside lib/api.ts: ${outside.join(', ')}`);
+}
 
 /** Installs a recording fetch. `state` is live: a test may change what later GETs answer. */
 export function stubFetch(opts: Backend = {}) {

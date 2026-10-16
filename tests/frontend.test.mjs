@@ -4,7 +4,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { FRONTEND, headTags, headUrls, ownFiles, sourceFiles } from './_frontendFiles.mjs';
 
@@ -63,6 +63,19 @@ test('only src/lib/api.ts reaches the network, through one fetch', () => {
     if (n === 'src/lib/api.ts') assert.deepEqual(hits, ['fetch'], 'api.ts: exactly one fetch, nothing else');
     else assert.deepEqual(hits, [], n);
   }
+});
+
+// Invariant: the runtime half of the ban is wired — vitest runs src/test/setup.ts
+// before every UI test file, and its afterEach calls the backstop that fails a test
+// on a bypass the code under test swallowed (assertNoFetchOutsideApi; its own
+// behaviour is pinned in src/lib/api.test.ts).
+test('every UI test ends with the fetch backstop', () => {
+  const config = readFileSync(path.join(FRONTEND, 'vitest.config.ts'), 'utf8');
+  assert.match(config, /setupFiles:\s*\[\s*'\.\/src\/test\/setup\.ts'\s*\]/);
+  const setup = readFileSync(path.join(FRONTEND, 'src', 'test', 'setup.ts'), 'utf8');
+  const body = setup.match(/afterEach\(\(\) => \{([\s\S]*?)\n\}\);/)?.[1] ?? '';
+  assert.match(body, /^\s*assertNoFetchOutsideApi\(\);\s*$/m, 'setup.ts calls the backstop inside afterEach');
+  assert.match(setup, /import \{ assertNoFetchOutsideApi \} from '\.\/fixtures';/);
 });
 
 // Invariant: no HTML-string sinks, dynamic code, hash writes, parent scripting,

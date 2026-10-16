@@ -305,17 +305,22 @@ export function createApi(deps = {}) {
   // catches express's own body-parser refusals (malformed JSON, a body past the
   // 256kb limit) as well as anything `next(e)` hands it.
   //
-  // A 500 is OUR fault, and its message is internal (a TypeError, a stack
-  // overflow): it is logged and the client reads a generic `Internal error`.
-  // Any other status is a refusal meant for the client, e.g. body-parser's.
+  // THE RULE: every 5xx is logged. A 5xx whose error is NOT marked
+  // `expose: true` is our own fault with an internal message (a TypeError, a
+  // stack overflow), so the client reads a generic `Internal error`. Every
+  // other error answers its own message: a 4xx is a refusal meant for the
+  // client (body-parser's malformed JSON, its 413), and an exposed 5xx was
+  // written for the operator (`operatorError`, e.g. a malformed
+  // CODE_SYSTEM_SSH naming its expected shape).
   // eslint-disable-next-line no-unused-vars
   r.use((err, _req, res, _next) => {
     const status = Number(err?.status ?? err?.statusCode) || 500;
+    const message = err instanceof Error ? err.message : String(err);
     if (status >= 500) {
       (deps.log ?? console.error)(`api: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
-      return res.status(status).json({ error: 'Internal error' });
+      if (err?.expose !== true) return res.status(status).json({ error: 'Internal error' });
     }
-    res.status(status).json({ error: err instanceof Error ? err.message : String(err) });
+    res.status(status).json({ error: message });
   });
 
   return r;

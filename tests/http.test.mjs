@@ -57,7 +57,8 @@ test('built: serves the UI, 404s the rest as text, and every response carries th
   const malformed = await fetch(`${base}/api/remotes`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{' });
   assert.equal(malformed.status, 400);
   assert.match(malformed.headers.get('content-type'), /^application\/json/, 'the API router tail answers JSON');
-  assert.equal(typeof (await malformed.json()).error, 'string');
+  // A client refusal keeps its own diagnostic through both tails.
+  assert.match((await malformed.json()).error, /JSON/);
   assertHeaders(malformed, 'malformed POST');
 });
 

@@ -9,7 +9,7 @@
 // there is no docker-specific file-transfer code here and never should be.
 
 import { spawn } from 'node:child_process';
-import { asObject, execEnv, operand } from './config.mjs';
+import { asObject, execEnv, operand, operatorError } from './config.mjs';
 // The kill relay's far-side script is SHARED with `ssh`: identical mechanism,
 // identical reason (a far-side child is not this process's OS descendant).
 import { REAP_TAG, TOKEN_VAR, buildReapScript } from './reapscript.mjs';
@@ -108,7 +108,7 @@ const IDENTITY_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]*(:[A-Za-z0-9_][A-Za-z0-9._-]*)?
 export function dockerCliArgv(env = process.env) {
   const raw = typeof env[DOCKER_ENV] === 'string' ? env[DOCKER_ENV].trim() : '';
   if (raw === '') return [...DEFAULT_CLI];
-  const bad = (why) => new Error(
+  const bad = (why) => operatorError(
     `${DOCKER_ENV} ${why}. It must be a JSON array of non-empty strings — the WHOLE docker`
     + ` invocation, e.g. ${DOCKER_ENV}='["sudo","-n","docker"]'. Got ${JSON.stringify(raw)}`);
   let parsed;

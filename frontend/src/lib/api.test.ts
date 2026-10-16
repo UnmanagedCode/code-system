@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError, api, json } from './api';
-import { fetchOutsideApi, stubFetch } from '@/test/fixtures';
+import { assertNoFetchOutsideApi, fetchOutsideApi, stubFetch } from '@/test/fixtures';
 
 describe('api', () => {
   // Invariant: requests are relative only — a `/`-led path would reach cc's API — and never cached.
@@ -43,5 +43,18 @@ describe('the UI suites\' fetch stub', () => {
     expect(fetchOutsideApi.splice(0)).toEqual(['api/remotes']);
     expect(await api<{ remotes: unknown[] }>('api/remotes')).toHaveProperty('remotes');
     expect(fetchOutsideApi).toEqual([]);
+  });
+});
+
+describe('the backstop setup.ts runs after every test', () => {
+  // Invariant: a bypass the code under test swallowed still fails the test — the backstop throws on
+  // any recorded bypass (naming it), drains the record, and passes when there is none. That setup.ts
+  // calls it in afterEach is pinned in tests/frontend.test.mjs.
+  it('throws on a recorded bypass, drains it, and passes on none', () => {
+    expect(() => assertNoFetchOutsideApi()).not.toThrow();
+    fetchOutsideApi.push('api/registration');
+    expect(() => assertNoFetchOutsideApi()).toThrow(/outside lib\/api\.ts: api\/registration/);
+    expect(fetchOutsideApi).toEqual([]);
+    expect(() => assertNoFetchOutsideApi()).not.toThrow();
   });
 });

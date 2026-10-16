@@ -843,7 +843,7 @@ only and re-derived at every start.
 | `POST /api/remotes/:id/disconnect` | 200 `{remote, warning?}` — the gate **first**, then the kind's `disconnect`. 404 / 409 as above. An unknown stored kind still switches the gate off, with `warning: "unknown kind '<k>'"` |
 | `DELETE /api/remotes/:id` | delete, **warning** when any cc project still names this `remoteId` |
 | `POST /api/mcp` | the MCP surface — one read-only tool. Its own contract is **MCP surface** below |
-| *(router tail)* | every response from a route under `/api` is JSON, including express's own body-parser refusals — the client reads `{error}` off every status. A **500** is the backend's own fault: its cause is logged and the body is `{error: "Internal error"}`, so no internal message reaches a client |
+| *(router tail)* | every response from a route under `/api` is JSON, including express's own body-parser refusals — the client reads `{error}` off every status. The rule: every **5xx** is logged. A 5xx whose error is **not** marked `expose: true` is answered `{error: "Internal error"}`, so no internal message (a TypeError, a stack overflow) reaches a client. Every other error answers `{error: <its message>}`: a **4xx** is a refusal meant for the client (body-parser's malformed JSON is 400, a body past 256kb is 413), and an exposed 5xx was written for the operator — `operatorError` in `src/launcher/kinds/config.mjs`, used for a malformed `CODE_SYSTEM_SSH` / `CODE_SYSTEM_DOCKER`, which reaches the card UI's "Backend unreachable" banner verbatim |
 
 **Secret config fields.** A `configFields` entry may carry **`secret: true`**
 (ssh's `password`). No response — `GET /remotes`, `POST`, `PATCH`, connect,

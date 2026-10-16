@@ -28,7 +28,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { asObject, execEnv, operand } from './config.mjs';
+import { asObject, execEnv, operand, operatorError } from './config.mjs';
 import { shellQuote } from '../fileops.mjs';
 // The kill relay's far-side script is SHARED with `docker`: identical
 // mechanism, identical reason (a far-side child is not this process's OS
@@ -126,7 +126,7 @@ const DEFAULT_CLI = ['ssh'];
 export function sshCliArgv(env = process.env) {
   const raw = typeof env[SSH_ENV] === 'string' ? env[SSH_ENV].trim() : '';
   if (raw === '') return [...DEFAULT_CLI];
-  const bad = (why) => new Error(
+  const bad = (why) => operatorError(
     `${SSH_ENV} ${why}. It must be a JSON array of non-empty strings — the WHOLE ssh`
     + ` invocation, e.g. ${SSH_ENV}='["ssh","-F","/path/to/ssh_config"]'. Got ${JSON.stringify(raw)}`);
   let parsed;

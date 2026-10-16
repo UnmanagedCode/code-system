@@ -27,6 +27,18 @@
 // shell exists, which is why it is refused here.
 
 /**
+ * An error whose message is WRITTEN FOR THE OPERATOR — it names the setting,
+ * its expected shape and the offending value — so a surface may show it as is.
+ * Marked with `expose: true`, the convention express's own errors use: the
+ * backend's router tail (src/api.mjs) passes an exposed message through even
+ * on a 5xx, and hides every unmarked 5xx behind `Internal error`.
+ * @param {string} message
+ */
+export function operatorError(message) {
+  return Object.assign(new Error(message), { expose: true });
+}
+
+/**
  * @returns {{ok:true, value:string}|{ok:false, error:string}}
  */
 export function operand(raw, field, { required = true } = {}) {
