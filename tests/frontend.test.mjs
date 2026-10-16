@@ -51,12 +51,16 @@ test('frontend uses no root-relative URLs', () => {
 
 // Invariant: all network access goes through lib/api.ts, whose api() refuses a
 // `/`-led path (pinned in src/lib/api.test.ts). Closing the class rather than a
-// spelling: a root-relative URL built at runtime still has to pass that guard.
+// spelling: no other source may NAME fetch at all (bare, as a member of
+// globalThis/window/self, in a string, or aliased), reach a global by computed
+// key or Reflect, or use any other network API. A spelling that assembles the
+// name at runtime is caught by the UI suites instead: their fetch stub refuses
+// any call whose stack does not pass through lib/api.ts (src/test/fixtures.ts).
 test('only src/lib/api.ts reaches the network, through one fetch', () => {
-  const network = /\bfetch\s*\(|XMLHttpRequest|EventSource|WebSocket|sendBeacon|\bimport\s*\(|new\s+(?:Image|Worker|SharedWorker)\b|\.src\s*=|\.href\s*=|location\.(?:assign|replace)\(|window\.open\(/g;
+  const network = /fetch|\b(?:globalThis|window|self)\s*\[|Reflect\s*\.\s*get|XMLHttpRequest|EventSource|WebSocket|sendBeacon|\bimport\s*\(|new\s+(?:Image|Worker|SharedWorker)\b|\.src\s*=|\.href\s*=|location\.(?:assign|replace)\(|window\.open\(/gi;
   for (const [n, src] of files) {
     const hits = [...src.matchAll(network)].map((m) => m[0]);
-    if (n === 'src/lib/api.ts') assert.deepEqual(hits, ['fetch('], 'api.ts: exactly one fetch, nothing else');
+    if (n === 'src/lib/api.ts') assert.deepEqual(hits, ['fetch'], 'api.ts: exactly one fetch, nothing else');
     else assert.deepEqual(hits, [], n);
   }
 });

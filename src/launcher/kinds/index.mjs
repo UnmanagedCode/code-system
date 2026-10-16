@@ -240,6 +240,12 @@ export function identityFieldFor(kind) {
   return field;
 }
 
+// The one refusal for a stored kind no transport answers to — an unregistered
+// name, or one only `Object.prototype` has. Every surface that turns a record's
+// kind into a transport says exactly this, so nothing internal (a TypeError on a
+// null transport) reaches a client.
+export const unknownKindMessage = (kind) => `unknown kind '${kind}'`;
+
 export function isKnownKind(kind) {
   return Object.hasOwn(FACTORIES, kind);
 }

@@ -610,7 +610,8 @@ describe('a record the UI cannot draw', () => {
     expect(card('on-down').getByText('Stopped app')).toBeTruthy();
     const weird = card('weird');
     expect(weird.getByRole('heading', { name: 'weird' })).toBeTruthy();
-    expect(weird.getByRole('note').textContent).toMatch(/^This card could not be shown: /);
+    // The reason is the caught error's own text (React's), not just the prefix.
+    expect(weird.getByRole('note').textContent).toMatch(/^This card could not be shown: Objects are not valid as a React child/);
     expect(weird.getAllByRole('button').map((b) => b.textContent)).toEqual(['Delete']);
     await user.click(weird.getByRole('button', { name: 'Delete' }));
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete' }));

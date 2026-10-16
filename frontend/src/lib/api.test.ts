@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError, api, json } from './api';
+import { fetchOutsideApi, stubFetch } from '@/test/fixtures';
 
 describe('api', () => {
   // Invariant: requests are relative only — a `/`-led path would reach cc's API — and never cached.
@@ -28,5 +29,19 @@ describe('api', () => {
   it('json() builds the init', () => {
     expect(json('DELETE')).toEqual({ method: 'DELETE' });
     expect(json('PATCH', { label: 'x' })).toEqual({ method: 'PATCH', headers: { 'content-type': 'application/json' }, body: '{"label":"x"}' });
+  });
+});
+
+describe('the UI suites\' fetch stub', () => {
+  // Invariant: the runtime half of "all network access goes through lib/api.ts": the stub every UI
+  // suite installs refuses, and records, a fetch whose caller is not api.ts — however it was spelled —
+  // while a call through api() passes.
+  it('refuses a fetch that bypasses api(), and passes one that goes through it', async () => {
+    stubFetch();
+    const bypass = (globalThis as Record<string, unknown>)[['fet', 'ch'].join('')] as typeof fetch;
+    await expect(bypass('api/remotes')).rejects.toThrow(/outside lib\/api\.ts/);
+    expect(fetchOutsideApi.splice(0)).toEqual(['api/remotes']);
+    expect(await api<{ remotes: unknown[] }>('api/remotes')).toHaveProperty('remotes');
+    expect(fetchOutsideApi).toEqual([]);
   });
 });

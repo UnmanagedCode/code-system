@@ -88,6 +88,9 @@ export interface Backend {
   reply?: Reply;
 }
 
+/** Every fetch that did not come through lib/api.ts, for the check in setup.ts. */
+export const fetchOutsideApi: string[] = [];
+
 /** Installs a recording fetch. `state` is live: a test may change what later GETs answer. */
 export function stubFetch(opts: Backend = {}) {
   const state = {
@@ -99,6 +102,13 @@ export function stubFetch(opts: Backend = {}) {
     status, headers: { 'content-type': 'application/json' },
   });
   vi.stubGlobal('fetch', vi.fn(async (path: string, init: RequestInit = {}) => {
+    // ALL NETWORK ACCESS GOES THROUGH lib/api.ts (its relative-path guard included). Judged by the
+    // caller's stack, not its spelling: a call that reached fetch any other way is refused here and
+    // recorded for the afterEach in setup.ts.
+    if (!/[\\/]src[\\/]lib[\\/]api\.ts/.test(new Error().stack ?? '')) {
+      fetchOutsideApi.push(String(path));
+      throw new Error(`fetch('${path}') called outside lib/api.ts`);
+    }
     const method = init.method ?? 'GET';
     const body = typeof init.body === 'string' ? JSON.parse(init.body) : null;
     calls.push({ path, method, body, cache: init.cache });

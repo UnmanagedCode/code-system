@@ -1008,3 +1008,116 @@ test('a stored prototype-named kind degrades to its own card, never a 500 or an 
   for (const i of PROTO_KINDS.keys()) assert.ok(mcp.body.text.includes(`odd-${i}`), `odd-${i} is listed`);
   assert.doesNotMatch(mcp.body.text, /is not a function|TypeError|Cannot read/);
 });
+
+const INTERNAL = /is not a function|TypeError|Cannot read|null \(reading|Maximum call stack|RangeError/;
+
+// PINS that EVERY route turning a stored kind into a transport refuses an
+// unknown or prototype-named kind with the one `unknown kind '<k>'` message —
+// never a TypeError on a null transport. Disconnect still switches the gate
+// off (disabling must not be blockable) and names the kind in its warning;
+// connect is refused and the gate stays off; a config PATCH is refused and
+// nothing is written.
+test('connect, disconnect and a config PATCH on an unknown kind answer unknown kind, never an internal error', async (t) => {
+  const { call, store } = await withApi(t);
+  for (const kind of [...PROTO_KINDS, 'telnet']) {
+    const id = `k-${PROTO_KINDS.indexOf(kind) + 1}`;
+    await writeRecord(store.dir, record(id, { kind, enabled: true, config: { host: 'h' } }));
+    const msg = `unknown kind '${kind}'`;
+
+    const off = await call('POST', `/remotes/${id}/disconnect`);
+    assert.equal(off.status, 200, `${kind}: disconnect`);
+    assert.equal(off.body.warning, msg, `${kind}: disconnect warning`);
+    assert.equal(off.body.remote.enabled, false, `${kind}: the gate is off`);
+
+    const on = await call('POST', `/remotes/${id}/connect`);
+    assert.deepEqual([on.status, on.body], [409, { error: msg }], `${kind}: connect`);
+
+    const patch = await call('PATCH', `/remotes/${id}`, { label: 'x', config: { host: 'other' } });
+    assert.deepEqual([patch.status, patch.body], [409, { error: msg }], `${kind}: config PATCH`);
+
+    const after = await call('GET', '/remotes');
+    const card = after.body.remotes.find(r => r.remoteId === id);
+    assert.equal(card.enabled, false, `${kind}: connect left the gate off`);
+    assert.deepEqual(card.config, { host: 'h' }, `${kind}: the refused PATCH wrote nothing`);
+    for (const body of [off.body, on.body, patch.body]) assert.doesNotMatch(JSON.stringify(body), INTERNAL, kind);
+  }
+});
+
+// PINS THE ROUTER TAIL'S 500: an error the API did not mean is logged, and the
+// client reads `Internal error`, not the error's own (internal) message.
+test('an unexpected 500 sends Internal error and logs the cause', async (t) => {
+  const logged = [];
+  const { call, store } = await withApi(t, { log: m => logged.push(m) });
+  const { promises: fs } = await import('node:fs');
+  const path = await import('node:path');
+  // A store whose records directory is a FILE: listing it fails with ENOTDIR,
+  // an error the route hands to the tail.
+  await fs.writeFile(path.join(store.dir, 'remotes'), 'not a directory');
+  const res = await call('GET', '/remotes');
+  assert.equal(res.status, 500);
+  assert.deepEqual(res.body, { error: 'Internal error' });
+  assert.ok(logged.some(m => m.includes('ENOTDIR')), 'the cause is logged');
+  assert.doesNotMatch(JSON.stringify(res.body), /ENOTDIR|remotes/);
+});
+
+// A record file whose `config` nests `levels` objects deep, as TEXT (it cannot
+// be built with JSON.stringify).
+const deepRecordText = (remoteId, levels) => {
+  const head = JSON.stringify(record(remoteId, { kind: 'docker' })).slice(0, -1).replace(/,"config":\{\}/, '');
+  return `${head},"config":${'{"k":'.repeat(levels)}"leaf"${'}'.repeat(levels)}}`;
+};
+
+// PINS "one record costs at most one card" for a record too deep to
+// re-serialise (measured: 5 000 levels made GET /api/remotes a 500 for the
+// whole listing): it is one broken card, reason too-deep, on REST and MCP alike.
+test('a record nested too deep is one broken card on REST and MCP, not a failed listing', async (t) => {
+  const { call, store } = await withApi(t);
+  await writeRecord(store.dir, record('healthy', { kind: 'docker', config: { container: 'c' }, enabled: false }));
+  const { promises: fs } = await import('node:fs');
+  const path = await import('node:path');
+  await fs.writeFile(path.join(store.dir, 'remotes', 'huge.json'), deepRecordText('huge', 5000));
+
+  const res = await call('GET', '/remotes');
+  assert.equal(res.status, 200);
+  const huge = res.body.remotes.find(r => r.remoteId === 'huge');
+  assert.equal(huge.broken.reason, 'too-deep');
+  assert.equal(res.body.remotes.find(r => r.remoteId === 'healthy').broken, undefined);
+  assert.doesNotMatch(JSON.stringify(res.body), INTERNAL);
+
+  assert.equal((await call('POST', '/remotes/huge/connect')).status, 409);
+  const mcp = await call('POST', '/mcp', { tool: 'list_remotes', arguments: {} });
+  assert.equal(mcp.status, 200);
+  assert.match(mcp.body.text, /not readable\s+huge/);
+  assert.match(mcp.body.text, /healthy/);
+});
+
+// PINS THAT A SERVED RECORD'S remoteId IS THE ID IT IS ADDRESSED BY (measured:
+// evil.json carrying "remoteId":"off-up" served a second off-up card whose
+// Delete removed the real one). The impostor is one broken card under its OWN
+// name; the real remote is listed once; acting on the impostor never reaches it.
+test('a record whose remoteId disagrees with its filename is a broken card under its own name', async (t) => {
+  const { call, store } = await withApi(t);
+  const real = await writeRecord(store.dir, record('off-up', { kind: 'docker', config: { container: 'c' }, enabled: false }));
+  const { promises: fs } = await import('node:fs');
+  const path = await import('node:path');
+  await fs.writeFile(path.join(store.dir, 'remotes', 'evil.json'), JSON.stringify(real));
+
+  const res = await call('GET', '/remotes');
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.remotes.map(r => [r.remoteId, r.broken?.reason]), [['evil', 'id-mismatch'], ['off-up', undefined]]);
+  assert.equal(res.body.remotes.filter(r => r.remoteId === 'off-up').length, 1, 'the real remote is listed once');
+
+  const mcp = await call('POST', '/mcp', { tool: 'list_remotes', arguments: {} });
+  const lines = mcp.body.text.split('\n').filter(Boolean);
+  assert.equal(lines.filter(l => l.includes('off-up')).length, 1, 'one MCP line for the real remote');
+  assert.match(lines.find(l => l.includes('evil')), /not readable\s+evil/, 'the impostor is a not-readable line under its own name');
+
+  for (const [method, url] of [['POST', '/remotes/evil/connect'], ['POST', '/remotes/evil/disconnect'], ['PATCH', '/remotes/evil']]) {
+    assert.equal((await call(method, url, method === 'PATCH' ? { label: 'x' } : undefined)).status, 409, `${method} ${url}`);
+  }
+  assert.equal((await call('DELETE', '/remotes/evil')).status, 200);
+  const after = await call('GET', '/remotes');
+  assert.deepEqual(after.body.remotes.map(r => [r.remoteId, r.broken?.reason, r.label]), [['off-up', undefined, 'off-up']],
+    'deleting the impostor removed only evil.json');
+
+});

@@ -53,10 +53,29 @@ function recordPath(id) {
   return path.join(remotesDir(), `${id}.json`);
 }
 
+// How deep a stored record may nest. A real one is a handful of levels
+// (record → baseline → missing[] → entry); the bound only has to sit far below
+// what `JSON.stringify` can re-serialise on a busy stack (a few thousand
+// levels), so every record this reader passes can be written back and served.
+export const MAX_RECORD_DEPTH = 32;
+
+// The nesting depth of a parsed JSON value, walked iteratively (a recursive walk
+// would overflow on exactly the records it exists to refuse). Stops as soon as
+// it passes `limit`.
+function depthExceeds(value, limit) {
+  const stack = [[value, 1]];
+  while (stack.length > 0) {
+    const [v, d] = stack.pop();
+    if (d > limit) return true;
+    if (v && typeof v === 'object') for (const child of Object.values(v)) stack.push([child, d + 1]);
+  }
+  return false;
+}
+
 // A failed read is a NAMED refusal, never a guess. The caller maps `reason` to
 // a wire code; nothing here knows about the protocol.
 //
-// reasons: 'invalid-id' | 'absent' | 'unreadable' | 'malformed' | 'schema'
+// reasons: 'invalid-id' | 'absent' | 'unreadable' | 'malformed' | 'too-deep' | 'schema' | 'id-mismatch'
 export async function readRemote(id) {
   if (!isValidRemoteId(id)) {
     return { ok: false, reason: 'invalid-id', message: `'${id}' is not a valid remote id (${REMOTE_ID_RE.source})` };
@@ -78,6 +97,11 @@ export async function readRemote(id) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { ok: false, reason: 'malformed', message: `remote '${id}' is not a JSON object` };
   }
+  // A record that parses but cannot be re-serialised would fail every surface
+  // that serves it — the whole listing, not one card — and `writeRemote` too.
+  if (depthExceeds(raw, MAX_RECORD_DEPTH)) {
+    return { ok: false, reason: 'too-deep', message: `remote '${id}' nests deeper than ${MAX_RECORD_DEPTH} levels` };
+  }
   // REFUSED BY NAME, never guessed at. A read-time upgrade here would be the
   // dual-shape parsing this codebase does not do; the startup pass moves an
   // unreadable record aside instead (src/migrate.mjs).
@@ -86,6 +110,17 @@ export async function readRemote(id) {
       ok: false,
       reason: 'schema',
       message: `remote '${id}' is stored at schema ${JSON.stringify(raw.schema)}, but this version reads schema ${SCHEMA} only`
+        + ' — start the code-system backend, which moves a record it cannot read aside into the quarantine directory',
+    };
+  }
+  // THE RECORD IS ADDRESSED BY ITS FILENAME, so the id inside must be that
+  // name. A copy of `a.json` saved as `b.json` would otherwise serve a second
+  // card for `a` whose every action — Delete included — reaches the real `a`.
+  if (raw.remoteId !== id) {
+    return {
+      ok: false,
+      reason: 'id-mismatch',
+      message: `remote '${id}' is stored as ${id}.json but its record names remoteId ${JSON.stringify(raw.remoteId)}`
         + ' — start the code-system backend, which moves a record it cannot read aside into the quarantine directory',
     };
   }

@@ -15,6 +15,18 @@ function or `Object.prototype` instead of `undefined`.
 - In the UI, `KIND_ICON.constructor` is `Object`, which React rendered as a
   component and threw on; with no boundary the whole page went blank.
 
+**Write routes too.** `connect`, `disconnect` and a config `PATCH` used to call
+`createTransport(kind).<method>` directly and leaked `Cannot read properties of
+null (reading 'connect')` to the operator. Every route that turns a stored kind
+into a transport now answers `unknownKindMessage(kind)` instead.
+
+**Sibling refusals in the same class** ("one record costs at most one card"):
+`readRemote` refuses a record nested past `MAX_RECORD_DEPTH` (`too-deep`: it
+parsed but could not be re-serialised, so it 500'd the whole listing) and one
+whose `remoteId` is not its filename (`id-mismatch`: an impostor card's Delete
+removed the real remote). Both are listed as broken cards under their filename
+stem and moved aside at startup.
+
 **The rule:** every lookup keyed by a record field goes through an own-property
 helper — `own` in `src/launcher/kinds/index.mjs` (backend) and `own` in
 `frontend/src/lib/cardState.mjs` (UI) — the same guard `src/mcp.mjs` uses for

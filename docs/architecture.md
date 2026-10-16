@@ -457,6 +457,22 @@ other, and delete is an `unlink`. The record's fields are in
 `makeRecord` (`src/store.mjs`); `config` is **opaque** to the store and owned by
 the kind's `validateConfig`.
 
+**`readRemote` is the single read validator**, and a refusal is a named
+`reason`, never a guess:
+
+| `reason` | When | Moved aside at startup |
+|---|---|---|
+| `invalid-id` | the requested id fails `REMOTE_ID_RE` | — |
+| `absent` | no `<id>.json` | — |
+| `unreadable` | the file exists but cannot be read (permissions, I/O) | no: a host problem |
+| `malformed` | not JSON, or not a JSON object | yes |
+| `too-deep` | parses, but nests past `MAX_RECORD_DEPTH`. A record far deeper (measured at 5 000 levels) still parses but cannot be re-serialised, which would fail every surface that serves it — the whole listing, not one card — and `writeRemote` | yes |
+| `schema` | `schema` is not `SCHEMA` | yes |
+| `id-mismatch` | the record's `remoteId` is not its filename stem. The file is addressed by its name, so a copy of `a.json` saved as `b.json` would otherwise serve a second card for `a` whose Delete removes the real `a` | yes |
+
+A refused record is still listed, as `{remoteId: <stem>, broken: {reason,
+message}}`: one broken card on REST and one `not readable` line on MCP.
+
 **`mirror` sits beside `enabled`, not inside `config`**, and for the same reason:
 it is **kind-agnostic operator policy**, not connection details the kind owns.
 `null` means the remote advertises nothing. Keeping it out of `config` also keeps
@@ -707,8 +723,11 @@ second, weaker class of field.
 `mirrorsByDefault`, `identityFieldFor`, `kindDescriptors`). A record's `kind` is
 whatever its file says, and a plain object inherits `constructor`, `__proto__`
 and the rest from `Object.prototype`, so `createTransport` answers `null` for
-those and `cardFor` takes its `unknown kind` path. `tests/api.test.mjs` pins it
-over the prototype names.
+those and `cardFor` takes its `unknown kind` path. The routes that act through a
+transport answer the same `unknownKindMessage(kind)`: connect and a config PATCH
+refuse **409** `{error: "unknown kind '<k>'"}`, and disconnect still switches the
+gate off and returns it as its `warning`. `tests/api.test.mjs` pins it over the
+prototype names.
 
 ### The environment seams
 
@@ -786,7 +805,9 @@ schema-1 record advertised nothing, so `upgradeToSchema2` rewrites it as
 had, and every other field deep-equal. It is **exact-version** (`raw.schema !== 1`
 falls straight through), which is what makes a second run rewrite no bytes with
 no marker file. Unparsable JSON, a non-object, or a record whose `remoteId` does
-not match its filename all answer `'skip'` and fall into the quarantine branch.
+not match its filename all answer `'skip'` and fall into the quarantine branch,
+which moves aside every record `readRemote` refuses as `malformed`, `too-deep`,
+`schema` or `id-mismatch` (`QUARANTINE_REASONS`).
 That last one matters — `writeRemote` addresses the file *by* the record's
 `remoteId`, so rewriting a mismatched record would write the wrong file.
 
