@@ -16,6 +16,14 @@ export const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 export const LAUNCHER = path.join(REPO, 'src', 'launcher', 'main.mjs');
 export const FAKE_TRANSPORT = path.join(REPO, 'tests', 'fakeTransport.mjs');
 
+// The Content-Security-Policy every backend response must carry, PINNED AS A
+// LITERAL and deliberately not imported from src/http.mjs: a header compared
+// with the constant it was set from proves nothing about what the policy says.
+// plugin-ui.md Part 2's minimum, plus `style-src 'unsafe-inline'` for Radix
+// Dialog's injected <style>.
+export const PINNED_CSP = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self';"
+  + " connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'";
+
 export async function tempStore() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'code-system-test-'));
   return { dir, async cleanup() { await fs.rm(dir, { recursive: true, force: true }); } };

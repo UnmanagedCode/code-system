@@ -23,6 +23,18 @@
 // that could never name a remote, so it is read as the list.
 const REMOTE_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
+// EVERY TABLE LOOKUP KEYED BY A STORED-RECORD FIELD IS AN OWN-PROPERTY LOOKUP.
+// A record's `kind` is whatever its file says, and a plain object inherits
+// `constructor`, `__proto__`, `toString` and the rest: `PROBE_WORDS.constructor`
+// is a function, not a word table.
+/**
+ * @template T
+ * @param {Record<string, T>} table
+ * @param {unknown} key
+ * @returns {T|undefined}
+ */
+export const own = (table, key) => (Object.hasOwn(table, /** @type {PropertyKey} */ (key)) ? table[/** @type {string} */ (key)] : undefined);
+
 // ── the gate ─────────────────────────────────────────────────────────
 
 /** @returns {{enabled:boolean, word:'Enabled'|'Disabled'}} */
@@ -40,6 +52,11 @@ export const GATE_COPY = {
     'Enabling also opens one authenticated SSH connection for commands to share. Disabling closes'
     + ' it and stops commands — the gate is what stops them, not the connection.',
 };
+
+/** The kind's gate sentence, or null for a kind with none (an own entry only). */
+export function gateCopy(kind) {
+  return own(GATE_COPY, kind) ?? null;
+}
 
 // ── the probe ────────────────────────────────────────────────────────
 
@@ -60,7 +77,7 @@ export function probeStatus(remote) {
   if (remote?.broken) return { level: 'unknown', word: 'not readable', detail: '' };
   const reach = remote?.reachability;
   if (!reach) return { level: 'unknown', word: 'unknown', detail: '' };
-  const words = PROBE_WORDS[remote.kind] ?? PROBE_WORDS_DEFAULT;
+  const words = own(PROBE_WORDS, remote.kind) ?? PROBE_WORDS_DEFAULT;
   const level = reach.connected === true ? 'ok' : 'down';
   return { level, word: words[level], detail: String(reach.detail ?? '') };
 }
@@ -99,7 +116,7 @@ export function cardAlert(remote) {
   // is gone. Calling either an error sends the operator to debug a fault that
   // is not there.
   if (enabled && probe.level === 'down') {
-    return { level: 'warn', text: DISAGREEMENT[remote.kind] ?? `The target is not reachable: ${probe.detail}` };
+    return { level: 'warn', text: own(DISAGREEMENT, remote.kind) ?? `The target is not reachable: ${probe.detail}` };
   }
 
   // GATE OFF, PROBE UP is not a disagreement worth an alert: the probe line

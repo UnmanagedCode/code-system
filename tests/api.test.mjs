@@ -8,7 +8,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_MIRROR } from '../src/mirror.mjs';
 import { SCHEMA } from '../src/store.mjs';
-import { fakeConductor, stubDockerCli, stubSshCli, withApi } from './helpers.mjs';
+import { createTransport } from '../src/launcher/kinds/index.mjs';
+import { fakeConductor, record, stubDockerCli, stubSshCli, withApi, writeRecord } from './helpers.mjs';
 
 // What a GNU coreutils target answers the baseline probe, so a stub-driven
 // probe lands on a definite verdict rather than an incidental one.
@@ -967,4 +968,43 @@ test('changing or removing an ssh port resets the gate; re-sending it does not',
   assert.equal(removed.body.remote.enabled, false, 'dropping the port is a change');
   assert.equal(removed.body.remote.baseline.state, 'unknown');
   assert.equal('port' in (await stored(store, 'box')).config, false);
+});
+
+// ── a stored kind named like an Object.prototype member ──────────────
+
+const PROTO_KINDS = ['constructor', '__proto__', 'hasOwnProperty', 'valueOf', 'toString'];
+
+// PINS THAT A KIND IS LOOKED UP AS AN OWN PROPERTY. A record's `kind` is
+// whatever its file says, and a plain object inherits these names: `constructor`
+// built a truthy non-transport (so the client read `transport.reachability is
+// not a function`) and `__proto__` threw out of `cardFor`, failing the whole
+// list. Each must be an unknown kind instead, and degrade one card.
+test('createTransport resolves own kinds only: an inherited name is null', () => {
+  for (const kind of PROTO_KINDS) assert.equal(createTransport(kind), null, kind);
+  assert.notEqual(createTransport('docker'), null);
+});
+
+test('a stored prototype-named kind degrades to its own card, never a 500 or an internal TypeError', async (t) => {
+  const { call, store } = await withApi(t);
+  await writeRecord(store.dir, record('healthy', { kind: 'docker', config: { container: 'c' }, enabled: false }));
+  for (const [i, kind] of PROTO_KINDS.entries()) await writeRecord(store.dir, record(`odd-${i}`, { kind }));
+
+  const res = await call('GET', '/remotes');
+  assert.equal(res.status, 200);
+  const byId = new Map(res.body.remotes.map(r => [r.remoteId, r]));
+  assert.equal(byId.get('healthy').kind, 'docker', 'the healthy remote is listed');
+  assert.equal(byId.get('healthy').broken, undefined);
+  for (const [i, kind] of PROTO_KINDS.entries()) {
+    const card = byId.get(`odd-${i}`);
+    assert.ok(card, `${kind}: listed`);
+    assert.deepEqual(card.reachability, { connected: false, detail: `unknown kind '${kind}'`, fingerprint: null }, kind);
+  }
+  assert.doesNotMatch(JSON.stringify(res.body), /is not a function|TypeError|Cannot read/,
+    'no internal error text reaches the client');
+
+  const mcp = await call('POST', '/mcp', { tool: 'list_remotes', arguments: {} });
+  assert.equal(mcp.status, 200);
+  assert.equal(mcp.body.error, undefined, 'the MCP listing still answers');
+  for (const i of PROTO_KINDS.keys()) assert.ok(mcp.body.text.includes(`odd-${i}`), `odd-${i} is listed`);
+  assert.doesNotMatch(mcp.body.text, /is not a function|TypeError|Cannot read/);
 });

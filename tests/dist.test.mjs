@@ -4,9 +4,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import { CSP, DEFAULT_DIST } from '../src/http.mjs';
+import { DEFAULT_DIST } from '../src/http.mjs';
 import { headUrls } from './_frontendFiles.mjs';
-import { withHttpApp } from './helpers.mjs';
+import { PINNED_CSP, withHttpApp } from './helpers.mjs';
 
 const indexPath = path.join(DEFAULT_DIST, 'index.html');
 const built = existsSync(indexPath);
@@ -71,7 +71,7 @@ test('the backend serves the built page and its assets', async (t) => {
   const { base } = await withHttpApp(t);
   const r = await fetch(`${base}/`);
   assert.equal(r.status, 200);
-  assert.equal(r.headers.get('content-security-policy'), CSP);
+  assert.equal(r.headers.get('content-security-policy'), PINNED_CSP);
   assert.equal(await r.text(), html);
   const local = refs().filter((u) => !HOST.includes(u));
   assert.ok(local.length >= 3, local.join(', '));
@@ -79,7 +79,7 @@ test('the backend serves the built page and its assets', async (t) => {
     const a = await fetch(new URL(u, `${base}/`));
     assert.equal(a.status, 200, u);
     assert.match(a.headers.get('content-type'), u.endsWith('.css') ? /^text\/css/ : /^(?:text|application)\/javascript/, u);
-    assert.equal(a.headers.get('content-security-policy'), CSP, u);
+    assert.equal(a.headers.get('content-security-policy'), PINNED_CSP, u);
     assert.equal(a.headers.get('x-content-type-options'), 'nosniff', u);
   }
 });

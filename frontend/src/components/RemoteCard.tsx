@@ -6,14 +6,14 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { CredRow } from '@/components/CredRow';
 import {
-  GATE_COPY, baselineNotice, cardAlert, gateStatus, mirrorSummary, probeStatus, stripeClass,
+  baselineNotice, cardAlert, gateCopy, gateStatus, mirrorSummary, own, probeStatus, stripeClass,
 } from '@/lib/cardState.mjs';
 import { DANGER_BUTTON, DOT, GATE_ON_BUTTON, TONE } from '@/lib/tone';
 import { cn } from '@/lib/utils';
 import type { BrokenRemote, KindDescriptor, WorkingRemote } from '@/lib/types';
 
 const KIND_ICON: Record<string, typeof BoxIcon> = { docker: BoxIcon, ssh: TerminalIcon };
-const BASELINE_BADGE = { ok: 'success', unsupported: 'destructive' } as const;
+const BASELINE_BADGE: Record<string, 'success' | 'destructive'> = { ok: 'success', unsupported: 'destructive' };
 
 /** What a card's action is busy with, so that one button shows the spinner. */
 export type CardAction = 'connect' | 'disconnect' | 'delete' | 'submit';
@@ -48,8 +48,9 @@ export function RemoteCard({ remote, descriptor, busy, onGate, onEdit, onDelete,
   const notice = baselineNotice(remote);
   const mirror = mirrorSummary(remote);
   const baselineState = remote.baseline?.state ?? 'unknown';
-  const gateCopy = (GATE_COPY as Record<string, string | undefined>)[remote.kind];
-  const KindIcon = KIND_ICON[remote.kind];
+  // Own-property lookups only: a record's kind and baseline state are whatever its file says.
+  const gateNote = gateCopy(remote.kind);
+  const KindIcon = own(KIND_ICON, remote.kind);
   const isBusy = busy !== undefined;
 
   return (
@@ -75,7 +76,7 @@ export function RemoteCard({ remote, descriptor, busy, onGate, onEdit, onDelete,
           {descriptor?.label ?? remote.kind}
         </Badge>
         <Badge
-          variant={BASELINE_BADGE[baselineState as keyof typeof BASELINE_BADGE] ?? 'outline'}
+          variant={own(BASELINE_BADGE, baselineState) ?? 'outline'}
           className={cn('font-mono', baselineState === 'unknown' && TONE.muted)}
         >
           baseline {baselineState}
@@ -103,7 +104,7 @@ export function RemoteCard({ remote, descriptor, busy, onGate, onEdit, onDelete,
 
       <CredRow remoteId={remote.remoteId} />
 
-      {gateCopy && <p className="text-xs text-muted-foreground">{gateCopy}</p>}
+      {gateNote && <p className="text-xs text-muted-foreground">{gateNote}</p>}
 
       <div className="flex flex-wrap gap-2">
         {gate.enabled ? (

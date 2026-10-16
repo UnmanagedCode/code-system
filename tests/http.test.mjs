@@ -8,8 +8,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
-import { CSP, NOT_BUILT } from '../src/http.mjs';
-import { withHttpApp } from './helpers.mjs';
+import { NOT_BUILT } from '../src/http.mjs';
+import { PINNED_CSP, withHttpApp } from './helpers.mjs';
 
 async function fixtureDist(t) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'code-system-dist-'));
@@ -21,7 +21,7 @@ async function fixtureDist(t) {
 }
 
 function assertHeaders(res, what) {
-  assert.equal(res.headers.get('content-security-policy'), CSP, `${what}: CSP`);
+  assert.equal(res.headers.get('content-security-policy'), PINNED_CSP, `${what}: CSP`);
   assert.equal(res.headers.get('x-content-type-options'), 'nosniff', `${what}: nosniff`);
 }
 

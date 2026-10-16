@@ -25,6 +25,10 @@ That makes `remoteId` a hand-off contract:
   cannot be undone."*), and **warns** afterwards when cc projects still name it,
   listing them. Nothing else would tell you which projects you just stranded.
 
+**A record the page cannot draw costs one card.** It shows as a broken card with
+the remote's id, *"This card could not be shown: …"* and a Delete button; the
+rest of the page is unaffected, and the card comes back once the record is fixed.
+
 **The page follows cc's theme.** Inside cc it takes cc's light or dark theme and
 changes with it live (the sidebar toggle, or the OS while cc's theme is
 "system"). Opened standalone (`npm start`, then `http://127.0.0.1:<port>/`), it

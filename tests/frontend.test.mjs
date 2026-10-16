@@ -49,6 +49,18 @@ test('frontend uses no root-relative URLs', () => {
   }
 });
 
+// Invariant: all network access goes through lib/api.ts, whose api() refuses a
+// `/`-led path (pinned in src/lib/api.test.ts). Closing the class rather than a
+// spelling: a root-relative URL built at runtime still has to pass that guard.
+test('only src/lib/api.ts reaches the network, through one fetch', () => {
+  const network = /\bfetch\s*\(|XMLHttpRequest|EventSource|WebSocket|sendBeacon|\bimport\s*\(|new\s+(?:Image|Worker|SharedWorker)\b|\.src\s*=|\.href\s*=|location\.(?:assign|replace)\(|window\.open\(/g;
+  for (const [n, src] of files) {
+    const hits = [...src.matchAll(network)].map((m) => m[0]);
+    if (n === 'src/lib/api.ts') assert.deepEqual(hits, ['fetch('], 'api.ts: exactly one fetch, nothing else');
+    else assert.deepEqual(hits, [], n);
+  }
+});
+
 // Invariant: no HTML-string sinks, dynamic code, hash writes, parent scripting,
 // cc storage keys, or style written from script — anywhere in the UI source.
 test('frontend uses no HTML-string sinks, eval, style writes, hash writes, window.parent or cc keys', () => {

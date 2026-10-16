@@ -2,9 +2,8 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '@/App';
-import { COPY_RESET_MS } from '@/components/CredRow';
 import { stripeClass } from '@/lib/cardState.mjs';
-import { POLL_MS } from '@/lib/useRemotes';
+import type { WorkingRemote } from '@/lib/types';
 import {
   REMOTES, addTile, card, cardEl, lastBody, renderApp, settle, stubFetch, type Call,
 } from '@/test/fixtures';
@@ -60,14 +59,50 @@ describe('shell', () => {
     expect(screen.getByText('No remotes yet. Add a Docker container or an SSH host to get started.')).toBeTruthy();
   });
 
-  // Invariant: Refresh refreshes unconditionally and stamps the time.
-  it('Refresh re-reads both routes and stamps "updated"', async () => {
+  // Invariant: Refresh re-reads both routes unconditionally, and each successful refresh re-stamps
+  // "updated" with the time it landed.
+  it('Refresh re-reads both routes and moves the "updated" stamp', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const first = new Date(2026, 9, 16, 9, 15, 30);
+    const second = new Date(2026, 9, 16, 11, 42, 5);
+    vi.setSystemTime(first);
     const user = userEvent.setup();
     const { calls } = await renderApp();
-    expect(screen.getByText(/^updated /)).toBeTruthy();
+    expect(screen.getByText(`updated ${first.toLocaleTimeString()}`)).toBeTruthy();
+    vi.setSystemTime(second);
     await user.click(screen.getByRole('button', { name: 'Refresh' }));
     await waitFor(() => expect(gets(calls, 'api/remotes')).toBe(2));
     expect(gets(calls, 'api/registration')).toBe(2);
+    expect(await screen.findByText(`updated ${second.toLocaleTimeString()}`)).toBeTruthy();
+    expect(screen.queryByText(`updated ${first.toLocaleTimeString()}`)).toBeNull();
+  });
+
+  // Invariant: the theme is cc's (or the OS's, via theme-init.js): mounting and using the app leaves
+  // <html>'s class and attributes exactly as it found them, embedded or standalone.
+  it('the app never touches the root element\'s class or attributes', async () => {
+    const root = document.documentElement;
+    const snapshot = () => root.getAttributeNames().sort().map((n) => `${n}=${root.getAttribute(n)}`);
+    for (const preset of [{}, { class: 'dark', 'data-cc-theme': 'dark' }, { 'data-cc-theme': 'light' }] as Record<string, string>[]) {
+      for (const [k, v] of Object.entries(preset)) root.setAttribute(k, v);
+      const before = snapshot();
+      try {
+        const user = userEvent.setup();
+        const { unmount } = await renderApp({ registration: { state: 'blocked', rows: [{ id: 'docker', state: 'blocked', message: 'no' }] } });
+        await user.click(screen.getByRole('button', { name: 'Add remote' }));
+        await user.click(card('on-up').getByRole('button', { name: 'Edit' }));
+        await user.click(card('on-up').getByRole('button', { name: 'Delete' }));
+        await screen.findByRole('dialog');
+        await user.keyboard('{Escape}');
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        await user.click(screen.getByRole('button', { name: 'Refresh' }));
+        await settle();
+        expect(snapshot()).toEqual(before);
+        unmount();
+        expect(snapshot()).toEqual(before);
+      } finally {
+        for (const k of Object.keys(preset)) root.removeAttribute(k);
+      }
+    }
   });
 });
 
@@ -121,6 +156,24 @@ describe('cards', () => {
       expect(cardEl(id).querySelector('[data-slot="cred-value"]')?.textContent).toBe(id);
       expect(card(id).getByText("Paste this into a code-conductor project's Remote field.")).toBeTruthy();
     }
+  });
+
+  // Invariant: each card carries its kind badge (the descriptor's label and the kind's icon), and the
+  // mirror badge exactly when the remote advertises a mirror, naming its root.
+  it('kind and mirror badges', async () => {
+    await renderApp();
+    const kindBadge = (id: string, label: string) => {
+      const badge = card(id).getByText(label);
+      expect(badge.getAttribute('data-slot')).toBe('badge');
+      return badge;
+    };
+    for (const id of ['on-up', 'on-down', 'off-up']) {
+      expect(kindBadge(id, 'Docker containers').querySelector('svg.lucide-box')).toBeTruthy();
+    }
+    expect(kindBadge('ssh-down', 'SSH hosts').querySelector('svg.lucide-terminal')).toBeTruthy();
+    const mirror = card('ssh-down').getByText('mirror /srv/app');
+    expect(mirror.getAttribute('data-slot')).toBe('badge');
+    for (const id of ['on-up', 'on-down', 'off-up']) expect(card(id).queryByText(/^mirror /)).toBeNull();
   });
 
   // Invariant: the target's own words reach the card: the probe detail and each baseline line.
@@ -185,6 +238,26 @@ describe('registration and notices', () => {
     await user.click(region.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(gets(calls, 'api/remotes')).toBe(2));
     expect(posts(calls).map((c) => c.path)).toEqual(['api/registration/retry']);
+  });
+
+  // Invariant: while the retry runs, Retry is disabled and spins; it comes back once it lands.
+  it('Retry is busy while the registration retry runs', async () => {
+    const user = userEvent.setup();
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    await renderApp({
+      registration: { state: 'unreachable', rows: [{ id: 'ssh', state: 'unreachable', message: 'ECONNREFUSED' }] },
+      reply: async (path, method) => (method === 'POST' && path === 'api/registration/retry' ? (await held, { body: {} }) : null),
+    });
+    const retry = () => within(notices()!).getByRole('button', { name: 'Retry' }) as HTMLButtonElement;
+    expect(retry().disabled).toBe(false);
+    expect(retry().querySelector('svg.animate-spin')).toBeNull();
+    await user.click(retry());
+    expect(retry().disabled).toBe(true);
+    expect(retry().querySelector('svg.animate-spin')).toBeTruthy();
+    release();
+    await waitFor(() => expect(retry().disabled).toBe(false));
+    expect(retry().querySelector('svg.animate-spin')).toBeNull();
   });
 
   // Invariant: a failed retry becomes an "Action failed" notice with the backend's words.
@@ -334,7 +407,7 @@ describe('copy', () => {
     expect(copyButton().textContent).toBe('Select & copy');
   });
 
-  // Invariant: "Copied" only after the write resolves, with the id verbatim, and back to "Copy" after COPY_RESET_MS.
+  // Invariant: "Copied" only after the write resolves, with the id verbatim, and back to "Copy" after 1200 ms.
   it('Copy confirms only after the write resolves, then reverts', async () => {
     await renderApp();
     let resolve!: () => void;
@@ -347,7 +420,7 @@ describe('copy', () => {
     expect(copyButton().textContent).toBe('Copy');
     await act(async () => { resolve(); });
     expect(copyButton().textContent).toBe('Copied');
-    act(() => { vi.advanceTimersByTime(COPY_RESET_MS - 1); });
+    act(() => { vi.advanceTimersByTime(1199); });
     expect(copyButton().textContent).toBe('Copied');
     act(() => { vi.advanceTimersByTime(1); });
     expect(copyButton().textContent).toBe('Copy');
@@ -401,15 +474,18 @@ describe('routing', () => {
 });
 
 describe('the poll', () => {
-  // Invariant: every POLL_MS the list is re-read while the tab is visible, and not while it is hidden.
-  it('polls every POLL_MS while visible, and not while hidden', async () => {
+  // Invariant: every 10 s (not sooner) the list is re-read while the tab is visible, and not while it is hidden.
+  it('polls every 10 s while visible, and not while hidden', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const { calls } = await renderApp();
     expect(gets(calls, 'api/remotes')).toBe(1);
-    await act(async () => { vi.advanceTimersByTime(POLL_MS); });
+    await act(async () => { vi.advanceTimersByTime(9_999); });
+    await settle();
+    expect(gets(calls, 'api/remotes')).toBe(1);
+    await act(async () => { vi.advanceTimersByTime(1); });
     await waitFor(() => expect(gets(calls, 'api/remotes')).toBe(2));
     const vis = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
-    await act(async () => { vi.advanceTimersByTime(POLL_MS * 3); });
+    await act(async () => { vi.advanceTimersByTime(30_000); });
     await settle();
     expect(gets(calls, 'api/remotes')).toBe(2);
     vis.mockRestore();
@@ -426,7 +502,7 @@ describe('the poll', () => {
     await user.type(label, 'typed by hand');
     state.remotes = REMOTES.map((r) => (r.remoteId === 'on-down'
       ? { ...r, reachability: { connected: true, detail: "container 'stopped' running (img) since U" } } : r));
-    await act(async () => { vi.advanceTimersByTime(POLL_MS); });
+    await act(async () => { vi.advanceTimersByTime(10_000); });
     await waitFor(() => expect(gets(calls, 'api/remotes')).toBe(2));
     await waitFor(() => expect(cardEl('on-down').querySelector('[data-slot="probe-word"]')?.textContent).toBe('running'));
     expect((card('off-up').getByRole('textbox', { name: 'Label' }) as HTMLInputElement).value).toBe('typed by hand');
@@ -489,5 +565,69 @@ describe('focus and keyboard', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Refresh' }));
     await user.tab();
     expect(document.activeElement).toBe(card('on-up').getByRole('button', { name: 'Copy' }));
+  });
+});
+
+describe('a record the UI cannot draw', () => {
+  const PROTO_KINDS = ['constructor', '__proto__', 'hasOwnProperty', 'valueOf', 'toString'];
+
+  // Invariant: every lookup keyed by a record's kind or baseline state is an own-property lookup, so
+  // a prototype-named kind renders as an unknown kind — its own name, the default probe words, no
+  // gate note — beside a healthy card and under an intact header.
+  it('prototype-named kinds and baseline states render as unknowns, and the page survives', async () => {
+    const odd = PROTO_KINDS.map((kind, i) => ({
+      remoteId: `odd-${i}`, kind, label: '', enabled: true, config: {}, mirror: null,
+      baseline: { state: PROTO_KINDS[(i + 1) % PROTO_KINDS.length], missing: [] },
+      reachability: { connected: false, detail: `unknown kind '${kind}'` },
+    }));
+    await renderApp({ remotes: [REMOTES[0], ...odd] });
+    expect(screen.getByRole('heading', { level: 1, name: 'Code System' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Add remote' })).toBeTruthy();
+    expect(card('on-up').getByText('Running app')).toBeTruthy();
+    expect(cardEl('on-up').querySelector('[data-slot="probe-word"]')?.textContent).toBe('running');
+    odd.forEach((r, i) => {
+      const c = card(r.remoteId);
+      expect(c.getByRole('heading', { name: r.remoteId })).toBeTruthy();
+      expect(c.getByText(r.kind)).toBeTruthy();
+      expect(cardEl(r.remoteId).querySelector('[data-slot="probe-word"]')?.textContent).toBe('not reachable');
+      expect(c.getByRole('note').textContent).toBe(`The target is not reachable: unknown kind '${r.kind}'`);
+      expect(c.getByText(`baseline ${PROTO_KINDS[(i + 1) % PROTO_KINDS.length]}`)).toBeTruthy();
+      expect(cardEl(r.remoteId).textContent).not.toMatch(/gate is what stops them|function|\[object/);
+      expect(c.getByRole('button', { name: 'Disconnect' })).toBeTruthy();
+    });
+  });
+
+  // Invariant: a record that still cannot be drawn degrades to ONE card — its id, the reason, and
+  // Delete — and never takes the header, the toolbar or another card with it.
+  it('a card that throws while rendering degrades to one broken card', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const unrenderable = { ...(REMOTES[2] as WorkingRemote), remoteId: 'weird', label: { not: 'text' } as unknown as string };
+    const { calls } = await renderApp({ remotes: [REMOTES[0], unrenderable, REMOTES[1]] });
+    expect(screen.getByRole('heading', { level: 1, name: 'Code System' })).toBeTruthy();
+    expect(screen.getAllByRole('article').map((a) => a.getAttribute('data-remote-id'))).toEqual(['on-up', 'weird', 'on-down']);
+    expect(card('on-up').getByText('Running app')).toBeTruthy();
+    expect(card('on-down').getByText('Stopped app')).toBeTruthy();
+    const weird = card('weird');
+    expect(weird.getByRole('heading', { name: 'weird' })).toBeTruthy();
+    expect(weird.getByRole('note').textContent).toMatch(/^This card could not be shown: /);
+    expect(weird.getAllByRole('button').map((b) => b.textContent)).toEqual(['Delete']);
+    await user.click(weird.getByRole('button', { name: 'Delete' }));
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(posts(calls).map((c) => [c.method, c.path])).toEqual([['DELETE', 'api/remotes/weird']]));
+  });
+
+  // Invariant: the degradation is per render, not permanent — once the record can be drawn, the
+  // card comes back.
+  it('the degraded card recovers when the record becomes drawable', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const base = REMOTES[2] as WorkingRemote;
+    const { state, calls } = await renderApp({ remotes: [{ ...base, label: { not: 'text' } as unknown as string }] });
+    expect(card('off-up').getByRole('note').textContent).toMatch(/could not be shown/);
+    state.remotes = [base];
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(gets(calls, 'api/remotes')).toBe(2));
+    expect(await card('off-up').findByText('Disabled app')).toBeTruthy();
   });
 });

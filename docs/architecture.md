@@ -531,13 +531,23 @@ serves that build ("Serving and headers" below).
 | `src/lib/tone.ts` | the status palette: `TONE`, `DOT`, `GATE_ON_BUTTON`, `DANGER_BUTTON` |
 | `src/lib/types.ts` | the wire shapes the UI reads |
 | `src/App.tsx` | the state owner: route, draft, notice, busy map, in-form error, pending delete; `go`, `runAction`, `gateAction`, `submitForm` |
-| `src/components/` | `AppHeader`, `RegistrationPanel` (notices + registration banner), `RemoteCard` / `BrokenCard`, `CredRow`, `RemoteForm`, `HintTip`, `DeleteDialog` — wiring only |
+| `src/components/` | `AppHeader`, `RegistrationPanel` (notices + registration banner), `RemoteCard` / `BrokenCard`, `CardBoundary`, `CredRow`, `RemoteForm`, `HintTip`, `DeleteDialog` — wiring only |
 | `src/components/ui/` | components copied from cc's `web/src/components/ui/`, plus `src/lib/{utils,modalFocus,textEntry}.ts`. A copy is ours; nothing syncs it |
 
 **`cardState.mjs` is the test seam.** It stays plain JS so `node --test` runs it
 with no build (`tests/cardstate.test.mjs`); TypeScript imports it through
 `allowJs` (`checkJs` off), reading its JSDoc types. `tests/frontend.test.mjs`
 asserts it touches no browser global — the moment it does, the seam is gone.
+
+**One record costs at most one card.** Every table lookup keyed by a record field
+(the kind's probe words, disagreement text and gate note in `cardState.mjs`; the
+kind icon and baseline badge in `RemoteCard`) goes through `cardState.mjs` →
+`own`, so a prototype-named kind reads as an unknown one. And each card renders
+inside a `CardBoundary` (`src/components/CardBoundary.tsx`): a record that still
+throws while rendering is drawn as a broken card — its id, *"This card could not
+be shown: <reason>"*, and Delete — and is tried again when the record or its open
+form changes. `App` has no page-level boundary because nothing above the cards
+renders record content.
 
 **Colour roles** (`src/lib/tone.ts`, pinned by `src/palette.test.tsx`): status is
 `success` / `warning` / `destructive` and never `primary`; the `primary` fill
@@ -691,6 +701,14 @@ draws a flagged field inside its Advanced `<details>`, and the kind validates,
 stores and resets it exactly like any other config field.
 `tests/kindmeta.test.mjs` pins that last part, so the flag cannot become a
 second, weaker class of field.
+
+**Every lookup by kind name is an own-property lookup** (`own` in
+`src/launcher/kinds/index.mjs`: `createTransport`, `secretFieldsFor`,
+`mirrorsByDefault`, `identityFieldFor`, `kindDescriptors`). A record's `kind` is
+whatever its file says, and a plain object inherits `constructor`, `__proto__`
+and the rest from `Object.prototype`, so `createTransport` answers `null` for
+those and `cardFor` takes its `unknown kind` path. `tests/api.test.mjs` pins it
+over the prototype names.
 
 ### The environment seams
 

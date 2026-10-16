@@ -144,7 +144,14 @@ test('stripe hues are legible against the card in both modes', () => {
 });
 
 // Invariant: only public/theme-init.js (standalone) touches the dark class or data-cc-theme; cc's choice applies.
+// Spelling-independent: no other source may reach the root element at all, however it would write to it
+// (the effect itself is pinned in App.test.tsx, "the app never touches the root element's class or attributes").
 test('no theme control of the plugin\'s own', () => {
+  const reachesRoot = /documentElement|querySelector(?:All)?\(\s*['"`](?:html|:root)\b|getElementsByTagName\(\s*['"`]html/;
+  for (const [n, src] of sourceFiles()) {
+    if (n === 'public/theme-init.js') continue;
+    assert.equal(reachesRoot.test(src), false, `${n}: ${src.match(reachesRoot)?.[0]}`);
+  }
   const mutates = /classList\.(?:add|remove|toggle|replace)\(\s*['"]dark['"]|(?:set|remove|toggle)Attribute\(\s*['"]data-cc-theme/;
   for (const [n, src] of sourceFiles()) {
     if (n === 'public/theme-init.js') {

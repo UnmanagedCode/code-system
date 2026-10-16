@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { AppHeader } from '@/components/AppHeader';
+import { CardBoundary } from '@/components/CardBoundary';
 import { DeleteDialog } from '@/components/DeleteDialog';
 import { RegistrationPanel, type Notice } from '@/components/RegistrationPanel';
 import { BrokenCard, RemoteCard, type CardAction } from '@/components/RemoteCard';
@@ -183,21 +184,39 @@ export function App() {
 
         {(data.remotes.length > 0 || adding) && (
           <div className="grid grid-cols-1 items-start gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {data.remotes.map((r) => (r.broken
-              ? <BrokenCard key={r.remoteId} remote={r} busy={cardBusy(r.remoteId)} onDelete={() => setPendingDelete(r.remoteId)} />
-              : (
-                <RemoteCard
-                  key={r.remoteId}
-                  remote={r}
-                  descriptor={descriptorFor(r.kind)}
-                  busy={cardBusy(r.remoteId)}
-                  onGate={(verb) => void gateAction(r.remoteId, verb)}
-                  onEdit={() => go({ view: 'edit', remoteId: r.remoteId }, editDraft(r, descriptorFor(r.kind), data.mirrorDefaults))}
-                  onDelete={() => setPendingDelete(r.remoteId)}
+            {data.remotes.map((r) => {
+              const id = String(r.remoteId);
+              const onDelete = () => setPendingDelete(id);
+              const editingThis = !r.broken && editing(r);
+              return (
+                <CardBoundary
+                  key={id}
+                  resetKey={`${JSON.stringify(r)}${editingThis ? ` edit ${draftGen}` : ''}`}
+                  fallback={(msg) => (
+                    <BrokenCard
+                      remote={{ remoteId: id, broken: { reason: 'render', message: `This card could not be shown: ${msg}` } }}
+                      busy={cardBusy(id)}
+                      onDelete={onDelete}
+                    />
+                  )}
                 >
-                  {editing(r) && form('edit')}
-                </RemoteCard>
-              )))}
+                  {r.broken
+                    ? <BrokenCard remote={r} busy={cardBusy(id)} onDelete={onDelete} />
+                    : (
+                      <RemoteCard
+                        remote={r}
+                        descriptor={descriptorFor(r.kind)}
+                        busy={cardBusy(id)}
+                        onGate={(verb) => void gateAction(id, verb)}
+                        onEdit={() => go({ view: 'edit', remoteId: id }, editDraft(r, descriptorFor(r.kind), data.mirrorDefaults))}
+                        onDelete={onDelete}
+                      >
+                        {editingThis && form('edit')}
+                      </RemoteCard>
+                    )}
+                </CardBoundary>
+              );
+            })}
             {adding && (
               <Card role="region" aria-labelledby={addTitleId} className="gap-3 border-l-[6px] border-l-muted-foreground px-4 py-3">
                 <h2 id={addTitleId} className="font-semibold">New remote</h2>

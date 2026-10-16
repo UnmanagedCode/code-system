@@ -14,7 +14,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { kindDescriptors } from '../src/launcher/kinds/index.mjs';
 import {
-  GATE_COPY, STRIPE_COUNT, baselineNotice, cardAlert, configPayload, createDraft, editDraft, fieldLabel, gateStatus,
+  GATE_COPY, STRIPE_COUNT, baselineNotice, gateCopy, own, cardAlert, configPayload, createDraft, editDraft, fieldLabel, gateStatus,
   mirrorDraft, mirrorPayload, mirrorSummary, probeStatus, advancedOpenOnEdit, advancedSummary, registrationView,
   remotePath, routeFromSearch, searchForRoute, stripeClass, submitRequest, switchKind,
 } from '../frontend/src/lib/cardState.mjs';
@@ -410,4 +410,22 @@ test('registrationView maps each state to its pill tone and banner', () => {
   });
   assert.deepEqual(registrationView({ state: 'unreachable', rows: [{ id: 'ssh', state: 'unreachable', message: 'ECONNREFUSED' }] }).banner,
     { kind: 'error', detail: null, rows: ['ssh: ECONNREFUSED'] });
+});
+
+// PINS THAT EVERY TABLE LOOKUP KEYED BY A RECORD FIELD IS AN OWN-PROPERTY
+// LOOKUP. A kind named like an `Object.prototype` member would otherwise
+// resolve to a function: a word table that is not one, an alert "text" that
+// is a function, a gate note React cannot render.
+test('a prototype-named kind gets the defaults, never an inherited member', () => {
+  for (const kind of ['constructor', '__proto__', 'hasOwnProperty', 'valueOf', 'toString']) {
+    const r = remote({ kind, enabled: true, reachability: { connected: false, detail: `unknown kind '${kind}'`, fingerprint: null } });
+    assert.deepEqual(probeStatus(r), { level: 'down', word: 'not reachable', detail: `unknown kind '${kind}'` }, kind);
+    assert.deepEqual(probeStatus({ ...r, reachability: { connected: true, detail: '' } }).word, 'reachable', kind);
+    assert.deepEqual(cardAlert(r), { level: 'warn', text: `The target is not reachable: unknown kind '${kind}'` }, kind);
+    assert.equal(gateCopy(kind), null, kind);
+    assert.equal(own({ a: 1 }, kind), undefined, kind);
+  }
+  assert.equal(gateCopy('ssh'), GATE_COPY.ssh, 'an own entry is still found');
+  assert.equal(gateCopy('docker'), null);
+  assert.equal(own({ a: 1 }, 'a'), 1);
 });

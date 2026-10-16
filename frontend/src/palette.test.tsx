@@ -37,6 +37,29 @@ describe('status colours', () => {
     expect(has(cardEl('future'), 'border-l-destructive')).toBe(true);
   });
 
+  // Invariant: a baseline nobody has measured is a plain outline badge, not a status: no fill, no
+  // success or destructive colour, muted text.
+  it('an unknown baseline is an outline badge', async () => {
+    await renderApp();
+    const badge = card('off-up').getByText('baseline unknown');
+    expect(badge.getAttribute('data-slot')).toBe('badge');
+    expect(has(badge, 'text-muted-foreground')).toBe(true);
+    for (const cls of ['border-transparent', 'text-destructive', 'text-success', 'text-warning']) expect(has(badge, cls), cls).toBe(false);
+    expect([...badge.classList].some((c) => c.startsWith('bg-'))).toBe(false);
+  });
+
+  // Invariant: a normal skipped or pending registration gets a neutral outline pill, never a status colour.
+  it('a skipped or pending registration pill is neutral', async () => {
+    for (const state of ['skipped', 'pending']) {
+      const { unmount } = await renderApp({ registration: { state, detail: 'CONDUCTOR_URL not set', rows: [] } });
+      const pill = screen.getByText(`registration: ${state}`);
+      expect(has(pill, 'text-muted-foreground'), state).toBe(true);
+      for (const cls of ['border-transparent', 'text-success', 'text-destructive', 'text-warning']) expect(has(pill, cls), `${state}: ${cls}`).toBe(false);
+      expect(noPrimary(pill)).toBe(true);
+      unmount();
+    }
+  });
+
   // Invariant: a failing registration's pill is destructive.
   it('a blocked registration pill is destructive', async () => {
     await renderApp({ registration: { state: 'blocked', rows: [{ id: 'docker', state: 'blocked', message: 'no' }] } });
