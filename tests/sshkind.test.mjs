@@ -821,6 +821,12 @@ test('classifyFailure: the never-started arms cannot be crossed or forged', () =
   assert.equal(classify({ code: 127, stdout: 'out', stderr: envLine }), null);
   assert.equal(classify({ code: 126, stdout: '', stderr: "env: '/bin/x': Permission denied\n" }), null);
   assert.equal(classify({ code: 1, stdout: '', stderr: marker }), null);
+  // The prefix is the full `env: `, and the hint must match exactly, not as a prefix.
+  assert.equal(classify({ code: 127, stdout: '', stderr: 'envious: could not run\n' }), null);
+  assert.equal(classify({
+    code: 127, stdout: '',
+    stderr: `${envLine}env: use -[v]S to pass options in shebang lines and more\n`,
+  }), null);
   // The prefixes must be whole and at byte 0, not merely present or partial.
   assert.equal(classify({ code: 127, stdout: '', stderr: 'wrapper: env: could not run\n' }), null);
   assert.equal(classify({ code: 125, stdout: '', stderr: 'code-system: some other message\n' }), null);

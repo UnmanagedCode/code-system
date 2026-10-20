@@ -87,8 +87,11 @@ empty stdout (the trampoline is §15):
 
 The classifier takes each only with its own code and bytes: 125 needs our marker
 (so a nested GNU `env` refusing an option at 125 is the command's own), and 127
-needs `env: ` AND a single line (so a chatty command's 127 is its own). A command
-whose only act is a failing nested `env` still looks identical to ours.
+needs one `env: ` line, optionally followed by exactly `ENV_SHEBANG_HINT` (GNU's
+`env: use -[v]S to pass options in shebang lines`, printed when the command name
+contains whitespace), so a chatty command's 127 is its own. A command whose only
+act is a failing nested `env`, or that forges the line plus the hint, still looks
+identical to ours; the full residual list is in `docs/protocol.md`.
 
 ## 2. `ssh` takes a SHELL STRING, not an argv
 
