@@ -162,17 +162,59 @@ const CONTROL_PERSIST = '600';
 // cannot tolerate.
 export const CONTROL_PATH_MAX = 100;
 
-// ABSOLUTE, both of them. One layer of resolution is unavoidable and is stated
+// ABSOLUTE, all of them. One layer of resolution is unavoidable and is stated
 // rather than hidden — ssh hands our single string to the remote user's LOGIN
 // shell, which tokenizes it — but everything after that point depends on
 // neither side's PATH. `/bin/bash` is also exactly what our baseline probe
 // requires (`[ -x /bin/bash ]`, src/baseline.mjs), so two kinds cannot answer
 // the same probe with different interpreters.
+//
+// `/bin/sh` ENTERS THE CWD and `env` COMPOSES THE ENVIRONMENT. `env --chdir` is
+// GNU coreutils >= 8.28 only, so BusyBox, BSD and older GNU targets would fail
+// every exec; `CHDIR_SCRIPT` needs only a POSIX `/bin/sh` and an `env` that
+// honours `-i` and `--`.
 const SHELL_INTERPRETER = '/bin/bash';
 const ENV_BIN = '/usr/bin/env';
-// The reap relay's own shell. `/bin/sh` (not the login shell) for the reason
-// fileops uses it: no profile output ahead of the script's first line.
+// `/bin/sh` (not the login shell) for the reason fileops uses it: no profile
+// output ahead of the script's first line. Also the reap relay's shell.
 const REAP_SHELL = '/bin/sh';
+const CHDIR_SHELL = '/bin/sh';
+
+// Our exit code and the opening bytes of stderr when the cwd cannot be entered.
+// The marker is OURS and opens stderr at byte 0, so it survives the 512-byte
+// head `classifyFailure` is handed however long the cwd is; the login shell's
+// own `cd` wording (which varies by shell) only ever follows it.
+const CHDIR_EXIT = 125;
+const CHDIR_REFUSED = 'code-system: cannot change directory to ';
+// `env`'s own exit for a command it could not exec (a missing binary).
+const ENV_EXEC_EXIT = 127;
+
+// The positional parameters are `<dir> [-i] -- <assignments…> <command…>`.
+// - `-P`: physical resolution, as chdir(2) does through `symlink/..`.
+// - The first `cd` has stderr discarded and the marker is printed FIRST. The
+//   second `cd` runs inside `$( )`, so it changes no state; it only borrows the
+//   shell's own diagnostic for the message.
+// - NO shell variables: one already exported by the far side's environment
+//   would be changed here and inherited by the command.
+// - `$1` is positional after `-c <string> <$0>`: sh parses no options there.
+// - No `'`, `!` or newline, so the login shell's single tokenization is the only
+//   transformation the script undergoes.
+const CHDIR_SCRIPT = '[ -n "$1" ] && cd -P -- "$1" 2>/dev/null || { printf "'
+  + `${CHDIR_REFUSED}%s: %s\\n" "$1" "$(cd -P -- "$1" 2>&1)" >&2; exit ${CHDIR_EXIT}; }; shift; `
+  + `exec ${ENV_BIN} "$@"`;
+
+/**
+ * The operand `cd` receives. Absolute passes through (including `/`). A relative
+ * cwd is anchored with `./`, because `cd -` means $OLDPWD and a relative name is
+ * searched on $CDPATH — both silently relocate the command and print on STDOUT,
+ * which would corrupt the first line the file-operation readers parse. A relative
+ * cwd still resolves against the login directory, as chdir(2) did. Empty stays
+ * empty and the script refuses it.
+ */
+function dirOperand(cwd) {
+  const dir = String(cwd);
+  return dir === '' || dir.startsWith('/') ? dir : `./${dir}`;
+}
 
 /**
  * The per-uid directory the ControlPath sockets live in. NOT a bare /tmp entry —
@@ -604,12 +646,13 @@ function sshOwnLine(stderr, pattern) {
   }
   return null;
 }
-// GNU `env` refusing to start the command, on stderr with an empty stdout.
-// TWO exit codes, measured separately: 127 for a missing binary, 125 for a
-// `--chdir` that does not exist. A classifier anchored on 127 alone reports a
-// bad cwd as a command that ran and exited 125.
+// `env` failing to exec the command opens stderr with this (GNU `env: 'x': No
+// such file or directory`, BusyBox `env: can't execute 'x': …`).
 const ENV_PREFIX = 'env: ';
-const ENV_NEVER_STARTED_CODES = [127, 125];
+// GNU `env` follows its refusal with this second line when the command name
+// contains whitespace (measured, exit 127). The ONE trailing line the 127 arm
+// permits; any other second line is the command's own output.
+const ENV_SHEBANG_HINT = 'env: use -[v]S to pass options in shebang lines';
 
 // What to fix when authentication is refused: the card's own credential when it
 // has one, the operator's ssh config otherwise.
@@ -737,7 +780,7 @@ export function createSshTransport({ cli, env = process.env } = {}) {
         : Object.entries({ ...execEnv(req.env, req.remoteId, {}), [TOKEN_VAR]: req.token })
           .map(([k, v]) => `${k}=${v}`);
 
-      // TERMINATOR 2 — GNU `env`'s own option section. Frame-supplied env KEYS
+      // TERMINATOR 2 — `env`'s own option section. Frame-supplied env KEYS
       // are arbitrary strings and `env` reads leading-`-` operands as ITS OWN
       // options until the first non-option operand: measured for docker,
       // `env -i '--chdir=/tmp' PATH=/usr/bin pwd` runs at /tmp and
@@ -745,12 +788,17 @@ export function createSshTransport({ cli, env = process.env } = {}) {
       // inherit branch the assignments are ours, but `command[0]` is the
       // FRAME's argv[0] and may start with `-`.
       //
-      // `--chdir=` replaces docker's `-w`, which has no ssh equivalent. It also
-      // means a bad cwd fails inside `env` with a wording we classify, rather
-      // than needing a hand-rolled `cd || refuse` preamble.
+      // `<dir>` is a positional parameter of the trampoline and never begins
+      // with `-` (see `dirOperand`), and the script `shift`s it off before
+      // `env` sees its arguments, so `<dir>` is no part of `env`'s option
+      // section. The trampoline replaces docker's `-w`, which has no ssh
+      // equivalent.
       const remote = [
-        ENV_BIN,
-        `--chdir=${req.cwd}`,
+        CHDIR_SHELL,
+        '-c',
+        CHDIR_SCRIPT,
+        'sh',
+        dirOperand(req.cwd),
         ...(req.env === null ? [] : ['-i']),
         '--',
         ...assignments,
@@ -1124,11 +1172,23 @@ export function createSshTransport({ cli, env = process.env } = {}) {
       }
 
       // §5's "a command that never started is an `error` frame, not an `exit`
-      // frame". GNU `env` refusing to exec, on stderr with an empty stdout, at
-      // one of TWO measured exit codes — 127 for a missing binary, 125 for a
-      // `--chdir` that does not exist.
-      if (ENV_NEVER_STARTED_CODES.includes(code) && stdout === '' && stderr.startsWith(ENV_PREFIX)) {
-        return { code: 'ENOENT', message: first(stderr), stderr: allOf(stderr) };
+      // frame", in TWO arms that each need their own code AND their own bytes,
+      // so a command's own 125/127 is not read as ours:
+      //  - the trampoline refusing the cwd: OUR marker opens stderr at our own
+      //    exit code, so a nested `env` emitting 125 can no longer pass;
+      //  - `env` failing to exec: exit 127 and a stderr opening `env: ` that is
+      //    a SINGLE line (plus GNU's whitespace hint), so a chatty command's
+      //    own 127 cannot.
+      // What stays unseparable is a command whose only act is a nested failing
+      // `env`: it prints those same bytes at 127 (docs/protocol.md).
+      if (stdout === '') {
+        const refused = code === CHDIR_EXIT && stderr.startsWith(CHDIR_REFUSED);
+        const [, ...rest] = allOf(stderr).split('\n');
+        const unexecable = code === ENV_EXEC_EXIT && stderr.startsWith(ENV_PREFIX)
+          && (rest.length === 0 || (rest.length === 1 && rest[0] === ENV_SHEBANG_HINT));
+        if (refused || unexecable) {
+          return { code: 'ENOENT', message: first(stderr), stderr: allOf(stderr) };
+        }
       }
 
       // The common case by far: the failure is the command's own.

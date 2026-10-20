@@ -16,6 +16,8 @@ process, and the `sleep` was still running in the container afterwards. See
 process; the container-side subtree and any orphaned `ssh` control-master/slave
 connections keep running, leaking processes on the target and violating MUST 3.
 
+**ssh's pre-exec window:** the exec's token enters `/proc/<pid>/environ` only when `env` execs the command. The cwd trampoline (`/bin/sh` → `exec env` → `exec` command, same pid lineage) lengthens that existing window by sh startup plus `cd`, about 0.3 ms.
+
 **How to apply:** The provider's shutdown path must explicitly SIGKILL every child it started (`docker exec` children, `ssh` slaves) before or as part of exiting on stdin EOF. This is not optional cleanup — it's a protocol MUST.
 
 **The held-open channel does not weaken this, and it needs no relay of its own.**

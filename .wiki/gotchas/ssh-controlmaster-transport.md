@@ -2,7 +2,8 @@
 
 All of this was measured against **OpenSSH_10.0p2 Debian-7+deb13u4 / OpenSSL
 3.5.6** on 2026-09-04, from this devcontainer against a `debian:13-slim` sshd
-container (`tests/fixtures/sshbox/Dockerfile`). None of it can be re-derived
+container (`tests/fixtures/sshbox/Dockerfile`); §15 also covers an `alpine:3.22`
+one (`tests/fixtures/sshbox-alpine/Dockerfile`). None of it can be re-derived
 from our code, and **four of the facts contradict a reasonable assumption** —
 one of them contradicted the card's own plan.
 
@@ -75,16 +76,22 @@ fields it is given, not of ssh. Note the cost the measurement also shows: with
 `-E`, arm A's stderr is EMPTY, so cc would surface no ssh text at all unless the
 log is read back. Card 2026-0011.
 
-`env` refusing to start the command uses **two** exit codes, measured
-separately, both on stderr with an empty stdout:
+A command that never started uses **two** exit codes, both on stderr with an
+empty stdout (the trampoline is §15):
 
 | invocation | exit | text |
 |---|---|---|
-| `env --chdir=/tmp -- nosuchbinary-xyz` | **127** | `env: 'nosuchbinary-xyz': No such file or directory` |
-| `env --chdir=/nope-xyz -- /bin/true` | **125** | `env: cannot change directory to '/nope-xyz': No such file or directory` |
+| `env -- nosuchbinary-xyz` (GNU, debian:13-slim) | **127** | `env: 'nosuchbinary-xyz': No such file or directory` |
+| `env -- nosuchbinary-xyz` (BusyBox 1.37.0, alpine:3.22) | **127** | `env: can't execute 'nosuchbinary-xyz': No such file or directory` |
+| trampoline, `cwd` `/nope-xyz` | **125** | `code-system: cannot change directory to /nope-xyz: <login sh's cd wording>` — ours, first on stderr |
 
-A classifier anchored on 127 alone reports a bad cwd as a command that ran and
-exited 125.
+The classifier takes each only with its own code and bytes: 125 needs our marker
+(so a nested GNU `env` refusing an option at 125 is the command's own), and 127
+needs one `env: ` line, optionally followed by exactly `ENV_SHEBANG_HINT` (GNU's
+`env: use -[v]S to pass options in shebang lines`, printed when the command name
+contains whitespace), so a chatty command's 127 is its own. A command whose only
+act is a failing nested `env`, or that forges the line plus the hint, still looks
+identical to ours; the full residual list is in `docs/protocol.md`.
 
 ## 2. `ssh` takes a SHELL STRING, not an argv
 
@@ -103,7 +110,7 @@ The quoting was lost in the join: the far side received
 **one** already-quoted argv element instead:
 
 ```
-ssh … -- <dest> "'/usr/bin/env' '--chdir=/tmp' '--' 'CC_REMOTE=r1' '/bin/sh' '-c' 'pwd; echo $CC_REMOTE; echo $0'"
+ssh … -- <dest> "'/bin/sh' '-c' '<CHDIR_SCRIPT>' 'sh' '/tmp' '--' 'CC_REMOTE=r1' '/bin/sh' '-c' 'pwd; echo $CC_REMOTE; echo $0'"
   → /tmp
   → r1
   → /bin/sh
@@ -410,6 +417,40 @@ Measured against the test sshd listening on 22 and 2222.
 - **A wrong port is refused instantly.** A closed port answers `ssh: connect to
   host <ip> port 2223: Connection refused` in about 10 ms, so `connect` and
   `classifyFailure` quote a line that already names the port.
+
+## 15. The cwd trampoline (measured)
+
+`env --chdir` is GNU coreutils ≥ 8.28 only: BusyBox v1.37.0 `env` (alpine:3.22)
+answers `unrecognized option: chdir=/tmp` with its usage text, exit 1. The
+transport therefore enters the cwd in a fixed `/bin/sh` (`CHDIR_SCRIPT`) that
+`exec`s `/usr/bin/env`. Measured on alpine:3.22 (BusyBox ash/env) and
+debian:13-slim (dash + GNU env); bash was run as `sh` for the SHLVL row.
+
+| Fact | Result |
+|---|---|
+| `env -i -- A=1 /usr/bin/env` | `A=1` only, BusyBox and GNU alike |
+| `env -i -- '--chdir=/' PATH=… pwd` from /tmp | `/tmp`: the key is an assignment, both |
+| `env -i -- '--argv0=EVIL=' sh -c 'echo $0'` | `/bin/sh`: not spoofed, both |
+| `env -- -evilcmd` | exec'd as the command, 127, both |
+| non-executable binary | `…: Permission denied`, exit 126, both |
+| `cd -P -- -` with `OLDPWD` set | **goes to `$OLDPWD` and prints it on STDOUT** (dash and ash) |
+| `cd -P -- rel` with `CDPATH` set | **goes to the CDPATH dir and prints it on STDOUT** |
+| `./`-anchored operand (`./-`, `./rel`) | neither hazard applies, all three shells |
+| `cd -P lnk/..` vs `env --chdir=lnk/..` | identical: physical, as `chdir(2)` |
+| dash `cd` failure | `sh: 1: cd: can't cd to /nope` — no strerror; ash and bash include one |
+| inherited env, trampoline vs plain | dash: only `PWD`/`OLDPWD` change. ash: also `SHLVL`+1. bash-as-sh: also `SHLVL=0` |
+| BSD/macOS `env` | **not measured** (no BSD host); out of scope by cc §1, so no doc claims it |
+| overhead | `env --chdir` 542 µs per op, trampoline 818 µs, over 500 local runs in debian:13-slim (≈ +0.3 ms) |
+| Alpine sshd fixture | `apk add openssh-server`; `root:*` accepts pubkey login; `UsePAM` is an unsupported option |
+
+Why the script is shaped as it is: the marker opens stderr at byte 0 (so it
+survives the 512-byte head however long the cwd is, and the shell's own wording
+only follows it); it uses no shell variables (one already exported by the far
+side would be changed and inherited); and a probe-then-fall-back was rejected
+because `spawnPlan` is pure and exec does not need `connect`, so the result would
+need stored state and invalidation, and the fallback would be this trampoline
+anyway. Pinned by `tests/sshkind.test.mjs` (the real-`/bin/sh` trampoline test)
+and the ALPINE entries in `tests/ssh-live.test.mjs`.
 
 See also: [kill-relay.md](kill-relay.md),
 [exec-env-across-a-boundary.md](exec-env-across-a-boundary.md),
