@@ -96,7 +96,7 @@ const live = (name, fn) => ROSTER.push({ name, fn });
 
 // PINS the whole shipped path — main.mjs arg parsing, kind dispatch,
 // StoreRemoteSource lookup, spawnPlan, the frame loop — reaching a real host;
-// that `--chdir` really sets the working directory; and that CC_REMOTE really
+// that the frame's cwd really is the command's working directory; and that CC_REMOTE really
 // lands in the environment of the child the exec started. The last is §10's
 // CC_REMOTE row asserted ON THE FAR SIDE'S OWN ANSWER rather than on the
 // command merely succeeding, which is what a misroute also looks like.
@@ -816,6 +816,157 @@ live('the fixture image PASSES the tooling baseline, so the suite above is not v
   assert.equal(parsed.state, 'ok',
     `debian:13-slim must satisfy the baseline, else fileops is gated off: ${JSON.stringify(parsed.missing)}`);
   assert.deepEqual(parsed.missing, []);
+});
+
+// ── transports whose `env` lacks `--chdir`, and the failure rows ──────
+
+// Runs ONE exec through the shipped launcher and returns its terminal frame.
+async function execOnce(l, id, over) {
+  l.send({ type: 'exec', id, remoteId: 'alpha', cwd: '/tmp', ...over });
+  return l.waitFor(f => (f.type === 'exit' || f.type === 'error') && f.id === id);
+}
+
+// PINS that an exec runs at the frame's cwd on a target whose `env` has no
+// `--chdir` option at all. THE WRONG IMPLEMENTATION is the GNU-only `env
+// --chdir=<cwd>`: BusyBox 1.37 answers `unrecognized option: chdir=/tmp` with its
+// usage text and exit 1, so every exec on Alpine fails — including the baseline
+// probe's.
+live('ALPINE: an exec runs at the frame\'s cwd on an `env` without --chdir', async (t, g) => {
+  const target = await withSshTarget(t, g, { image: 'alpine' });
+  const store = await storeFor(t, target);
+  const l = launcherFor(t, store, target.sshEnv);
+  await l.hello();
+  const done = await execOnce(l, 'a1', { argv: ['/bin/sh', '-c', 'echo $CC_REMOTE; pwd'] });
+  assert.equal(done.type, 'exit', JSON.stringify(done));
+  assert.equal(done.code, 0, textOf(l.frames, 'a1', 'stderr'));
+  assert.equal(textOf(l.frames, 'a1'), 'alpha\n/tmp\n');
+});
+
+for (const box of ['debian', 'alpine']) {
+  const where = `${box.toUpperCase()}: `;
+  const open = async (t, g) => {
+    const target = await withSshTarget(t, g, { image: box });
+    const store = await storeFor(t, target);
+    const l = launcherFor(t, store, target.sshEnv);
+    await l.hello();
+    return { target, l };
+  };
+
+  // PINS that a cwd which does not exist is an ENOENT `error` frame and never an
+  // `exit` frame — §5's "a command that never started". THE WRONG
+  // IMPLEMENTATION lets the shell's own diagnostic through as a command's exit
+  // status (on Alpine today: BusyBox usage text, exit 1). The message names our
+  // marker's wording, which is what survives the shell-specific `cd` text.
+  live(`${where}a nonexistent cwd is an ENOENT error frame, never an exit frame`, async (t, g) => {
+    const { l } = await open(t, g);
+    const done = await execOnce(l, 'c1', { cwd: '/nope-xyz', argv: ['/bin/true'] });
+    assert.equal(done.type, 'error', JSON.stringify(done));
+    assert.equal(done.code, 'ENOENT');
+    assert.match(done.message, /cannot change directory to \/nope-xyz/);
+    assert.equal(l.frames.some(f => f.type === 'exit' && f.id === 'c1'), false);
+  });
+
+  // PINS that a binary that does not exist is an ENOENT `error` frame, never an
+  // `exit` frame. THE WRONG IMPLEMENTATION is a classifier that knows only the
+  // GNU wording (or, on Alpine today, a transport that fails first and reports
+  // BusyBox's usage text at exit 1).
+  live(`${where}a missing binary is an ENOENT error frame`, async (t, g) => {
+    const { l } = await open(t, g);
+    const done = await execOnce(l, 'm1', { argv: ['/nonexistent-bin-xyz'] });
+    assert.equal(done.type, 'error', JSON.stringify(done));
+    assert.equal(done.code, 'ENOENT');
+    assert.match(done.message, /nonexistent-bin-xyz/);
+  });
+
+  // PINS that a command's OWN 125 or 127 carrying env-looking stderr is an
+  // `exit` frame with that code: the transport's verdict needs its own bytes at
+  // its own code. THE WRONG IMPLEMENTATION is a classifier accepting `env: ` at
+  // either code, or a 127 `env:` line followed by more output.
+  live(`${where}a command's own 125/127 with env-like stderr is an exit frame`, async (t, g) => {
+    const { l } = await open(t, g);
+    const own125 = await execOnce(l, 'x1', {
+      argv: ['/bin/sh', '-c', "printf 'env: cannot change directory to x\\n' >&2; exit 125"],
+    });
+    assert.deepEqual([own125.type, own125.code], ['exit', 125], JSON.stringify(own125));
+    const own127 = await execOnce(l, 'x2', {
+      argv: ['/bin/sh', '-c', "echo \"env: 'x': No such file or directory\" >&2; echo more >&2; exit 127"],
+    });
+    assert.deepEqual([own127.type, own127.code], ['exit', 127], JSON.stringify(own127));
+  });
+
+  // PINS that an odd absolute cwd and a relative `-` land on the EXACT path. The
+  // relative case is the discriminating one: `cd -` with OLDPWD unset is refused,
+  // so a trampoline that does not anchor a relative cwd with `./` fails here
+  // instead of running in the login directory's `-`.
+  live(`${where}odd cwds land on the exact path, and a relative '-' is a directory, not OLDPWD`, async (t, g) => {
+    const { target, l } = await open(t, g);
+    const made = await inTarget(g.cli, target.name, `mkdir -p "/tmp/a b'c*" /root/-`);
+    assert.equal(made.code, 0, made.stderr);
+    for (const [id, cwd, want] of [
+      ['o1', "/tmp/a b'c*", "/tmp/a b'c*"],
+      ['o2', '-', '/root/-'],
+    ]) {
+      const done = await execOnce(l, id, { cwd, argv: ['/bin/sh', '-c', 'pwd'] });
+      assert.equal(done.type, 'exit', JSON.stringify(done));
+      assert.equal(done.code, 0, textOf(l.frames, id, 'stderr'));
+      assert.equal(textOf(l.frames, id), `${want}\n`);
+    }
+  });
+}
+
+// PINS the option-injection guard on a BusyBox `env`: frame env KEYS shaped like
+// `env` options stay assignments, and a leading-dash argv[0] is a command. THE
+// WRONG IMPLEMENTATION is dropping `--`, which lets `--chdir=/` relocate the
+// command or `--argv0=EVIL` spoof `$0`.
+live('ALPINE: a frame env key shaped like an option cannot hijack the command', async (t, g) => {
+  const target = await withSshTarget(t, g, { image: 'alpine' });
+  const store = await storeFor(t, target);
+  const l = launcherFor(t, store, target.sshEnv);
+  await l.hello();
+  const done = await execOnce(l, 'inj', {
+    argv: ['/bin/sh', '-c', 'pwd; echo "$0"'],
+    env: { '--chdir=/': '', '--argv0=EVIL': '', PATH: '/usr/local/bin:/usr/bin:/bin' },
+  });
+  assert.equal(done.type, 'exit', JSON.stringify(done));
+  assert.equal(done.code, 0, textOf(l.frames, 'inj', 'stderr'));
+  const [cwd, argv0] = textOf(l.frames, 'inj').trim().split('\n');
+  assert.equal(cwd, '/tmp', "the frame's cwd held — `--chdir` was an assignment, not an option");
+  assert.notEqual(argv0, 'EVIL', '`--argv0` was an assignment, not an option');
+  const dash = await execOnce(l, 'inj2', { argv: ['-evilcmd', 'x'] });
+  assert.deepEqual([dash.type, dash.code], ['error', 'ENOENT'], 'a leading-dash argv[0] is a command, not an option');
+});
+
+// PINS `env`'s inherit/replace on BusyBox: HOME is the discriminator, as in the
+// debian roster entry. THE WRONG IMPLEMENTATION is a trampoline that rebuilds
+// the environment, or a `-i` that BusyBox does not honour.
+live('ALPINE: an absent env inherits the target\'s HOME; a supplied env replaces it', async (t, g) => {
+  const target = await withSshTarget(t, g, { image: 'alpine' });
+  const store = await storeFor(t, target);
+  const l = launcherFor(t, store, target.sshEnv);
+  await l.hello();
+  const show = ['/bin/sh', '-c', 'echo "[${HOME-UNSET}]"; echo "$CC_REMOTE"'];
+  const inh = await execOnce(l, 'inh', { argv: show });
+  assert.equal(inh.type, 'exit', JSON.stringify(inh));
+  assert.deepEqual(textOf(l.frames, 'inh').trim().split('\n'), ['[/root]', 'alpha']);
+  const rep = await execOnce(l, 'rep', {
+    argv: show, env: { PATH: '/usr/bin:/bin', CC_REMOTE: 'frame' },
+  });
+  assert.equal(rep.type, 'exit', JSON.stringify(rep));
+  assert.deepEqual(textOf(l.frames, 'rep').trim().split('\n'), ['[UNSET]', 'alpha'],
+    "HOME is GONE, and the provider's CC_REMOTE beats the frame's");
+});
+
+// PINS that the baseline probe RUNS over ssh to an Alpine target and names the
+// real gaps. THE WRONG IMPLEMENTATION is a transport that fails first: the probe
+// is itself an exec, so BusyBox's `env` usage text left the probe with no
+// readable output and one misleading `shell` gap instead of the four real ones.
+live('ALPINE: the baseline probe runs over ssh and names the four real gaps', async (t, g) => {
+  const target = await withSshTarget(t, g, { image: 'alpine' });
+  const runner = makeRunner(target.transport(), target.config, 'alpha');
+  const res = await runner({ script: PROBE_SCRIPT });
+  const parsed = parseProbeOutput(res);
+  assert.equal(parsed.state, 'unsupported');
+  assert.deepEqual(parsed.missing.map(m => m.capability).sort(), ['readDir', 'realpath', 'shell', 'stat']);
 });
 
 // ── registration, and the count proof ────────────────────────────────

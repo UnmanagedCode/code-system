@@ -12,6 +12,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,6 +20,7 @@ import {
   CONTROL_PATH_MAX, SSH_ENV, controlDir, controlPathFor, createSshTransport, sshBaseArgs,
   sshCliArgv,
 } from '../src/launcher/kinds/ssh.mjs';
+import { shellQuote } from '../src/launcher/fileops.mjs';
 import { stubSshCli as stubSsh } from './helpers.mjs';
 
 const CONFIG = { host: 'box', user: 'me' };
@@ -54,6 +56,38 @@ function runIndex(hay, needle) {
 // The single remote command string ssh is handed. Everything after the
 // destination is ONE argv element, so this is `args.at(-1)`.
 const remoteOf = (p) => p.args.at(-1);
+
+// The cwd trampoline's script, byte for byte. Hard-coded rather than imported so
+// any drift in the shipped script reds the whole-argv test.
+const CHDIR_SCRIPT = '[ -n "$1" ] && cd -P -- "$1" 2>/dev/null || { printf "code-system: cannot change'
+  + ' directory to %s: %s\\n" "$1" "$(cd -P -- "$1" 2>&1)" >&2; exit 125; }; shift; exec /usr/bin/env "$@"';
+
+// The wire string for `/bin/sh -c <script> sh <dir> …rest`, quoted word by word.
+const wire = (dir, rest) => ['/bin/sh', '-c', CHDIR_SCRIPT, 'sh', dir, ...rest].map(shellQuote).join(' ');
+
+// What the far login shell does to the single remote string: split it into
+// words, honouring only POSIX single quotes (`'…'` and the `'\''` splice) —
+// which is all `shellQuote` emits. Asserting on the parsed argv instead of
+// `split(' ')` is what lets a script containing spaces be checked.
+function shellWords(line) {
+  const words = [];
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] === ' ') { i++; continue; }
+    let w = '';
+    while (i < line.length && line[i] !== ' ') {
+      if (line[i] === "'") {
+        const end = line.indexOf("'", i + 1);
+        assert.notEqual(end, -1, `unterminated quote in ${line}`);
+        w += line.slice(i + 1, end);
+        i = end + 1;
+      } else if (line[i] === '\\' && line[i + 1] === "'") { w += "'"; i += 2; }
+      else assert.fail(`unquoted byte ${JSON.stringify(line[i])} at ${i} in ${line}`);
+    }
+    words.push(w);
+  }
+  return words;
+}
 
 // Point TMPDIR at a fresh directory for the duration of one test, so the
 // ControlPath formula is exercised without depending on — or polluting — the
@@ -146,7 +180,10 @@ test('the ssh invocation is overridable, and the shipped default is bare ssh', (
 
 // ── U1/U2: the argv shape ────────────────────────────────────────────
 
-// PINS the whole argv, deep-equal, for the INHERIT form. The option block, the
+// PINS the exact wire shape, deep-equal, for the INHERIT form — including the
+// trampoline script's bytes, so any drift in the script reds this one assertion.
+// (The option block, terminator, destination and single command element are
+// fixed here too.) The option block, the
 // terminator, the destination and the single command element are all fixed
 // here, so any drift in any of them reds one assertion with a readable diff.
 test('spawnPlan: the whole argv, with the remote command as ONE element', async (t) => {
@@ -163,7 +200,7 @@ test('spawnPlan: the whole argv, with the remote command as ONE element', async 
     '-o', 'ControlMaster=no',
     '-o', 'ControlPersist=600',
     '--', DEST,
-    "'/usr/bin/env' '--chdir=/w' '--' 'CC_REMOTE=r1' 'CC_EXEC_TOKEN=tok' 'git' 'status'",
+    `'/bin/sh' '-c' '${CHDIR_SCRIPT}' 'sh' '/w' '--' 'CC_REMOTE=r1' 'CC_EXEC_TOKEN=tok' 'git' 'status'`,
   ]);
   assert.equal(p.cwd, undefined, "the frame's cwd rides in the remote command, never as the host child's cwd");
   assert.equal(p.env, undefined, 'the host-side ssh client gets no env of its own');
@@ -261,17 +298,19 @@ test('spawnPlan: no `-o` value is ever derived from stored config', async (t) =>
   }
 });
 
-// ── U3: the SECOND terminator, GNU env's ─────────────────────────────
+// ── U3: the SECOND terminator, `env`'s ───────────────────────────────
 
-// PINS THE FIX FOR AN OPTION INJECTION, in the branch docker's own measurement
-// found it in. Frame-supplied env KEYS are arbitrary strings and GNU `env` reads
-// leading-`-` operands as ITS OWN options until the first non-option operand:
-// `env -i '--chdir=/tmp' PATH=/usr/bin pwd` runs at /tmp (measured for docker,
-// .wiki/gotchas/docker-exec-transport.md §4), and `--argv0=` spoofs `$0`.
+// PINS: nothing `env` could read as an option of its own precedes its `--`
+// except our own `-i`, so a frame-supplied env KEY or argv[0] shaped like an
+// option cannot reach `env`'s option section. `env -i '--chdir=/tmp' PATH=… pwd`
+// relocates the command and `--argv0=` spoofs `$0` (measured for docker,
+// .wiki/gotchas/docker-exec-transport.md §4).
 //
-// IT IS NEEDED IN BOTH ENV BRANCHES, not just REPLACE: in the INHERIT branch the
-// assignments are ours, but `command[0]` is the FRAME's argv[0] and may start
-// with `-`. A mutant emitting it only under `env -i` reds the inherit half.
+// Between the `sh <dir>` operands and the first `--` the parsed argv is exactly
+// `[]` (inherit) or `['-i']` (replace). IT IS NEEDED IN BOTH ENV BRANCHES: on the
+// inherit branch the assignments are ours but `command[0]` is the FRAME's argv[0].
+// A mutant that drops `--`, emits it only under `env -i`, or restores a GNU-only
+// `--chdir=` before it reds.
 test('spawnPlan: `env --` closes the option-injection window, in BOTH env branches', async (t) => {
   await withTmpdir(t);
   for (const over of [
@@ -281,19 +320,13 @@ test('spawnPlan: `env --` closes the option-injection window, in BOTH env branch
     { shell: 'x', argv: null },
     { argv: ['-evilcmd', 'x'] },
   ]) {
-    const remote = remoteOf(plan(over));
-    const tokens = remote.split(' ');
-    const boundary = tokens.indexOf("'--'");
-    assert.notEqual(boundary, -1, `expected a quoted -- after env's options: ${remote}`);
-    assert.equal(tokens[0], "'/usr/bin/env'", remote);
-    // Everything env must not read as an option sits AFTER the boundary.
-    for (const [i, tk] of tokens.entries()) {
-      if (i > 0 && i < boundary) {
-        assert.match(tk, /^'(--chdir=|-i)/, `only our own env options may precede the boundary: ${tk}`);
-      }
-    }
-    for (const needle of ["'--chdir=/evil='", "'-evilcmd'"]) {
-      const at = tokens.indexOf(needle);
+    const words = shellWords(remoteOf(plan(over)));
+    const boundary = words.indexOf('--');
+    assert.notEqual(boundary, -1, `expected a -- after env's options: ${words}`);
+    assert.deepEqual(words.slice(5, boundary), over.env === undefined || over.env === null ? [] : ['-i'],
+      `only our own -i may precede the boundary: ${JSON.stringify(over)}`);
+    for (const needle of ['--chdir=/evil=', '-evilcmd']) {
+      const at = words.indexOf(needle);
       if (at !== -1) assert.ok(at > boundary, `${needle} must sit after env's -- boundary`);
     }
   }
@@ -311,7 +344,7 @@ test('spawnPlan: a frame env REPLACES via `env -i`, with CC_REMOTE overlaid last
   await withTmpdir(t);
   const remote = remoteOf(plan({ env: { PATH: '/p', CC_REMOTE: 'frame-supplied' } }));
   assert.equal(remote,
-    "'/usr/bin/env' '--chdir=/w' '-i' '--' 'PATH=/p' 'CC_REMOTE=r1' 'CC_EXEC_TOKEN=tok' 'git' 'status'");
+    wire('/w', ['-i', '--', 'PATH=/p', 'CC_REMOTE=r1', 'CC_EXEC_TOKEN=tok', 'git', 'status']));
   assert.equal(remote.includes('frame-supplied'), false,
     'a frame-supplied CC_REMOTE must not survive — that is the routing lie CC_REMOTE exists to prevent');
 });
@@ -344,7 +377,7 @@ test('spawnPlan: an absent frame env never ships the LAUNCHER\'s environment', a
   const remote = remoteOf(p);
   assert.equal(remote.includes("'-i'"), false, 'no `env -i` on the inherit branch');
   assert.equal(remote,
-    "'/usr/bin/env' '--chdir=/w' '--' 'CC_REMOTE=r1' 'CC_EXEC_TOKEN=tok' 'git' 'status'");
+    wire('/w', ['--', 'CC_REMOTE=r1', 'CC_EXEC_TOKEN=tok', 'git', 'status']));
 });
 
 test('spawnPlan: an unrouted exec carries the token but no CC_REMOTE', async (t) => {
@@ -354,46 +387,143 @@ test('spawnPlan: an unrouted exec carries the token but no CC_REMOTE', async (t)
   assert.ok(remote.includes("'CC_EXEC_TOKEN=tok'"), 'reap still needs to find its own processes');
 });
 
-// ── U7/U8: the interpreter, the cwd, the operand guard ───────────────
+// ── U7/U8: the interpreters, the cwd, the operand guard ──────────────
 
-// PINS criterion 7. ONE layer of resolution is unavoidable — ssh hands our
-// single string to the remote user's LOGIN shell, which tokenizes it — and
-// everything after that point is named absolutely, so neither side's PATH
-// resolves anything. The recorded `host.mjs` defect is a bare `bash`; a mutant
-// repeating it here reds.
-test('spawnPlan: both interpreters are named ABSOLUTELY, in either env branch', async (t) => {
+// PINS criterion 7: every interpreter is named ABSOLUTELY, so neither side's
+// PATH resolves anything. ONE layer of resolution is unavoidable — ssh hands our
+// single string to the remote user's LOGIN shell — and everything after it is
+// absolute: `/bin/sh` enters the cwd, then `exec`s `/usr/bin/env`, which composes
+// the environment. A bare `sh`/`env`/`bash` as the program word reds (the recorded
+// `host.mjs` defect is a bare `bash`).
+test('spawnPlan: every interpreter is named ABSOLUTELY, in either env branch', async (t) => {
   await withTmpdir(t);
-  for (const over of [{ shell: 'echo hi', argv: null }, { shell: 'echo hi', argv: null, env: { PATH: '/nowhere' } }]) {
-    const remote = remoteOf(plan(over));
-    assert.ok(remote.endsWith("'/bin/bash' '-lc' 'echo hi'"), remote);
-    assert.ok(remote.startsWith("'/usr/bin/env' "), remote);
-    // A bare name anywhere would depend on a PATH neither side controls.
-    assert.equal(/(^|\s)'(env|bash|sh)'/.test(remote), false, `an unqualified interpreter in ${remote}`);
+  for (const over of [{ shell: 'echo hi', argv: null }, { shell: 'echo hi', argv: null, env: { PATH: '/nowhere' } }, {}]) {
+    const words = shellWords(remoteOf(plan(over)));
+    assert.equal(words[0], '/bin/sh', JSON.stringify(over));
+    assert.ok(words[2].endsWith('exec /usr/bin/env "$@"'), words[2]);
   }
-  // And the argv form names no interpreter of its own beyond `env`.
-  assert.ok(remoteOf(plan()).startsWith("'/usr/bin/env' "));
+  const shellForm = shellWords(remoteOf(plan({ shell: 'echo hi', argv: null })));
+  assert.deepEqual(shellForm.slice(-3), ['/bin/bash', '-lc', 'echo hi']);
 });
 
-// PINS acceptance 5 (`cwd: '/'` is served verbatim — every cc derivation carries
-// it as a placeholder with its real target in argv, so fencing it would refuse
-// all seven), and the operand guard at the store's front door.
-test('spawnPlan: cwd rides in `--chdir`, verbatim, and an option-shaped config is refused', async (t) => {
+// PINS that `shellQuote` is applied ONCE and nothing re-splits: the login shell's
+// single tokenization of the remote string yields exactly the intended argv, for
+// every cwd that could break a hand-rolled quote (spaces, quotes, globs, a
+// newline, option-shaped words, empty). A double-quote, or an unquoted script,
+// reds.
+test('spawnPlan: the login shell\'s one tokenization round-trips every cwd', async (t) => {
   await withTmpdir(t);
-  assert.ok(remoteOf(plan({ cwd: '/' })).startsWith("'/usr/bin/env' '--chdir=/' '--' "));
-  // A leading-dash cwd is a single quoted token, so `env` cannot read it as an
-  // option; and it still precedes the boundary as OUR option, by construction.
-  assert.ok(remoteOf(plan({ cwd: '-evil' })).includes("'--chdir=-evil'"));
-  // A leading-dash argv[0] lands after env's terminator.
-  const remote = remoteOf(plan({ argv: ['-evilcmd', 'x'] }));
-  assert.ok(remote.endsWith("'-evilcmd' 'x'"));
-  assert.ok(remote.indexOf("'--'") < remote.indexOf("'-evilcmd'"));
-  // The store's front door refuses an option-shaped host or user outright.
+  const table = [
+    ['/', '/'],
+    ["/a b/c'd*?[x]", "/a b/c'd*?[x]"],
+    ['/x\ny', '/x\ny'],
+    ['-', './-'],
+    ['-evil', './-evil'],
+    ['rel', './rel'],
+    ['', ''],
+  ];
+  for (const [cwd, operand] of table) {
+    const p = plan({ cwd });
+    assert.equal(p.args.at(-2), DEST);
+    assert.deepEqual(shellWords(remoteOf(p)), [
+      '/bin/sh', '-c', CHDIR_SCRIPT, 'sh', operand, '--', 'CC_REMOTE=r1', 'CC_EXEC_TOKEN=tok', 'git', 'status',
+    ], `cwd ${JSON.stringify(cwd)}`);
+  }
+});
+
+// PINS the `<dir>` operand rule: an absolute cwd goes through verbatim
+// (including `/`, which every cc derivation carries as a placeholder, so fencing
+// it would refuse all seven); a relative one is anchored with `./`; empty stays
+// empty (the script refuses it, as chdir("") was). Without the anchor `cd -`
+// means $OLDPWD and a relative name is searched on $CDPATH — both silently
+// relocate the command and print on stdout — so a mutant dropping `./` reds here
+// and in the real-shell test.
+test('spawnPlan: `<dir>` is verbatim when absolute, `./`-anchored when relative, empty stays empty', async (t) => {
+  await withTmpdir(t);
+  const dirOf = (cwd) => shellWords(remoteOf(plan({ cwd })))[4];
+  assert.equal(dirOf('/'), '/');
+  assert.equal(dirOf('/tmp/x'), '/tmp/x');
+  assert.equal(dirOf('-'), './-');
+  assert.equal(dirOf('sub/dir'), './sub/dir');
+  assert.equal(dirOf(''), '');
+});
+
+// PINS the operand guard at the store's front door: an option-shaped host or
+// user is refused outright, so neither can become an ssh option. (Unchanged by
+// the cwd move; kept as its own test so it is not buried in a cwd test.)
+test('validateConfig: an option-shaped host or user is refused; a bare host is a bare destination', async (t) => {
+  await withTmpdir(t);
   const tr = transport();
   assert.equal(tr.validateConfig({ host: '-oProxyCommand=x' }).ok, false);
   assert.equal(tr.validateConfig({ host: 'box', user: '-oProxyCommand=x' }).ok, false);
   assert.equal(tr.validateConfig({ host: 'box' }).ok, true);
-  // A host with no user is a bare destination, not `@host`.
   assert.equal(plan({}, { host: 'box' }).args.at(-2), 'box');
+});
+
+// PINS the trampoline's SEMANTICS by running the real remote string through a
+// real `/bin/sh -c`, exactly as the far login shell would, with no ssh: the
+// physical cwd, the two silent-relocation hazards, and the refusal's shape. Each
+// case is one assertion on what the command observed:
+//  (a) odd absolute dirs and a `lnk/..` symlink land on the exact PHYSICAL path
+//      (reds without `-P`);
+//  (b) relative `-` with OLDPWD set runs in `<home>/-`, with one stdout line
+//      (reds without the `./` anchor);
+//  (c) relative `rel` with CDPATH naming a decoy runs in the login dir's `rel`
+//      (reds without the anchor);
+//  (d) a missing dir and a file-as-dir both exit 125 with stdout empty and
+//      stderr OPENING with our marker, which the classifier reads as ENOENT
+//      (reds without `2>/dev/null` on the first `cd`, or with the marker later);
+//  (e) a missing binary is the real `env` 127 line, read as ENOENT.
+test('the trampoline, run through a real /bin/sh: physical cwd, no OLDPWD/CDPATH relocation, marker-first refusal', async (t) => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-system-tramp-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home');
+  const odd = path.join(root, "a b'c*");
+  const decoy = path.join(root, 'decoy');
+  const other = path.join(root, 'other');
+  for (const d of [home, odd, decoy, other, path.join(home, '-'), path.join(home, 'rel'),
+    path.join(decoy, 'rel'), path.join(root, 'real', 'child')]) await fs.mkdir(d, { recursive: true });
+  await fs.symlink(path.join(root, 'real', 'child'), path.join(root, 'lnk'));
+  await fs.writeFile(path.join(root, 'afile'), '');
+
+  const exec = (cwd, { argv = ['/bin/pwd'], env = {} } = {}) => {
+    const r = spawnSync('/bin/sh', ['-c', remoteOf(plan({ cwd, argv }))], {
+      cwd: home, env: { PATH: '/usr/bin:/bin', ...env }, encoding: 'utf8',
+    });
+    return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+  };
+
+  // (a)
+  assert.equal(exec(odd).stdout, `${odd}\n`);
+  assert.equal(exec('/').stdout, '/\n');
+  assert.equal(exec(`${root}/lnk/..`).stdout, `${path.join(root, 'real')}\n`, 'physical, as chdir(2) resolves it');
+  // (b)
+  const dash = exec('-', { env: { OLDPWD: other } });
+  assert.deepEqual([dash.code, dash.stdout], [0, `${path.join(home, '-')}\n`]);
+  // (c)
+  const cdp = exec('rel', { env: { CDPATH: decoy } });
+  assert.deepEqual([cdp.code, cdp.stdout], [0, `${path.join(home, 'rel')}\n`]);
+  // (d)
+  for (const bad of [path.join(root, 'nope'), path.join(root, 'afile')]) {
+    const r = exec(bad);
+    assert.equal(r.code, 125, bad);
+    assert.equal(r.stdout, '');
+    assert.ok(r.stderr.startsWith('code-system: cannot change directory to '), JSON.stringify(r.stderr));
+    assert.equal(classify(r)?.code, 'ENOENT');
+  }
+  // (e)
+  const missing = exec('/', { argv: ['/nonexistent-bin-xyz'] });
+  assert.equal(missing.code, 127);
+  assert.equal(classify(missing)?.code, 'ENOENT', JSON.stringify(missing));
+});
+
+// PINS that a leading-dash argv[0] lands after env's terminator, so the frame's
+// first word is a command and never an `env` option.
+test('spawnPlan: a leading-dash argv[0] lands after env\'s terminator', async (t) => {
+  await withTmpdir(t);
+  const words = shellWords(remoteOf(plan({ argv: ['-evilcmd', 'x'] })));
+  assert.deepEqual(words.slice(-2), ['-evilcmd', 'x']);
+  assert.ok(words.indexOf('--') < words.indexOf('-evilcmd'));
 });
 
 // ── U9: the `exclusive` guards, both of them ─────────────────────────
@@ -560,30 +690,38 @@ test('classifyFailure: the known_hosts "Permanently added" lead-in does not hide
 });
 
 // PINS §5's "a command that never started is an `error` frame, not an `exit`
-// frame", for the two measured shapes — and note the DIFFERENT exit codes,
-// measured against the live fixture:
-//   exit 127  env: 'nosuchbinary-xyz': No such file or directory
-//   exit 125  env: cannot change directory to '/nope-xyz': No such file or directory
-// Both on STDERR with an empty stdout. A classifier anchored on 127 alone
-// reports a bad cwd as a command that ran and exited 125.
-test('classifyFailure: a command that never started is ENOENT, on BOTH measured exit codes', () => {
-  const noBinary = classify({
-    code: 127, stdout: '', stderr: "env: 'nosuchbinary-xyz': No such file or directory\n",
-  });
-  assert.equal(noBinary.code, 'ENOENT');
-  assert.match(noBinary.message, /nosuchbinary-xyz/);
-
-  const badCwd = classify({
-    code: 125, stdout: '', stderr: "env: cannot change directory to '/nope-xyz': No such file or directory\n",
-  });
-  assert.equal(badCwd.code, 'ENOENT');
-  assert.match(badCwd.message, /cannot change directory/);
+// frame" for BOTH arms, which differ in who speaks: exit 125 + OUR marker
+// `code-system: cannot change directory to …` opening stderr (the trampoline's
+// refusal, whose tail is the login `/bin/sh`'s own `cd` wording — dash, BusyBox
+// ash and bash all fed), and exit 127 + a single line opening `env: ` (`env`
+// failing to exec, GNU and BusyBox wordings). A classifier that knows one arm
+// reports the other as a command that ran and exited with that code.
+test('classifyFailure: a command that never started is ENOENT, on both arms and every measured wording', () => {
+  for (const tail of [
+    "sh: 1: cd: can't cd to /nope-xyz",
+    'sh: cd: /nope-xyz: No such file or directory',
+    'sh: line 0: cd: /nope-xyz: No such file or directory',
+  ]) {
+    const badCwd = classify({
+      code: 125, stdout: '', stderr: `code-system: cannot change directory to /nope-xyz: ${tail}\n`,
+    });
+    assert.equal(badCwd?.code, 'ENOENT', tail);
+    assert.match(badCwd.message, /cannot change directory to \/nope-xyz/);
+  }
+  for (const stderr of [
+    "env: 'nosuchbinary-xyz': No such file or directory\n",
+    "env: can't execute 'nosuchbinary-xyz': No such file or directory\n",
+  ]) {
+    const noBinary = classify({ code: 127, stdout: '', stderr });
+    assert.equal(noBinary?.code, 'ENOENT', stderr);
+    assert.match(noBinary.message, /nosuchbinary-xyz/);
+  }
 });
 
 // PINS THE GUARDS. Without them a command's own output forges a transport
 // verdict — and ssh forwards a remote command's exit status VERBATIM, so a
 // command CAN exit 255 (measured). Forging a row therefore requires exiting
-// exactly 255 (or env's 127/125), printing nothing at all to stdout, and
+// exactly 255 (or 127 / 125 with those rows' bytes), printing nothing at all to stdout, and
 // opening stderr with ssh's exact bytes. That is a bound on plausibility, and
 // the outcome of forging it is a named refusal, never a wrong answer.
 test('classifyFailure: a command cannot forge a transport verdict', () => {
@@ -638,6 +776,33 @@ test('classifyFailure: a command cannot forge a transport verdict', () => {
     code: 255, stdout: '',
     stderr: 'checking: Host key verification failed. was expected here\n',
   }), null);
+});
+
+// PINS that each never-started arm accepts ONLY its own bytes at its own exit
+// code, so a command's own failure is never read as ours: a verdict needs the
+// code AND the opening bytes AND an empty stdout (and, for 127, a single line).
+//  - 125 + GNU `env: cannot change directory…` is a nested `env`'s, not ours —
+//    our own `env` can no longer emit 125;
+//  - 127 + our marker, and 125 + an `env: ` line, are crossed arms;
+//  - the marker must OPEN stderr;
+//  - 127 + `env: …` followed by a second stderr line is a chatty command's own;
+//  - 126 `Permission denied` stays unclassified.
+// The 125+`env:` and chatty-127 cases are what a shared-prefix, either-code
+// classifier gets wrong; the two controls at the end keep the nulls honest.
+test('classifyFailure: the never-started arms cannot be crossed or forged', () => {
+  const marker = 'code-system: cannot change directory to /x: sh: 1: cd: can\'t cd to /x\n';
+  const envLine = "env: 'x': No such file or directory\n";
+  assert.equal(classify({ code: 125, stdout: '', stderr: "env: cannot change directory to '/x': No such file or directory\n" }), null);
+  assert.equal(classify({ code: 125, stdout: '', stderr: envLine }), null);
+  assert.equal(classify({ code: 127, stdout: '', stderr: marker }), null);
+  assert.equal(classify({ code: 125, stdout: 'some output', stderr: marker }), null);
+  assert.equal(classify({ code: 125, stdout: '', stderr: `warning: first\n${marker}` }), null);
+  assert.equal(classify({ code: 127, stdout: '', stderr: `${envLine}more\n` }), null);
+  assert.equal(classify({ code: 127, stdout: 'out', stderr: envLine }), null);
+  assert.equal(classify({ code: 126, stdout: '', stderr: "env: '/bin/x': Permission denied\n" }), null);
+  assert.equal(classify({ code: 1, stdout: '', stderr: marker }), null);
+  assert.equal(classify({ code: 125, stdout: '', stderr: marker })?.code, 'ENOENT');
+  assert.equal(classify({ code: 127, stdout: '', stderr: envLine })?.code, 'ENOENT');
 });
 
 // PINS THE BLANK-LINE BOUNDARY, in both directions, because the two differ and

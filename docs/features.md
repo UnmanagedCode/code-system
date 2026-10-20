@@ -158,6 +158,10 @@ requirements: cc derives `stat`, `readDir`, `realpath`, `mkdir`, `removeTree`,
 `unlink` and `chmod` by sending commands with GNU-specific arguments. So a
 target needs **GNU coreutils, GNU findutils and a POSIX shell**.
 
+An **ssh** target also needs a POSIX `/bin/sh` and a `/usr/bin/env` that accepts
+`-i` and `--` (BusyBox's does), and its login shell must handle POSIX single
+quotes. It does not need GNU `env --chdir`.
+
 A **Docker** target specifically needs GNU coreutils and findutils, a POSIX
 `/bin/sh`, an executable **`/bin/bash`** (the `shell` exec form is a login
 `bash -lc`), plus `base64`, `tr` and `env`.

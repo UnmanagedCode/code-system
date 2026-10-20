@@ -41,7 +41,7 @@ mark the whole row broken. It is per-remote and belongs on the card.
   never surface on its own, and the only reason the probe exists rather than
   waiting for a failure. Measured live against `busybox:1.38.0`:
   `stat -L -c '%f %s %.3Y' -- /` → exit 0 with `41ed 4096 1788505069` — no dot.
-- **The live busybox verdict is FOUR capabilities, not three.**
+- **The live busybox verdict is FOUR capabilities, not three** (and holds over ssh too, pinned by the ALPINE baseline-probe entry in `tests/ssh-live.test.mjs`).
   `systems-protocol.md` §11 item 3 lists three (`readDir`, `realpath`, `stat`);
   our probe also has a `shell` row, `[ -x /bin/bash ]` (`src/baseline.mjs`), and
   **busybox ships no `/bin/bash`** — so the fourth is `shell`. A test written to

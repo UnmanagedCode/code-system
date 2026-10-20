@@ -509,7 +509,13 @@ The remote command is a **single argv element**: every token below quoted once
 with `shellQuote` and joined with spaces.
 
 ```
-/usr/bin/env --chdir=<cwd> [-i] -- [CC_REMOTE=<id>] CC_EXEC_TOKEN=<tok> <command…>
+/bin/sh -c <CHDIR_SCRIPT> sh <dir> [-i] -- [CC_REMOTE=<id>] CC_EXEC_TOKEN=<tok> <command…>
+```
+
+`CHDIR_SCRIPT` (owned by `kinds/ssh.mjs`) is, byte for byte:
+
+```
+[ -n "$1" ] && cd -P -- "$1" 2>/dev/null || { printf "code-system: cannot change directory to %s: %s\n" "$1" "$(cd -P -- "$1" 2>&1)" >&2; exit 125; }; shift; exec /usr/bin/env "$@"
 ```
 
 **`ssh` takes a SHELL STRING, not an argv, and this is the contract sentence a
@@ -517,9 +523,11 @@ reader must not have to derive.** Everything after the destination is joined by
 ssh and **tokenized by the target's login shell**, which must therefore be
 POSIX-compatible in its handling of single quotes. That is the *only* layer of
 resolution in play, and everything past it is named **absolutely**:
-`/usr/bin/env` composes the environment and the working directory, and the
-`shell` form's interpreter is `/bin/bash -lc`. **Neither side's `PATH` resolves
-anything.** The measurement behind the rule — a command split across argv
+`/bin/sh` enters the working directory and `exec`s `/usr/bin/env`, which
+composes the environment, and the `shell` form's interpreter is `/bin/bash -lc`.
+**Neither side's `PATH` resolves anything.** The target needs a POSIX `/bin/sh`
+and an `env` that honours `-i` and `--`; there is no `--chdir`, which is GNU
+coreutils ≥ 8.28 only. The measurement behind the rule — a command split across argv
 elements losing its quoting and running as two commands — is in
 `.wiki/gotchas/ssh-controlmaster-transport.md` §2.
 
@@ -528,11 +536,12 @@ elements losing its quoting and running as two commands — is in
 | # | Terminator | Ends | Without it |
 |---|---|---|---|
 | 1 | before `<user>@<host>` | ssh's option section | a leading-dash host is read as an **option** and the *command* slides into the hostname position |
-| 2 | after `env [-i]` | GNU `env`'s option section | a frame env **key** like `--chdir=/` or `--argv0=EVIL` hijacks the cwd or spoofs `$0` |
+| 2 | after `<dir> [-i]` | `env`'s option section | a frame env **key** like `--chdir=/` or `--argv0=EVIL` hijacks the cwd or spoofs `$0` (GNU `env`'s options; BusyBox's `env` holds the same line, measured) |
 
 Terminator 2 is emitted in **both** env branches, not just `REPLACE`: on the
 inherit branch the assignments are ours, but `<command…>[0]` is the frame's own
-`argv[0]` and may start with `-`.
+`argv[0]` and may start with `-`. `<dir>` is a positional parameter of the
+trampoline, which `shift`s it off before `env` runs, and never begins with `-`.
 
 | Element | Rule |
 |---|---|
@@ -546,8 +555,9 @@ inherit branch the assignments are ours, but `<command…>[0]` is the frame's ow
 | `-o ControlPersist=600` | finite, so a master orphaned by a crashed launcher reaps itself |
 | `-p <port>` | only when the card sets a `port`, as two argv elements right after `ControlPersist` and before any credential options. Part of the shared option block, so every dial carries it (exec, `-O check`, connect's master, `-O exit`, the kill relay); the `-V` probe does not dial and has none. Unset emits nothing, so ssh's own default (22, or the config's `Port`) applies. Under an explicit `ControlPath`, `-O check`, `-O exit` and a multiplexed exec ignore `-p` (measured); the port separates masters only through the ControlPath |
 | `UserKnownHostsFile` | **never set**: keys are recorded in, and checked against, the operator's own `known_hosts`. See below |
-| `--chdir=<cwd>` | the frame's `cwd`, verbatim, **including `/`**. Replaces docker's `-w`, which has no ssh equivalent; a bad cwd then fails inside `env` with a wording we classify |
-| `env` absent (`null`) | no `-i`: the target keeps its own PATH/HOME/toolchain. The two plumbing variables ride as `env` operands |
+| `/bin/sh -c <CHDIR_SCRIPT> sh` | the cwd trampoline, run on **every** exec with no capability probe. Stands in for docker's `-w`, which has no ssh equivalent; `env --chdir` is never sent (GNU-only). `cd -P` resolves physically, as `chdir(2)` does through `symlink/..` |
+| `<dir>` | `dirOperand` in `kinds/ssh.mjs`. An absolute `cwd` verbatim, **including `/`**; a relative one as `./<cwd>` (so `cd -` cannot mean `$OLDPWD` and `$CDPATH` cannot take over — either would relocate the command silently and print on **stdout**); an empty one stays empty and is refused. A relative `cwd` resolves against the login directory. A `cwd` that cannot be entered exits **125** with our marker first on stderr |
+| `env` absent (`null`) | no `-i`: the target keeps its own PATH/HOME/toolchain, except that `cd` updates `PWD`/`OLDPWD` and a non-dash `/bin/sh` may change `SHLVL`. The two plumbing variables ride as `env` operands |
 | `env` supplied | `-i` — a **replacement**, as §5 requires. `CC_REMOTE` and `CC_EXEC_TOKEN` are the last entries, so the provider's binding beats a frame-supplied one |
 | `<command…>` | `argv` form: the argv verbatim. `shell` form: `/bin/bash -lc <shell>` — the same interpreter the baseline probe requires |
 | stdin | nothing in argv. `stdin:'ignore'` already gives ssh a closed stdin, and `'pipe'` is how `writeFile`'s payload arrives and EOF propagates |
@@ -618,8 +628,8 @@ once, in `.wiki/gotchas/ssh-controlmaster-transport.md` §1.
 | 255 | stderr | `Permission denied (publickey…` on a line of ssh's own **opening**; ssh prefixes it on that line with `<user>@<host>: ` | `EUNKNOWN` naming `~/.ssh/config`, the agent and `CODE_SYSTEM_SSH` — **never `ENOREMOTE`**: our access failing is not the remote being absent |
 | 255 | stderr | `@@@…@` then `@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @` as the **first two lines** — a changed host key. ssh's `Host key verification failed.` closes this ~900-byte banner, past the 512-byte head the classifier receives, so the banner's opening is the anchor | `EUNKNOWN` naming the change and `ssh-keygen -R`, same reason |
 | 255 | stderr | `Host key verification failed` on a line of ssh's own **opening** — either the first line, or the second when ssh prefixes it (with CRLF) with `No <type> host key is known for … strict checking.` Reached only when `CODE_SYSTEM_SSH` forces strict checking | `EUNKNOWN` naming `known_hosts` and `CODE_SYSTEM_SSH`, same reason |
-| **127** | stderr | `env: '<argv0>': No such file or directory` | `ENOENT` — §5's "a command that never started is an `error` frame, not an `exit` frame" |
-| **125** | stderr | `env: cannot change directory to '<cwd>': …` | `ENOENT`, same reason. **Note the different exit code** — anchoring on 127 alone reports a bad cwd as a command that ran and exited |
+| **127** | stderr | a **single line** opening `env: ` — GNU `env: '<argv0>': No such file or directory`, BusyBox `env: can't execute '<argv0>': No such file or directory` | `ENOENT` — §5's "a command that never started is an `error` frame, not an `exit` frame" |
+| **125** | stderr | `code-system: cannot change directory to <dir>: <the login /bin/sh's own cd diagnostic>`, **opening** stderr — our marker, from `CHDIR_SCRIPT` | `ENOENT`, same reason. **Note the different exit code.** `125` + an `env: ` line is the *command's own* failure (a nested `env`), and `127` + our marker is too |
 | anything else | — | — | **not a transport failure**: the command's own `exit` frame |
 
 **Two anchors are in use, and the difference is measured rather than stylistic.**
@@ -633,7 +643,7 @@ takes the first line that matches, and stops as soon as a line is neither a
 match nor one of the measured lead-in lines (strict checking's `No <type> host
 key is known …`, and the `Warning: Permanently added …` notice a first
 connect writes). Forging either therefore requires exiting
-exactly 255 (or `env`'s 127/125), writing **nothing** to stdout, and putting
+exactly 255 (or 127 / 125 with those rows' bytes), writing **nothing** to stdout, and putting
 ssh's exact bytes at the *start* of stderr. These rows report the **whole**
 normalised diagnostic as `stderr` and quote the **matched line** in the message,
 because ssh's host-key refusal spans two lines and the first is the less useful
@@ -647,6 +657,12 @@ exact bytes at position zero with an empty stdout and exit 255. That is reported
 as **our** transport failing. The observable consequence: the command's own exit
 status is swallowed into an `EUNKNOWN` that points the operator at *their*
 `~/.ssh/config` or `known_hosts` to fix somebody else's failure.
+
+**The `env` row has the same shape of limit.** A command whose only act is a
+failing nested `env` exec exits 127 with a byte-identical single `env: ` line and
+an empty stdout, which `(code, stdout, stderr)` cannot separate from ours. A
+command's own 125 with `env:` text, or its own 127 followed by more stderr, is
+told apart and gets an `exit` frame.
 
 **It is ineliminable from the signals this classifier receives** — which is
 `(code, stdout, stderr)` and nothing else. It is *not* a universal

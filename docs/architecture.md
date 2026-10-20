@@ -414,7 +414,7 @@ transports:**
    `container: "-v /:/host"` is argument injection against `docker`, and
    `host: "-oProxyCommand=…"` against `ssh` — and the refusal belongs in
    `validateConfig`, not in `spawnPlan`, so a bad value never reaches the store.
-   **`ssh` needs a second terminator as well**, for GNU `env`'s option section;
+   **`ssh` needs a second terminator as well**, for `env`'s option section;
    see `docs/protocol.md`.
 
    **A field that becomes a FLAG'S ARGUMENT is the other case, and must not use

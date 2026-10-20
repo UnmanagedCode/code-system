@@ -5,13 +5,15 @@
 // generate keys — a test fixture may. THE PROVIDER MAY NOT: it is attach-only,
 // and it never mutates the remote host.
 //
-// THE IMAGE IS BUILT IN-TREE rather than reusing any local one. Two reasons,
+// THE IMAGES ARE BUILT IN-TREE rather than reusing any local one. Two reasons,
 // both measured: the ssh-box image on this host bakes an `authorized_keys` from
 // a private key we do not have, and it is Alpine/BusyBox, which
 // .wiki/gotchas/baseline-probe-two-tier.md records as failing our tooling
 // baseline in FOUR capabilities — so `fileops` would be gated off and the live
 // suite could not exercise the thing it exists to exercise. debian:13-slim
-// satisfies the GNU/POSIX baseline the protocol assumes.
+// satisfies the GNU/POSIX baseline the protocol assumes, so it is the default.
+// An Alpine image (`{ image: 'alpine' }`) exists for the TRANSPORT tests only:
+// its `env` lacks `--chdir`, and fileops/reap tests stay on debian.
 //
 // IT IS BUILT WITH NO CONTEXT — `docker build -` with the Dockerfile on stdin.
 // The authorized key is injected at RUN time instead.
@@ -36,8 +38,17 @@ import { DOCKER_ENV } from '../src/launcher/kinds/docker.mjs';
 import { resolveDockerCli, run, settle, tempDir } from './dockerFixture.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const DOCKERFILE = path.join(HERE, 'fixtures', 'sshbox', 'Dockerfile');
-export const IMAGE = 'code-system-sshbox:test';
+const IMAGES = {
+  debian: {
+    dockerfile: path.join(HERE, 'fixtures', 'sshbox', 'Dockerfile'),
+    tag: 'code-system-sshbox:test',
+  },
+  alpine: {
+    dockerfile: path.join(HERE, 'fixtures', 'sshbox-alpine', 'Dockerfile'),
+    tag: 'code-system-sshbox-alpine:test',
+  },
+};
+export const IMAGE = IMAGES.debian.tag;
 
 const PROBE_TIMEOUT_MS = 5_000;
 const BUILD_TIMEOUT_MS = 300_000;
@@ -98,15 +109,15 @@ export async function skipUnlessSsh(t) {
 
 // Built once per process: the layer cache makes a rebuild cheap, but a `docker
 // build` per test would still dominate the suite.
-let built;
-async function ensureImage(cli) {
-  if (built) return built;
-  const dockerfile = await fs.readFile(DOCKERFILE);
-  const res = await run([...cli, 'build', '-t', IMAGE, '-'],
-    { timeoutMs: BUILD_TIMEOUT_MS, stdin: dockerfile });
-  if (res.code !== 0) throw new Error(`could not build ${IMAGE}: ${res.stderr || res.stdout}`);
-  built = IMAGE;
-  return built;
+const built = new Set();
+async function ensureImage(cli, image) {
+  const { dockerfile, tag } = IMAGES[image] ?? (() => { throw new Error(`unknown ssh fixture image '${image}'`); })();
+  if (built.has(image)) return tag;
+  const res = await run([...cli, 'build', '-t', tag, '-'],
+    { timeoutMs: BUILD_TIMEOUT_MS, stdin: await fs.readFile(dockerfile) });
+  if (res.code !== 0) throw new Error(`could not build ${tag}: ${res.stderr || res.stdout}`);
+  built.add(image);
+  return tag;
 }
 
 /**
@@ -123,7 +134,7 @@ async function ensureImage(cli) {
  * `knownHosts` itself.
  */
 export async function withSshTarget(t, gate, {
-  stem = 'box', alias = uniqueName('alias'), extraConfig = [], allowPassword = false,
+  stem = 'box', image = 'debian', alias = uniqueName('alias'), extraConfig = [], allowPassword = false,
   // sshd's listening ports (default: 22). The first becomes `config.port`.
   ports,
 } = {}) {
@@ -132,7 +143,7 @@ export async function withSshTarget(t, gate, {
   // would share ONE master — and a test could silently multiplex onto the
   // previous test's container.
   const { cli } = gate;
-  await ensureImage(cli);
+  const imageTag = await ensureImage(cli, image);
   const dir = await tempDir(t);
 
   const key = path.join(dir, 'id');
@@ -145,7 +156,7 @@ export async function withSshTarget(t, gate, {
   const started = await run([...cli, 'run', '-d', '--name', name, '-e', `AUTHORIZED_KEY=${pub}`,
     // Lets sshd accept passwords (the image's entrypoint writes the drop-in).
     ...(allowPassword ? ['-e', 'ALLOW_PASSWORD=1'] : []),
-    ...(ports ? ['-e', `SSHD_PORTS=${ports.join(' ')}`] : []), IMAGE]);
+    ...(ports ? ['-e', `SSHD_PORTS=${ports.join(' ')}`] : []), imageTag]);
   const config = { host: alias, user: 'root', ...(ports ? { port: ports[0] } : {}) };
 
   // Registered BEFORE the started-ok check, so a container that came up and
