@@ -914,6 +914,20 @@ for (const box of ['debian', 'alpine']) {
   });
 }
 
+// PINS that a missing binary whose path contains a space is still an ENOENT
+// `error` frame on GNU `env`, which answers it with TWO stderr lines (the second
+// is the `use -[v]S` hint). THE WRONG IMPLEMENTATION is a 127 arm that demands a
+// single stderr line, which turns this into an `exit 127` frame.
+live('DEBIAN: a missing binary whose path has a space is an ENOENT error frame', async (t, g) => {
+  const target = await withSshTarget(t, g);
+  const store = await storeFor(t, target);
+  const l = launcherFor(t, store, target.sshEnv);
+  await l.hello();
+  const done = await execOnce(l, 'sp1', { argv: ['/tmp/no such binary'] });
+  assert.equal(done.type, 'error', JSON.stringify(done));
+  assert.equal(done.code, 'ENOENT');
+});
+
 // PINS the option-injection guard on a BusyBox `env`: frame env KEYS shaped like
 // `env` options stay assignments, and a leading-dash argv[0] is a command. THE
 // WRONG IMPLEMENTATION is dropping `--`, which lets `--chdir=/` relocate the

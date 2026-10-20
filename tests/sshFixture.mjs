@@ -48,7 +48,6 @@ const IMAGES = {
     tag: 'code-system-sshbox-alpine:test',
   },
 };
-export const IMAGE = IMAGES.debian.tag;
 
 const PROBE_TIMEOUT_MS = 5_000;
 const BUILD_TIMEOUT_MS = 300_000;

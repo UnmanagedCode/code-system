@@ -628,7 +628,7 @@ once, in `.wiki/gotchas/ssh-controlmaster-transport.md` §1.
 | 255 | stderr | `Permission denied (publickey…` on a line of ssh's own **opening**; ssh prefixes it on that line with `<user>@<host>: ` | `EUNKNOWN` naming `~/.ssh/config`, the agent and `CODE_SYSTEM_SSH` — **never `ENOREMOTE`**: our access failing is not the remote being absent |
 | 255 | stderr | `@@@…@` then `@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @` as the **first two lines** — a changed host key. ssh's `Host key verification failed.` closes this ~900-byte banner, past the 512-byte head the classifier receives, so the banner's opening is the anchor | `EUNKNOWN` naming the change and `ssh-keygen -R`, same reason |
 | 255 | stderr | `Host key verification failed` on a line of ssh's own **opening** — either the first line, or the second when ssh prefixes it (with CRLF) with `No <type> host key is known for … strict checking.` Reached only when `CODE_SYSTEM_SSH` forces strict checking | `EUNKNOWN` naming `known_hosts` and `CODE_SYSTEM_SSH`, same reason |
-| **127** | stderr | a **single line** opening `env: ` — GNU `env: '<argv0>': No such file or directory`, BusyBox `env: can't execute '<argv0>': No such file or directory` | `ENOENT` — §5's "a command that never started is an `error` frame, not an `exit` frame" |
+| **127** | stderr | a **single line** opening `env: ` — GNU `env: '<argv0>': No such file or directory`, BusyBox `env: can't execute '<argv0>': No such file or directory`. GNU adds a hint line, `env: use -[v]S to pass options in shebang lines`, when the command name contains whitespace; that exact line (`ENV_SHEBANG_HINT`) is the only permitted second line | `ENOENT` — §5's "a command that never started is an `error` frame, not an `exit` frame" |
 | **125** | stderr | `code-system: cannot change directory to <dir>: <the login /bin/sh's own cd diagnostic>`, **opening** stderr — our marker, from `CHDIR_SCRIPT` | `ENOENT`, same reason. **Note the different exit code.** `125` + an `env: ` line is the *command's own* failure (a nested `env`), and `127` + our marker is too |
 | anything else | — | — | **not a transport failure**: the command's own `exit` frame |
 
@@ -661,8 +661,13 @@ status is swallowed into an `EUNKNOWN` that points the operator at *their*
 **The `env` row has the same shape of limit.** A command whose only act is a
 failing nested `env` exec exits 127 with a byte-identical single `env: ` line and
 an empty stdout, which `(code, stdout, stderr)` cannot separate from ours. A
-command's own 125 with `env:` text, or its own 127 followed by more stderr, is
-told apart and gets an `exit` frame.
+command's own 125 with `env:` text, or its own 127 followed by more stderr, gets
+an `exit` frame — but only when the second line starts inside the stderr head the
+classifier receives (`HEAD_BYTES` in `session.mjs`, `CLASSIFY_HEAD_BYTES` in
+`run.mjs`). A command that exits 127 with empty stdout and a single `env: …` line
+longer than that head, then more lines, is still read as ours. BusyBox `env` with
+a newline in the command name also prints two physical lines for one refusal and
+is likewise a residual.
 
 **It is ineliminable from the signals this classifier receives** — which is
 `(code, stdout, stderr)` and nothing else. It is *not* a universal

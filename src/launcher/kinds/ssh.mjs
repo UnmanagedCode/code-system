@@ -649,6 +649,10 @@ function sshOwnLine(stderr, pattern) {
 // `env` failing to exec the command opens stderr with this (GNU `env: 'x': No
 // such file or directory`, BusyBox `env: can't execute 'x': …`).
 const ENV_PREFIX = 'env: ';
+// GNU `env` follows its refusal with this second line when the command name
+// contains whitespace (measured, exit 127). The ONE trailing line the 127 arm
+// permits; any other second line is the command's own output.
+const ENV_SHEBANG_HINT = 'env: use -[v]S to pass options in shebang lines';
 
 // What to fix when authentication is refused: the card's own credential when it
 // has one, the operator's ssh config otherwise.
@@ -1172,14 +1176,16 @@ export function createSshTransport({ cli, env = process.env } = {}) {
       // so a command's own 125/127 is not read as ours:
       //  - the trampoline refusing the cwd: OUR marker opens stderr at our own
       //    exit code, so a nested `env` emitting 125 can no longer pass;
-      //  - `env` failing to exec: exit 127 and a SINGLE stderr line opening
-      //    `env: `, so a chatty command's own 127 cannot.
+      //  - `env` failing to exec: exit 127 and a stderr opening `env: ` that is
+      //    a SINGLE line (plus GNU's whitespace hint), so a chatty command's
+      //    own 127 cannot.
       // What stays unseparable is a command whose only act is a nested failing
       // `env`: it prints those same bytes at 127 (docs/protocol.md).
       if (stdout === '') {
         const refused = code === CHDIR_EXIT && stderr.startsWith(CHDIR_REFUSED);
+        const [, ...rest] = allOf(stderr).split('\n');
         const unexecable = code === ENV_EXEC_EXIT && stderr.startsWith(ENV_PREFIX)
-          && !allOf(stderr).includes('\n');
+          && (rest.length === 0 || (rest.length === 1 && rest[0] === ENV_SHEBANG_HINT));
         if (refused || unexecable) {
           return { code: 'ENOENT', message: first(stderr), stderr: allOf(stderr) };
         }

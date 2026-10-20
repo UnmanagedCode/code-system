@@ -181,9 +181,7 @@ test('the ssh invocation is overridable, and the shipped default is bare ssh', (
 // ── U1/U2: the argv shape ────────────────────────────────────────────
 
 // PINS the exact wire shape, deep-equal, for the INHERIT form — including the
-// trampoline script's bytes, so any drift in the script reds this one assertion.
-// (The option block, terminator, destination and single command element are
-// fixed here too.) The option block, the
+// trampoline script's bytes, so any drift in the script reds this one assertion. The option block, the
 // terminator, the destination and the single command element are all fixed
 // here, so any drift in any of them reds one assertion with a readable diff.
 test('spawnPlan: the whole argv, with the remote command as ONE element', async (t) => {
@@ -473,7 +471,8 @@ test('validateConfig: an option-shaped host or user is refused; a bare host is a
 //  (d) a missing dir and a file-as-dir both exit 125 with stdout empty and
 //      stderr OPENING with our marker, which the classifier reads as ENOENT
 //      (reds without `2>/dev/null` on the first `cd`, or with the marker later);
-//  (e) a missing binary is the real `env` 127 line, read as ENOENT.
+//  (e) a missing binary is the real `env` 127 line, read as ENOENT;
+//  (f) an empty cwd is refused the same way as (d).
 test('the trampoline, run through a real /bin/sh: physical cwd, no OLDPWD/CDPATH relocation, marker-first refusal', async (t) => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-system-tramp-')));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -511,6 +510,12 @@ test('the trampoline, run through a real /bin/sh: physical cwd, no OLDPWD/CDPATH
     assert.ok(r.stderr.startsWith('code-system: cannot change directory to '), JSON.stringify(r.stderr));
     assert.equal(classify(r)?.code, 'ENOENT');
   }
+  // (f) an empty cwd is refused as chdir("") was, not treated as "stay here"
+  const empty = exec('');
+  assert.equal(empty.code, 125);
+  assert.equal(empty.stdout, '');
+  assert.ok(empty.stderr.startsWith('code-system: cannot change directory to '), JSON.stringify(empty.stderr));
+  assert.equal(classify(empty)?.code, 'ENOENT');
   // (e)
   const missing = exec('/', { argv: ['/nonexistent-bin-xyz'] });
   assert.equal(missing.code, 127);
@@ -778,6 +783,21 @@ test('classifyFailure: a command cannot forge a transport verdict', () => {
   }), null);
 });
 
+// PINS that GNU `env`'s own two-line refusal of a command name containing
+// whitespace is still ENOENT: the real bytes (measured on debian:13-slim,
+// `env -- "/tmp/no such binary"`, exit 127) are the `env: ` line plus the
+// `use -[v]S` hint, and that hint is the ONE second line the 127 arm permits.
+// Any other second line is still the command's own failure.
+test('classifyFailure: GNU env\'s whitespace hint line is the one permitted second line', () => {
+  const hint = 'env: use -[v]S to pass options in shebang lines\n';
+  const two = `env: '/tmp/no such binary': No such file or directory\n${hint}`;
+  const v = classify({ code: 127, stdout: '', stderr: two });
+  assert.equal(v?.code, 'ENOENT');
+  assert.match(v.message, /no such binary/);
+  assert.equal(classify({ code: 127, stdout: '', stderr: `${two}more\n` }), null);
+  assert.equal(classify({ code: 127, stdout: '', stderr: `env: 'x': No such file or directory\nenv: something else\n` }), null);
+});
+
 // PINS that each never-started arm accepts ONLY its own bytes at its own exit
 // code, so a command's own failure is never read as ours: a verdict needs the
 // code AND the opening bytes AND an empty stdout (and, for 127, a single line).
@@ -801,6 +821,9 @@ test('classifyFailure: the never-started arms cannot be crossed or forged', () =
   assert.equal(classify({ code: 127, stdout: 'out', stderr: envLine }), null);
   assert.equal(classify({ code: 126, stdout: '', stderr: "env: '/bin/x': Permission denied\n" }), null);
   assert.equal(classify({ code: 1, stdout: '', stderr: marker }), null);
+  // The prefixes must be whole and at byte 0, not merely present or partial.
+  assert.equal(classify({ code: 127, stdout: '', stderr: 'wrapper: env: could not run\n' }), null);
+  assert.equal(classify({ code: 125, stdout: '', stderr: 'code-system: some other message\n' }), null);
   assert.equal(classify({ code: 125, stdout: '', stderr: marker })?.code, 'ENOENT');
   assert.equal(classify({ code: 127, stdout: '', stderr: envLine })?.code, 'ENOENT');
 });
