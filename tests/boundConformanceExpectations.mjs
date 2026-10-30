@@ -20,7 +20,9 @@
 export const MIN_CAUSE_CHARS = 60;
 
 // THE BATTERY'S OWN SIZE at the pin: 23 in-loop rows x 2 `CAPABILITY_CONFIGS`,
-// plus 23 out-of-loop. Pinned ABSOLUTELY rather than derived from the run,
+// plus the 17 terminal-battery rows `[all capabilities]` runs and the one
+// SYSTEM_NO_PTY row the `--no-pty` configuration runs instead, plus 29
+// out-of-loop. Pinned ABSOLUTELY rather than derived from the run,
 // because every other guard here is RELATIVE — `compareOutcomes` walks observed
 // union listed, and the parse/tally cross-check compares two numbers that shrink
 // together. Measured: delete one unlisted PASSING row and decrement the tally to
@@ -30,7 +32,7 @@ export const MIN_CAUSE_CHARS = 60;
 // RED IN BOTH DIRECTIONS. A vanished row and a new row are the same event: the
 // harness moved, and this manifest was written against a battery that no longer
 // exists. Re-read it against the current suite rather than editing the number.
-export const EXPECTED_TOTAL = 69;
+export const EXPECTED_TOTAL = 93;
 
 const OUTCOMES = new Set(['skip', 'fail']);
 
@@ -101,7 +103,7 @@ export const EXPECTED = [
   // must still match — a narrowness the suite pins itself in `the third-party
   // capability assertion tolerates a superset but pins the toggle`. §10 also
   // names our exact shape ("accepts a flag and ignores it") as failing rather
-  // than skipping. [processGroupSignal:false] passes both rows, but only
+  // than skipping. [processGroupSignal:false, pty:false] passes both rows, but only
   // because the flag it was given happens to agree with a value we hardcode —
   // NOT because the flag works.
   {
@@ -130,7 +132,7 @@ export const EXPECTED = [
   // close's reach as identical to `signal`'s, so a provider advertising
   // processGroupSignal:false must not reach a grandchild.
   {
-    name: '[processGroupSignal:false] detach ends the operation and kills nothing; close kills as far as it reaches',
+    name: '[processGroupSignal:false, pty:false] detach ends the operation and kills nothing; close kills as far as it reaches',
     outcome: 'fail',
     cause: 'FORCED by two locked decisions that cannot both hold with this row. (1)'
       + ' src/launcher/kinds/docker.mjs hardcodes processGroupSignal: false, so cc takes the'
@@ -178,7 +180,7 @@ export const EXPECTED = [
   // live streaming — for every command whose output opens with OCI_PREFIX —
   // against this row. That is a transport design decision, and card 2026-0014
   // is scoped to measuring, not to refactoring a provider.
-  ...['[all capabilities]', '[processGroupSignal:false]'].map(tag => ({
+  ...['[all capabilities]', '[processGroupSignal:false, pty:false]'].map(tag => ({
     name: `${tag} exec NEVER rejects — a command that cannot start is a spawnError, not a throw`,
     outcome: 'fail',
     cause: 'a DEFECT (card 2026-0016), not a forced outcome: src/launcher/session.mjs streams the'
@@ -195,7 +197,7 @@ export const EXPECTED = [
   // `stat` passes — cc derives it and classifies the far side's own stderr —
   // but `readFile` rides src/launcher/fileops.mjs, whose script tests `-e` and
   // answers ENOENT for a path that cannot resolve at all.
-  ...['[all capabilities]', '[processGroupSignal:false]'].map(tag => ({
+  ...['[all capabilities]', '[processGroupSignal:false, pty:false]'].map(tag => ({
     name: `${tag} a path that cannot resolve is ENAMETOOLONG or ELOOP, on the derived and the frame path`,
     outcome: 'fail',
     cause: 'a DEFECT, not a forced outcome: the readFile script in src/launcher/fileops.mjs refuses'
@@ -203,6 +205,41 @@ export const EXPECTED = [
       + ' too long or loops, so readFile answers ENOENT where systems-protocol.md \u00a78 names'
       + ' ENAMETOOLONG/ELOOP. Observed identically on --kind host. Delete this entry when fixed.',
   })),
+
+  // ── Terminals: what a far side reached through a client cannot report ──
+  //
+  // Every other terminal row passes on docker — the drain, the size, ^C, close,
+  // a megabyte of input past one window, write backpressure, the credit window,
+  // a provider going away. These three are forced by the transport, each
+  // measured (.wiki/gotchas/pty-transport.md).
+  {
+    name: '[all capabilities] the program\'s exit code, or the signal that ended it, is the end',
+    outcome: 'fail',
+    cause: 'the row wants {code: null, signal: \'SIGKILL\'} for a program killed by a signal, and a'
+      + ' far process reached through `docker exec -t` can only report an exit code: the client exits'
+      + ' 137 whether the trampoline exec\'s the program or waits for it (measured), and under'
+      + ' src/launcher/kinds/docker.mjs ptyMode \'child\' the trampoline (src/launcher/kinds/ptyscript.mjs)'
+      + ' hands back 128+n because a shell cannot tell the two apart. systems-protocol.md \u00a75 exit row.',
+  },
+  {
+    name: '[all capabilities] the env overlay reaches the program and never the helper',
+    outcome: 'fail',
+    cause: 'the row\'s PRECONDITION reads /proc/<$PPID>/cmdline and expects ptyHelper.py, but on docker the'
+      + ' program\'s parent is the far-side trampoline: src/launcher/kinds/docker.mjs runs it in'
+      + ' ptyMode \'child\' because an exec\'d far process reads $PPID 0 (measured), which would make the'
+      + ' drain row SIGSTOP the test runner\'s own group. The property itself holds — the overlay reaches'
+      + ' the final env only, pinned by tests/ptyscript.test.mjs — on a parent the row does not recognise.',
+  },
+  {
+    name: 'input credit is granted for bytes written to the terminal, not bytes received, and every byte\'s credit returns',
+    outcome: 'fail',
+    cause: 'src/launcher/terminal.mjs grants inputAck from the pty helper\'s `w` drain report, i.e. for'
+      + ' bytes written into the HOST pty master `docker exec -t` runs under — the terminal device'
+      + ' systems-protocol.md \u00a711 names for docker. Behind it the docker attach path keeps accepting'
+      + ' 268-302 KiB (measured, five runs) while the far program reads nothing, more than'
+      + ' PTY_INPUT_WINDOW_BYTES, so the whole window is credited before the program reads. The bound'
+      + ' is that fixed buffer, not a queue of ours; approved for card 2026-0042.',
+  },
 
   // ── --remote / --mirror / --exclude: structurally unreachable ─────
   // src/launcher/main.mjs refuses these flags for STORE_BACKED kinds with exit 2
@@ -221,6 +258,7 @@ export const EXPECTED = [
     'describeRemote for an unknown remote is an id-addressed ENOREMOTE',
     'listRemotes enumerates exactly the configured targets; an unconfigured id refuses ENOREMOTE',
     'listRemotes is one id among many: answered beside an in-flight exec, never disturbing it',
+    'bound views share their provider\'s terminal cap, and each terminal runs on its own remote',
   ].map(name => ({
     name,
     outcome: 'fail',
