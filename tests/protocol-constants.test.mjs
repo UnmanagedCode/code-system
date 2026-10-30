@@ -126,9 +126,12 @@ test('our mirror matches cc\'s own protocol.ts', { skip: !process.env.CC_CHECKOU
   const num = (name) => {
     const m = new RegExp(`export const ${name}\\s*=\\s*([^;]+);`).exec(src);
     assert.ok(m, `cc no longer exports ${name}`);
-    // The expressions are simple arithmetic over integers, by construction.
-    assert.match(m[1], /^[\d*\s+]+$/, `${name} is no longer a plain arithmetic literal: ${m[1]}`);
-    return Function(`return (${m[1]})`)();
+    // The expressions are simple arithmetic over integers, by construction —
+    // and may name another constant cc exports (`4 * CHUNK_BYTES`), read here
+    // the same way.
+    const expr = m[1].replace(/\b[A-Z][A-Z0-9_]*\b/g, (ref) => String(num(ref)));
+    assert.match(expr, /^[\d*\s+]+$/, `${name} is no longer a plain arithmetic literal: ${m[1]}`);
+    return Function(`return (${expr})`)();
   };
   assert.equal(PROTOCOL_VERSION, num('PROTOCOL_VERSION'));
   assert.equal(CHUNK_BYTES, num('CHUNK_BYTES'));
