@@ -26,7 +26,9 @@ const CAPABILITY_KEYS = ['processGroupSignal', 'pty', 'remoteDescriptors', 'remo
 // the launcher's own probe: the same import line, the same interpreter name.
 // `pty` is advertised iff it succeeds, so it is a fact about the host, never a
 // constant.
-const HOST_PTY = spawnSync('python3', ['-I', '-c', 'import pty,termios,fcntl,select,sys'], { stdio: 'ignore' }).status === 0;
+// The same interpreter NAME the launcher probes: CODE_SYSTEM_PYTHON, else python3.
+const HOST_PTY = spawnSync(process.env.CODE_SYSTEM_PYTHON?.trim() || 'python3',
+  ['-I', '-c', 'import pty,termios,fcntl,select,sys'], { stdio: 'ignore' }).status === 0;
 
 test('only docker and ssh are auto-registered — host is deliberately not', () => {
   assert.deepEqual(REGISTERED_KINDS, ['docker', 'ssh']);

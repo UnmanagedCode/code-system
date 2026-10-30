@@ -241,7 +241,9 @@ as a terminal on a project whose *Remote* is one of these runs there.
 - **The terminal opens in the project's directory**; a directory or program
   that is not there is refused before anything starts.
 - **Environment variables cc adds reach the program only** — not the docker or
-  ssh client, and not anything the provider runs on the target around it.
+  ssh client, and not anything the provider runs on the target around it — and
+  **never appear in a process listing** on either machine: they are passed over
+  the terminal itself, not on any command line.
 - **Closing the terminal ends the program and the jobs it backgrounded.** A job
   started with `setsid` (or `nohup setsid …`) survives, as it does when a local
   terminal window closes.

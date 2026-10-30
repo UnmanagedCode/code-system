@@ -845,9 +845,10 @@ export function createSshTransport({ cli, env = process.env } = {}) {
     // writes "(Shared) connection to … closed." into the terminal at exit
     // (measured); escape char `none`, or `\n~.` in a paste disconnects. The
     // remote is ONE element, in which the plumbing rides `env` ahead of the
-    // trampoline — on the trampoline itself, where the reap finds it — and the
-    // caller's env overlay is in the trampoline's argv, reaching the program
-    // only. The client's own env is the credential's, as for every invocation.
+    // trampoline — on the trampoline itself, where the reap finds it. The
+    // caller's env overlay is in no argv: it goes in-band over the terminal and
+    // reaches the program only. The client's own env is the credential's, as
+    // for every invocation.
     ptyPlan(config, req) {
       const auth = sshAuth(config, env);
       const remote = [

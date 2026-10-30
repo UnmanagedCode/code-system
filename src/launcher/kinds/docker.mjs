@@ -362,8 +362,8 @@ export function createDockerTransport({ cli } = {}) {
     // answers a missing one with its own marker rather than an OCI line on the
     // terminal; the identity; and the two PLUMBING variables as `-e` — on the
     // trampoline itself, where the reap finds them — and nothing else: the
-    // caller's env overlay is in the trampoline's argv and reaches only the
-    // program.
+    // caller's env overlay goes in-band over the terminal and reaches only the
+    // program. Never `-e KEY` either: that would put it on the trampoline.
     ptyPlan(config, req) {
       const container = String(config?.container ?? '');
       const args = ['exec', '-i', '-t', '--detach-keys', DETACH_KEYS];

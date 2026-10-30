@@ -113,15 +113,18 @@ function parseJson(b) {
  * One program under a host pty.
  *
  * @param {{interpreter:string, argv:string[], env:Record<string,string|undefined>,
- *          programEnv:Record<string,string>, cwd:string, cols:number, rows:number}} spec
+ *          programEnv:Record<string,string>, cwd:string, cols:number, rows:number,
+ *          maxQueuedBytes:number}} spec
  *   `env` is the HELPER's environment; `programEnv` is merged over it for the
- *   program only (the helper's first frame, `v`).
+ *   program only (the helper's first frame, `v`). `maxQueuedBytes` caps what
+ *   `write` holds here plus what the helper has not yet reported written: past
+ *   it `write` refuses, so no peer's input can grow this process's memory.
  * @param {{onStarted():void, onData(b:Buffer):void, onWritten(n:number):void,
  *          onExit(code:number|null, signal:string|null):void,
  *          onFailed(code:string, message:string):void}} h
  *   Exactly one of `onExit`/`onFailed`, and nothing after `close()`.
  *   `onWritten` is the drain report: n more bytes of `write` are in the pty.
- * @returns {{write(b:Buffer):void, resize(cols:number, rows:number):void,
+ * @returns {{write(b:Buffer):boolean, resize(cols:number, rows:number):void,
  *            pause():void, resume():void, close():void}}
  */
 export function spawnPty(spec, h) {
@@ -133,6 +136,7 @@ export function spawnPty(spec, h) {
   const queue = [];
   const decoder = new HelperFrameDecoder();
   const input = [];
+  let queued = 0;
   let inFlight = 0;
   let failAfterQueue = null;
 
@@ -154,6 +158,7 @@ export function spawnPty(spec, h) {
       const n = Math.min(head.length, WRITE_CHUNK, HELPER_INPUT_WINDOW_BYTES - inFlight);
       send(encodeHelperFrame('d', head.subarray(0, n)));
       inFlight += n;
+      queued -= n;
       if (n === head.length) input.shift();
       else input[0] = head.subarray(n);
     }
@@ -218,10 +223,14 @@ export function spawnPty(spec, h) {
   }
 
   return {
+    // False, and nothing taken, when it would exceed `maxQueuedBytes`.
     write(data) {
-      if (done || data.length === 0) return;
+      if (done || data.length === 0) return true;
+      if (queued + inFlight + data.length > spec.maxQueuedBytes) return false;
       input.push(data);
+      queued += data.length;
       sendInput();
+      return true;
     },
     resize(cols, rows) {
       const p = Buffer.alloc(4);

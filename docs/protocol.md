@@ -335,7 +335,7 @@ An `exec` carrying `pty` (`systems-protocol.md` §5, "pty exec"), answered by
 ```
 launcher ─ python3 ptyHelper.py (host pty) ─ client ─▶ far side:
   /bin/sh trampoline        (its own env + CC_EXEC_TOKEN + CC_REMOTE)
-    └─ /usr/bin/env -- <overlay…> CC_REMOTE=… CC_EXEC_TOKEN=… TERM=<term> <argv | login shell -l>
+    └─ exec <argv | login shell -l>   (+ the in-band blob: overlay, then CC_REMOTE, CC_EXEC_TOKEN, TERM)
 ```
 
 | Kind | Client the helper runs | `ptyMode` | Resize relay |
@@ -344,11 +344,17 @@ launcher ─ python3 ptyHelper.py (host pty) ─ client ─▶ far side:
 | `ssh` | `ssh -tt … -o LogLevel=ERROR -e none [auth] -- <dest> '/usr/bin/env' '--' 'CC_REMOTE=…' 'CC_EXEC_TOKEN=…' <trampoline>` (one remote element); `ControlMaster=no`, so it multiplexes when a master exists | `child` | yes |
 | `host` | `/usr/bin/env -- CC_REMOTE=… CC_EXEC_TOKEN=… <trampoline>` | `exec` | no |
 
-- **The overlay reaches the program only.** `pty.envOverlay` is applied by the
-  trampoline's final `env`, never by `docker exec -e`, the client's
-  environment, or the helper's (its `v` frame is always `{}`). Order: the
-  far side's own environment, the overlay, the plumbing (so an overlay cannot
-  unbind `CC_REMOTE` or the reap token), then `TERM`.
+- **The overlay is in no argv and reaches the program only.**
+  `/proc/<pid>/cmdline` is world-readable, so no overlay value is ever an argv
+  element — not the helper's, the client's (nor ssh's remote string), nor the
+  trampoline's. It travels **in-band over the terminal** (below), and is
+  applied only where the program inherits it: never by `docker exec -e` (with
+  or without a value), the client's environment, the helper's (its `v` frame
+  is always `{}`), or the trampoline's own tools. Order: the far side's own
+  environment, the overlay, the plumbing (so an overlay cannot unbind
+  `CC_REMOTE` or the reap token), then `TERM`.
+- **The program is exec'd as given** (`exec "$@"`), with no `env(1)` in front:
+  an `argv[0]` containing `=` is a program, never an assignment.
 - **`ptyMode`.** `exec`: the trampoline `exec`s the program, which leads the
   session. `child`: the trampoline stays as its parent and session leader, with
   `trap : INT QUIT`, and exits with its status. Docker needs it because the
@@ -361,14 +367,16 @@ launcher ─ python3 ptyHelper.py (host pty) ─ client ─▶ far side:
 ### The trampoline's marker
 
 `src/launcher/kinds/ptyscript.mjs`. Positional parameters: `<nonce> <cwd> <cols>
-<rows> <mode> <k> <k assignments…> <argv…>`. It prints, as ONE line through the
-terminal, either `<nonce> STARTED <tty> <sid>` or `<nonce> <CODE>`; the nonce
-is 24 random hex characters per terminal.
+<rows> <mode> <N> <argv…>`, where `<N>` is the environment blob's byte count. It
+prints ONE line through the terminal at each step; the nonce is 24 random hex
+characters per terminal.
 
 | Line | When | Frame |
 |---|---|---|
 | `<nonce> EPTY` | `[ -t 0 ]` fails — ssh through a master opened under `PermitTTY no` runs the command tty-less | `error` `EPTY` |
-| `<nonce> ENOENT` / `ENOTDIR` / `EACCES` | `cd -P` fails (empty or missing → `ENOENT`, not a directory → `ENOTDIR`, else `EACCES`); or `argv[0]` fails an execvp-shaped pre-check against the overlay's `PATH` if it sets one | `error` with that code |
+| `<nonce> ENOENT` / `ENOTDIR` / `EACCES` | `cd -P` fails (empty or missing → `ENOENT`, not a directory → `ENOTDIR`, else `EACCES`) | `error` with that code |
+| `<nonce> OVERLAY` | the terminal is now raw and `-echo`; the launcher writes the blob — `export NAME='value'` lines, the overlay then `CC_REMOTE`, `CC_EXEC_TOKEN`, `TERM` — and the trampoline reads exactly `<N>` bytes with `head -c`, then restores the terminal. Its bytes earn no `inputAck` | none |
+| `<nonce> ENOENT` / `EACCES` | `argv[0]` fails the pre-check `ARGV_SCRIPT` makes on cc's side: with a `/`, missing → `ENOENT`, a directory or not executable → `EACCES`; a bare name is searched on the overlay's `PATH` (read in a subshell), where a present but not runnable entry → `EACCES` unless a later one runs | `error` with that code |
 | `<nonce> STARTED <tty> <sid>` | after `stty cols C rows R`; `sid` is field 4 after the last `)` of `/proc/$$/stat`, empty without `/proc` | `ptyStarted` |
 
 - Everything up to and including the marker is discarded; everything after is
@@ -391,7 +399,7 @@ is 24 random hex characters per terminal.
 | Frame | Answer |
 |---|---|
 | pty exec while `pty` is not advertised | `error` `EUNSUPPORTED` |
-| `cols`/`rows` outside `1..PTY_DIM_MAX`, a non-string `term`, a non-object `pty`, `shell`/`env`/`timeoutMs` present, `argv` empty or not strings, an `envOverlay` entry that is not `NAME=string` | `error` `EPROTO`, id-addressed |
+| `cols`/`rows` outside `1..PTY_DIM_MAX`, a non-string `term`, a non-object `pty`, `shell`/`env`/`timeoutMs` present, `argv` empty or not strings, an `envOverlay` name outside cc's `ENV_NAME_RE` or a non-string value, a blob larger than `PTY_INPUT_WINDOW_BYTES` | `error` `EPROTO`, id-addressed |
 | `signal` or `detach` naming a terminal | ignored (§5 allows it) |
 
 ### Credit
@@ -403,6 +411,10 @@ is 24 random hex characters per terminal.
   helper's `w` frame reports written into the **host** pty's master — never on
   receipt. Input that arrives before `ptyStarted`, or while a resize relay is in
   flight, is held and earns nothing until written.
+- **The launcher holds at most one window of a peer's input**: what was sent
+  and not yet reported written (held, queued in the helper, or in flight) past
+  `PTY_INPUT_WINDOW_BYTES` ends that terminal `EPROTO`, id-addressed — the
+  mirror of cc's own over-grant rule. The helper driver has its own hard cap.
 - **The effective input bound for docker and ssh is one window plus the
   transport's own buffer**, which keeps accepting past the host pty while the
   far program reads nothing: docker ~270–300 KiB, ssh ~2 MiB (its channel
@@ -414,7 +426,9 @@ is 24 random hex characters per terminal.
 `ptyResizeRelay` the core also runs `stty -F <tty> cols C rows R` on the target
 through the kind's own exec path (`makeRunner`, the channel when one is idle),
 coalesced to the latest size and bounded at 5 s; input is held until it lands.
-A failed relay warns once on stderr and releases the input.
+A failed relay warns once on stderr and releases the input. `close` and
+shutdown abort a relay still in flight, so its detached client cannot outlive
+the terminal or the launcher.
 
 ### Close and shutdown
 
@@ -429,8 +443,12 @@ up (ending the client), then the kind's `reap` runs with the handle's `sid`:
 - No `sid` (no marker yet, or no `/proc`): the whole-token `buildReapScript`.
 - `host`'s reap is a no-op: the helper's own hang-up and `killpg` are the close.
 
-The program exiting on its own is reported, not reaped. No abandon timer runs
-once `ptyStarted` is sent: the terminal's life is its owner's.
+**The program exiting on its own is reaped too**, after its `exit` frame, with
+the same session scope: docker never forwards a hang-up (measured), so a job the
+program left in its session — or the program itself, when it was the client
+that died — would outlive the `exit`. Reaping an empty session costs one round
+trip and kills nothing. No abandon timer runs once `ptyStarted` is sent: the
+terminal's life is its owner's.
 
 ## `docker` — what goes on the wire
 

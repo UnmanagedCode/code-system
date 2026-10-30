@@ -1035,7 +1035,7 @@ how it is built. Measurements: `.wiki/gotchas/pty-transport.md`.
 | Module | Owns | Does not |
 |---|---|---|
 | `src/launcher/ptyhost.mjs` | the probe, and driving `ptyHelper.py` over its stdio protocol: `v` first (always `{}`), `d`/`r` in, `S`/`o`/`w`/`x`/`e` out, with `pause`/`resume`/`close` | know about frames, kinds or the far side |
-| `src/launcher/kinds/ptyscript.mjs` | the far-side trampoline, its marker (`findMarker`), and the resize relay's script | spawn anything |
+| `src/launcher/kinds/ptyscript.mjs` | the far-side trampoline, its markers (`findMarker`), the in-band environment it reads (`overlayBlob` — never argv), and the resize relay's script | spawn anything |
 | `src/launcher/terminal.mjs` | `Terminals`: validation, the plan, the marker, credit, held input, the relay, close/shutdown | build argv (the kind does) |
 
 `Session` only routes: an `exec` with `pty` to `Terminals.open` (after the

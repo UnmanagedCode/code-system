@@ -252,3 +252,121 @@ test('signal and detach on a pty id change nothing', { skip: SKIP }, async (t) =
   l.send({ type: 'input', id: 't1', dataB64: b64('\x04') });
   assert.equal((await l.waitFor(f => f.id === 't1' && f.type === 'exit')).code, 0);
 });
+
+// Every live process on THIS machine whose argv holds `needle`.
+async function cmdlinesHolding(needle) {
+  const hits = [];
+  for (const pid of await fs.readdir('/proc').catch(() => [])) {
+    if (!/^\d+$/.test(pid)) continue;
+    const cmd = await fs.readFile(`/proc/${pid}/cmdline`, 'latin1').catch(() => '');
+    if (cmd.includes(needle)) hits.push(`${pid}: ${cmd.replace(/\0/g, ' ').slice(0, 200)}`);
+  }
+  return hits;
+}
+
+// PINS THE OVERLAY'S FOUR INVARIANTS through `Terminals.open`: (a) no overlay
+// value is in any process's argv — /proc/<pid>/cmdline is world-readable — while
+// the terminal is open; (b) it does not apply to the trampoline's own tools — a
+// PATH that resolves nothing leaves `tty`, so the marker carries one and the
+// resize relay, which needs it, raises no warning; (c) the program gets the
+// exact bytes; (d) the plumbing and TERM beat it, on the program and on the reap.
+test('the overlay is in no argv, reaches only the program exactly, and the plumbing and TERM beat it', { skip: SKIP }, async (t) => {
+  const { l, cwd, reaps } = await rig(t, { env: { CODE_SYSTEM_FAKE_PTY_RELAY: '1' } });
+  const sentinel = `ccsentinel${Math.random().toString(16).slice(2)}`;
+  const odd = `${sentinel} 'q' $HOME\n`;
+  open(l, 't1', cwd, ['/bin/sh', '-c', '/usr/bin/stty -opost; printf "[%s]" "$PATH" "$CC_REMOTE" "$CC_EXEC_TOKEN" "$TERM" "$CC_ODD"; read x; /usr/bin/stty size; read y'], {
+    envOverlay: { PATH: '/nonexistent', CC_REMOTE: 'evil', CC_EXEC_TOKEN: 'evil', TERM: 'dumb', CC_ODD: odd },
+  });
+  await until(l, 't1', /\]\[.*\]$/s);
+  assert.deepEqual(await cmdlinesHolding(sentinel), [], 'no process carries an overlay value in its argv');
+  l.send({ type: 'resize', id: 't1', cols: 101, rows: 41 });
+  l.send({ type: 'input', id: 't1', dataB64: b64('\n') });
+  await until(l, 't1', /41 101/);
+  assert.doesNotMatch(l.stderr, /could not be relayed/, `the marker carried a tty the relay could use: ${l.stderr}`);
+  l.send({ type: 'close', id: 't1' });
+  assert.ok(await settle(async () => (await reaps()).length === 1, 5_000));
+  const [reap] = await reaps();
+  const seen = /^\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*)\]/s.exec(Buffer.from(outOf(l, 't1'), 'latin1').toString('utf8'));
+  assert.ok(seen, outOf(l, 't1'));
+  const [, pathSeen, remote, token, term, oddSeen] = seen;
+  assert.equal(pathSeen, '/nonexistent', 'the program sees the overlay PATH');
+  assert.equal(oddSeen.split(']')[0], odd, 'byte for byte');
+  assert.equal(remote, 'alpha', 'CC_REMOTE is the provider\'s binding');
+  assert.equal(token, reap.token, 'CC_EXEC_TOKEN is the one the reap uses');
+  assert.notEqual(token, 'evil');
+  assert.equal(reap.remoteId, 'alpha');
+  assert.equal(term, PTY.term, 'TERM is the frame\'s term');
+});
+
+// PINS THE HELD REMAINDER's CONTENT: output that crosses the credit edge in the
+// middle of a chunk is split there, and what was held is delivered — in order,
+// byte for byte — once credit returns. A prefix written on its own first puts
+// the edge away from the helper's read boundaries.
+test('output crossing the credit edge mid-chunk arrives byte for byte after an ack', { skip: SKIP }, async (t) => {
+  const { l, cwd } = await rig(t);
+  const body = Buffer.alloc(PTY_WINDOW_BYTES + 40_000);
+  for (let i = 0; i < body.length; i++) body[i] = (i * 131 + (i >> 9)) & 0xff;
+  await fs.writeFile(path.join(cwd, 'body'), body);
+  const prefix = 'P'.repeat(1001);
+  open(l, 't1', cwd, ['/bin/sh', '-c', `/usr/bin/stty raw -echo; printf ${prefix}; sleep 0.3; cat body`]);
+  const got = () => Buffer.concat(framesOf(l, 't1').filter(f => f.type === 'stdout').map(f => Buffer.from(f.dataB64, 'base64')));
+  assert.ok(await settle(() => got().length === PTY_WINDOW_BYTES, 10_000), `the window filled (${got().length})`);
+  await barrier(l, cwd);
+  assert.equal(got().length, PTY_WINDOW_BYTES, 'and stopped at its edge');
+  l.send({ type: 'ack', id: 't1', bytes: PTY_WINDOW_BYTES });
+  const expected = Buffer.concat([Buffer.from(prefix), body]);
+  assert.ok(await settle(() => got().length >= expected.length, 10_000), `the rest arrived (${got().length})`);
+  assert.ok(got().equals(expected), 'every byte, in order, nothing dropped at the edge');
+});
+
+// PINS THE INPUT CAP: a peer that sends more than one PTY_INPUT_WINDOW_BYTES the
+// helper has not written — here all of it held, before the start — ends that
+// terminal EPROTO, id-addressed, and the connection serves on.
+test('input past one window unwritten ends the terminal EPROTO, id-addressed', { skip: SKIP }, async (t) => {
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  const { l, cwd, reaps } = await rig(t, { env: { CODE_SYSTEM_FAKE_PTY_GATE: path.join(store.dir, 'never') } });
+  open(l, 't1', cwd, ['cat']);
+  const chunk = Buffer.alloc(64 * 1024, 0x61).toString('base64');
+  for (let i = 0; i < 4; i++) l.send({ type: 'input', id: 't1', dataB64: chunk });
+  await barrier(l, cwd);
+  assert.equal(framesOf(l, 't1').some(f => f.type === 'error'), false, 'exactly one window is within the contract');
+  l.send({ type: 'input', id: 't1', dataB64: b64('x') });
+  const err = await l.waitFor(f => f.id === 't1' && f.type === 'error');
+  assert.equal(err.code, 'EPROTO');
+  assert.ok(await settle(async () => (await reaps()).length === 1, 5_000), 'its far side is reaped');
+  await barrier(l, cwd);
+  assert.equal(l.frames.some(f => f.type === 'error' && !f.id), false, 'the connection is not failed');
+});
+
+// PINS that close and shutdown ABANDON an in-flight resize relay: its `stty`
+// client is detached, and left alone it outlives the terminal — and the
+// launcher — until its own timeout.
+for (const how of ['close', 'shutdown']) {
+  test(`${how} kills an in-flight resize relay at once`, { skip: SKIP }, async (t) => {
+    const store = await tempStore();
+    t.after(() => store.cleanup());
+    const relayGate = path.join(store.dir, `relay-gate-${how}`);
+    const { l, cwd } = await rig(t, { env: { CODE_SYSTEM_FAKE_PTY_RELAY: '1', CODE_SYSTEM_FAKE_RELAY_GATE: relayGate } });
+    open(l, 't1', cwd, ['cat']);
+    await l.waitFor(f => f.id === 't1' && f.type === 'ptyStarted');
+    l.send({ type: 'resize', id: 't1', cols: 90, rows: 30 });
+    assert.ok(await settle(async () => (await cmdlinesHolding(relayGate)).length > 0, 5_000), 'the relay is in flight');
+    if (how === 'close') l.send({ type: 'close', id: 't1' });
+    else { l.closeStdin(); await l.exited; }
+    assert.ok(await settle(async () => (await cmdlinesHolding(relayGate)).length === 0, 1_000),
+      `the relay is gone: ${await cmdlinesHolding(relayGate)}`);
+  });
+}
+
+// PINS the reap on a program's own exit: what it left in its session is the
+// kind's to take (docker never forwards the hang-up), so the reap runs with the
+// marker's session, as it does on close.
+test('a program exiting on its own is reaped with its session', { skip: SKIP }, async (t) => {
+  const { l, cwd, reaps } = await rig(t);
+  open(l, 't1', cwd, ['sh', '-c', 'echo PID=$$; exit 5']);
+  const exit = await l.waitFor(f => f.id === 't1' && f.type === 'exit');
+  assert.equal(exit.code, 5);
+  assert.ok(await settle(async () => (await reaps()).length === 1, 5_000), 'the kind was asked to reap');
+  assert.equal((await reaps())[0].sid, /PID=(\d+)/.exec(outOf(l, 't1'))[1]);
+});

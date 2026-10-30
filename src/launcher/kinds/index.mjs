@@ -45,8 +45,9 @@ import { KIND_META as SSH_META, createSshTransport } from './ssh.mjs';
  *   OPTIONAL, and PURE. A TERMINAL's client: wraps `command` — the far-side
  *   trampoline (kinds/ptyscript.mjs), opaque here — in whatever reaches the
  *   target WITH A TTY, putting `token` (as CC_EXEC_TOKEN) and `remoteId` (as
- *   CC_REMOTE) on the trampoline's own environment and nothing else: the env
- *   overlay rides `command` and must reach the program only. The core runs it
+ *   CC_REMOTE) on the trampoline's own environment and nothing else. The env
+ *   overlay never appears here: the core sends it in-band over the terminal,
+ *   and no argv may carry it (/proc/<pid>/cmdline is world-readable). The core runs it
  *   under the host pty helper. A kind without it never advertises `pty`.
  * @property {'exec'|'child'} [ptyMode]  Whether the trampoline `exec`s the program
  *                                   or stays as its parent. Default `exec`.

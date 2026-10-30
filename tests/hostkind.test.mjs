@@ -66,7 +66,9 @@ test('a value other than 1 does not open the guard', async () => {
 // in its name, which NO SHIPPED CODE PATH SETS — only tests do. See
 // docs/architecture.md → "The `host` kind" for the residual risk.
 // CAPABILITY_CONFIGS[0].caps carries THIS host's pty answer, not a constant.
-const HOST_PTY = spawnSync('python3', ['-I', '-c', 'import pty,termios,fcntl,select,sys'], { stdio: 'ignore' }).status === 0;
+// The same interpreter NAME the launcher probes: CODE_SYSTEM_PYTHON, else python3.
+const HOST_PTY = spawnSync(process.env.CODE_SYSTEM_PYTHON?.trim() || 'python3',
+  ['-I', '-c', 'import pty,termios,fcntl,select,sys'], { stdio: 'ignore' }).status === 0;
 
 test('with the guard open and NO flags, host advertises exactly what cc\'s core configs expect', async (t) => {
   const l = new Launcher(['--kind', 'host'], ALLOW);

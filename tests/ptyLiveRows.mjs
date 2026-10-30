@@ -13,7 +13,20 @@
 //   t            the test context
 
 import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
 import { settle } from './dockerFixture.mjs';
+
+// Live processes on cc's host whose argv holds `needle`: the helper and the
+// docker or ssh client run here.
+async function hostCmdlinesHolding(needle) {
+  const hits = [];
+  for (const pid of await fs.readdir('/proc').catch(() => [])) {
+    if (!/^\d+$/.test(pid)) continue;
+    const cmd = await fs.readFile(`/proc/${pid}/cmdline`, 'latin1').catch(() => '');
+    if (cmd.includes(needle)) hits.push(`${pid}: ${cmd.replace(/\0/g, ' ').slice(0, 200)}`);
+  }
+  return hits;
+}
 
 export const PTY = { cols: 80, rows: 24, term: 'xterm-256color' };
 const CWD = '/tmp';
@@ -130,4 +143,41 @@ row('pty: argv and overlay values arrive byte-exact, and TERM is the frame\'s', 
   const exit = await l.waitFor(f => f.id === 'q1' && f.type === 'exit', { timeoutMs: 15_000 });
   assert.equal(exit.code, 0);
   assert.deepEqual(outOf(l, 'q1').toString('utf8').split('\0').slice(0, -1), [...values, overlay, PTY.term]);
+});
+
+// PINS THE OVERLAY ON A REAL TRANSPORT: while the terminal is open, no process
+// on cc's host (helper, client) or on the target (trampoline, program) carries
+// an overlay value in its argv; the program gets the value byte for byte, a
+// PATH that resolves nothing does not stop the trampoline, and the plumbing
+// and TERM beat the overlay.
+row('pty: the overlay is in no argv on either side, and reaches the program exactly', async (ctx) => {
+  const { l } = ctx;
+  const sentinel = `ccsentinel${Math.random().toString(16).slice(2)}`;
+  const odd = `${sentinel} 'q' $HOME\n`;
+  openTerminal(ctx, 'o1', ['/bin/sh', '-c',
+    '/usr/bin/stty -opost; printf "[%s]" "$PATH" "$CC_REMOTE" "$CC_EXEC_TOKEN" "$TERM" "$CC_ODD"; read x'],
+  { envOverlay: { PATH: '/nonexistent', CC_REMOTE: 'evil', CC_EXEC_TOKEN: 'evil', TERM: 'dumb', CC_ODD: odd } });
+  await until(l, 'o1', /\[[^\]]*\]\[[^\]]*\]\[[^\]]*\]\[[^\]]*\]\[[^\]]*\]/s);
+  assert.deepEqual(await hostCmdlinesHolding(sentinel), [], 'no argv on cc\'s host');
+  assert.equal(await ctx.count(sentinel), 0, 'no argv on the target');
+  const [, p, remote, token, term, got] = /\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]/s.exec(outOf(ctx.l, 'o1').toString('utf8'));
+  assert.deepEqual([p, remote, term, got], ['/nonexistent', ctx.remoteId, PTY.term, odd]);
+  assert.match(token, /^[0-9a-f]{24}$/, 'the provider\'s own token, not the overlay\'s');
+  l.send({ type: 'close', id: 'o1' });
+});
+
+// PINS the reap on a program's own exit: a job it left in its session goes
+// with it, as it would under a local terminal — which docker, never forwarding
+// the hang-up (measured), needs the reap for.
+row('pty: a program that exits takes the job it left in its session with it', async (ctx) => {
+  const { l } = ctx;
+  const m = ctx.marker();
+  ctx.clean([m]);
+  openTerminal(ctx, 'j1', ['sh', '-c', `sleep ${m} & echo READY; read x; exit 0`]);
+  await until(l, 'j1', /READY/);
+  // The trampoline, the program and the job.
+  assert.ok(await settle(async () => (await ctx.count(m)) === 3, 10_000), `running before the exit (${await ctx.count(m)})`);
+  type(ctx, 'j1', '\n');
+  assert.equal((await l.waitFor(f => f.id === 'j1' && f.type === 'exit', { timeoutMs: 15_000 })).code, 0);
+  assert.ok(await settle(async () => (await ctx.count(m)) === 0, 10_000), `the job is gone (${await ctx.count(m)})`);
 });

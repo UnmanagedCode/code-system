@@ -149,7 +149,7 @@ export function createHostTransport({
 
     // PURE. The plumbing rides `env` onto the trampoline's own environment —
     // `CC_REMOTE` is the routing evidence cc's bound-views row reads — and the
-    // caller's overlay is in the trampoline's argv, reaching the program only.
+    // caller's overlay goes in-band over the terminal, reaching the program only.
     ptyPlan(_config, req) {
       return {
         file: PTY_ENV_BIN,
