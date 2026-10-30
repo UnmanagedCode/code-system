@@ -8,9 +8,11 @@
 // opposite, so a hardcoded value breaks one group or the other.
 
 import { test } from 'node:test';
+import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { createHostTransport } from '../src/launcher/kinds/host.mjs';
 import { REMOTE_ID_MAX } from '../src/launcher/protocol.mjs';
 import { Launcher, tempStore } from './helpers.mjs';
 
@@ -63,13 +65,16 @@ test('a value other than 1 does not open the guard', async () => {
 // needs only the general seam; serving unfenced needs a variable with UNFENCED
 // in its name, which NO SHIPPED CODE PATH SETS — only tests do. See
 // docs/architecture.md → "The `host` kind" for the residual risk.
+// CAPABILITY_CONFIGS[0].caps carries THIS host's pty answer, not a constant.
+const HOST_PTY = spawnSync('python3', ['-I', '-c', 'import pty,termios,fcntl,select,sys'], { stdio: 'ignore' }).status === 0;
+
 test('with the guard open and NO flags, host advertises exactly what cc\'s core configs expect', async (t) => {
   const l = new Launcher(['--kind', 'host'], ALLOW);
   t.after(() => l.kill());
   const hs = await l.hello();
   // This deep-equal is CAPABILITY_CONFIGS[0].caps, verbatim.
   assert.deepEqual(hs.capabilities, {
-    processGroupSignal: true, remotes: false, remoteDescriptors: false, remoteListing: false,
+    processGroupSignal: true, remotes: false, remoteDescriptors: false, remoteListing: false, pty: HOST_PTY,
   });
   assert.match(hs.provider, /^code-system-host\/\S+$/);
 
@@ -80,13 +85,13 @@ test('with the guard open and NO flags, host advertises exactly what cc\'s core 
   assert.equal(textOf(l.frames, 'e1'), 'served');
 });
 
-test('--no-process-group-signal lowers the capability and sets descendantsMaySurvive', async (t) => {
-  const l = new Launcher(['--kind', 'host', '--no-process-group-signal'], ALLOW);
+test('--no-process-group-signal --no-pty lowers both capabilities and sets descendantsMaySurvive', async (t) => {
+  const l = new Launcher(['--kind', 'host', '--no-process-group-signal', '--no-pty'], ALLOW);
   t.after(() => l.kill());
   const hs = await l.hello();
   // CAPABILITY_CONFIGS[1].caps, verbatim.
   assert.deepEqual(hs.capabilities, {
-    processGroupSignal: false, remotes: false, remoteDescriptors: false, remoteListing: false,
+    processGroupSignal: false, remotes: false, remoteDescriptors: false, remoteListing: false, pty: false,
   });
 
   // The grandchild's own stdout goes to /dev/null so it does not hold the
@@ -325,4 +330,20 @@ test('the unfenced seam does not substitute for the general one', async () => {
   assert.equal(code, 2);
   assert.match(l.stderr, /CODE_SYSTEM_ALLOW_HOST_KIND/);
   assert.match(l.stderr, /TEST VEHICLE/i, 'the general seam is checked first, and says what the kind is');
+});
+
+// PINS host's terminal plan: the trampoline runs HERE under the helper, with the
+// plumbing put on its own environment by `env` — never the overlay, which rides
+// the trampoline's argv — and `exec` mode, so the program's parent is the
+// helper itself, exactly as on cc's reference provider. No resize relay: the
+// helper's own resize is the terminal's.
+test('host ptyPlan: env-prefixed plumbing ahead of the trampoline, exec mode, no relay', () => {
+  const t = createHostTransport();
+  const command = ['/bin/sh', '-c', 'TRAMPOLINE', 'sh', 'nonce'];
+  assert.deepEqual(t.ptyPlan({}, { command, token: 'tok', remoteId: 'a' }),
+    { file: '/usr/bin/env', args: ['--', 'CC_REMOTE=a', 'CC_EXEC_TOKEN=tok', ...command] });
+  assert.deepEqual(t.ptyPlan({}, { command, token: 'tok', remoteId: null }).args,
+    ['--', 'CC_EXEC_TOKEN=tok', ...command]);
+  assert.equal(t.ptyMode, 'exec');
+  assert.notEqual(t.ptyResizeRelay, true);
 });

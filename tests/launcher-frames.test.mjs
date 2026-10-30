@@ -48,6 +48,26 @@ test('the handshake is answered once, before any other frame, carries NO system 
   assert.equal(l.frames.filter(f => f.type === 'hello').length, 1, 'exactly one hello');
 });
 
+// PINS that `--no-pty` — the flag cc's CAPABILITY_CONFIGS[1] appends — is
+// ACCEPTED on every kind and lowers the advertisement. A launcher that exits on
+// it fails that whole configuration at the handshake (§10: "one that exits on an
+// unknown flag fails that whole configuration"). It also skips the probe: a
+// broken interpreter says nothing on stderr under it.
+for (const kind of ['fake', 'docker', 'ssh', 'host']) {
+  test(`--no-pty is accepted by kind ${kind}, and the hello then carries pty:false`, async (t) => {
+    const store = await tempStore();
+    t.after(() => store.cleanup());
+    const l = new Launcher(['--kind', kind, '--no-pty'], fakeEnv(store.dir, {
+      CODE_SYSTEM_PYTHON: '/nonexistent/python3',
+      CODE_SYSTEM_ALLOW_HOST_KIND: '1', CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED: '1',
+    }));
+    t.after(() => l.kill());
+    const hs = await l.hello();
+    assert.equal(hs.capabilities.pty, false);
+    assert.doesNotMatch(l.stderr, /python3/, 'under --no-pty the probe never runs');
+  });
+}
+
 test('ENOREMOTE is id-addressed for an absent AND an unknown remoteId, and another target survives it', async (t) => {
   const store = await tempStore();
   t.after(() => store.cleanup());

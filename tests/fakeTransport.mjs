@@ -12,6 +12,11 @@
 import { appendFileSync } from 'node:fs';
 
 import { execEnv } from '../src/launcher/kinds/config.mjs';
+import { TOKEN_VAR } from '../src/launcher/kinds/reapscript.mjs';
+
+// Waits for a file, then becomes the rest of its argv: how a test holds a
+// command back until it has arranged what the command must find.
+const GATED = 'while [ ! -e "$1" ]; do sleep 0.01; done; shift; exec "$@"';
 
 export function createTransport(opts = {}) {
   const reapLog = process.env.CODE_SYSTEM_FAKE_REAP_LOG ?? null;
@@ -37,10 +42,37 @@ export function createTransport(opts = {}) {
       },
     } : {}),
 
+    // OPT-IN, like the channel: TERMINALS on this machine, the way `host` runs
+    // them — the trampoline under the helper, with the plumbing on its own
+    // environment. Three test seams ride it: CODE_SYSTEM_FAKE_PTY_GATE holds the
+    // trampoline back until a file exists; CODE_SYSTEM_FAKE_PTY_RELAY=1 turns on
+    // the resize relay (whose `stty` then runs through `spawnPlan` below); and a
+    // record's `config.ptyFail` makes the "client" exit before any marker, with
+    // a head the classifier below does (`down`) or does not (`garbage`) know.
+    ...(process.env.CODE_SYSTEM_FAKE_PTY === '1' ? {
+      ptyMode: 'exec',
+      ptyResizeRelay: process.env.CODE_SYSTEM_FAKE_PTY_RELAY === '1',
+      ptyPlan(config, req) {
+        if (config.ptyFail === 'down') return { file: '/bin/sh', args: ['-c', 'echo "FAKE-DOWN: no target"; exit 9'] };
+        if (config.ptyFail === 'garbage') return { file: '/bin/sh', args: ['-c', 'echo "odd: ENOENT happened"; exit 9'] };
+        const gate = process.env.CODE_SYSTEM_FAKE_PTY_GATE;
+        const plumbing = [`${TOKEN_VAR}=${req.token}`, ...(req.remoteId ? [`CC_REMOTE=${req.remoteId}`] : [])];
+        const command = gate ? ['/bin/sh', '-c', GATED, 'sh', gate, ...req.command] : req.command;
+        return { file: '/usr/bin/env', args: ['--', ...plumbing, ...command] };
+      },
+      classifyFailure(_config, { stderr }) {
+        return stderr.startsWith('FAKE-DOWN') ? { code: 'ENOREMOTE', message: 'the fake target is down' } : null;
+      },
+    } : {}),
+
     spawnPlan(_config, req) {
+      const relayGate = process.env.CODE_SYSTEM_FAKE_RELAY_GATE;
+      const argv = relayGate && req.argv?.[0] === '/bin/sh' && req.argv[1] === '-c'
+        ? ['/bin/sh', '-c', GATED, 'sh', relayGate, ...req.argv]
+        : req.argv;
       const [file, args] = req.shell !== null
         ? ['bash', ['-lc', req.shell]]
-        : [String(req.argv?.[0]), (req.argv ?? []).slice(1)];
+        : [String(argv?.[0]), (argv ?? []).slice(1)];
       // Same composer the real kinds use: the frame's env, CC_REMOTE last.
       return { file, args, cwd: req.cwd, env: execEnv(req.env, req.remoteId), detached: processGroupSignal };
     },
@@ -51,7 +83,9 @@ export function createTransport(opts = {}) {
 
     async reap(_config, handle) {
       if (reapLog) {
-        appendFileSync(reapLog, `${JSON.stringify({ pid: handle.pid, token: handle.token, remoteId: handle.remoteId })}\n`);
+        appendFileSync(reapLog, `${JSON.stringify({
+          pid: handle.pid, token: handle.token, remoteId: handle.remoteId, sid: handle.sid ?? null,
+        })}\n`);
       }
     },
   };

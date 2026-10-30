@@ -5,13 +5,16 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import * as protocol from '../src/launcher/protocol.mjs';
 import {
   BINARY_SNIFF_BYTES, CHUNK_BYTES, FS_ERROR_CODES, MAX_FILE_BYTES, MAX_LINE_BYTES,
   MIRROR_EXCLUDE_MAX, MIRROR_PATH_MAX, NdjsonDecoder, PROTOCOL_ERROR_CODES,
   PROTOCOL_VERSION, REMOTE_ID_MAX, classifyStderr, decodeFrame, isBase64, remoteIdDefect,
 } from '../src/launcher/protocol.mjs';
+import { PTY_HELPER_PATH } from '../src/launcher/ptyhost.mjs';
 import { CC_FILE_KILL_MS } from './ccCheckout.mjs';
 
 // UNGATED, and that is the point: the taxonomy claim used to live only in the
@@ -27,6 +30,11 @@ test('the constants equal the documented values', () => {
   assert.equal(MIRROR_EXCLUDE_MAX, 64);
   assert.equal(MIRROR_PATH_MAX, 4096);
   assert.equal(REMOTE_ID_MAX, 128);
+  // Namespace reads, so a constant not exported yet reds this assertion rather
+  // than the whole file at link time.
+  assert.equal(protocol.PTY_WINDOW_BYTES, 4 * CHUNK_BYTES);
+  assert.equal(protocol.PTY_INPUT_WINDOW_BYTES, 4 * CHUNK_BYTES);
+  assert.equal(protocol.PTY_DIM_MAX, 4096);
   // Not a protocol constant — cc's per-file TEST hang guard, which the bound
   // conformance runner prints its wall-clock margin against
   // (tests/conformance-docker.mjs). Mirrored here for the same reason as the
@@ -36,8 +44,8 @@ test('the constants equal the documented values', () => {
 
   assert.deepEqual(PROTOCOL_ERROR_CODES, [
     'EPROTO', 'ETRANSPORT', 'ETIMEDOUT', 'EUNSUPPORTED', 'ESHELLGONE',
-    'EFBIG', 'ECANCELLED', 'ENOREMOTE',
-  ], "cc's eight protocol-level codes, in cc's order");
+    'EFBIG', 'ECANCELLED', 'ENOREMOTE', 'EPTY',
+  ], "cc's protocol-level codes, in cc's order");
   assert.deepEqual(FS_ERROR_CODES, [
     'ENOENT', 'EACCES', 'EEXIST', 'ENOTDIR', 'EISDIR', 'ENOSPC', 'ENOTEMPTY', 'EINVAL',
     'ENAMETOOLONG', 'ELOOP',
@@ -130,6 +138,9 @@ test('our mirror matches cc\'s own protocol.ts', { skip: !process.env.CC_CHECKOU
   assert.equal(MIRROR_EXCLUDE_MAX, num('MIRROR_EXCLUDE_MAX'));
   assert.equal(MIRROR_PATH_MAX, num('MIRROR_PATH_MAX'));
   assert.equal(REMOTE_ID_MAX, num('REMOTE_ID_MAX'));
+  assert.equal(protocol.PTY_WINDOW_BYTES, num('PTY_WINDOW_BYTES'));
+  assert.equal(protocol.PTY_INPUT_WINDOW_BYTES, num('PTY_INPUT_WINDOW_BYTES'));
+  assert.equal(protocol.PTY_DIM_MAX, num('PTY_DIM_MAX'));
 
   const codes = (name) => {
     const m = new RegExp(`export const ${name}\\s*=\\s*\\[([\\s\\S]*?)\\]\\s*as const;`).exec(src);
@@ -177,4 +188,16 @@ test('our mirror of cc\'s per-file hang guard matches cc\'s own', { skip: !proce
   assert.ok(m, 'cc no longer exports FILE_KILL_MS as ms(\'CC_TEST_FILE_KILL_MS\', <default>)');
   assert.equal(CC_FILE_KILL_MS, Number(m[1].replaceAll('_', '')),
     'the bound runner would print its hang-guard margin against a stale number');
+});
+
+// THE VENDORED PTY HELPER IS cc's, BYTE FOR BYTE. Its stdio protocol (the `v`
+// overlay frame, the `w` drain report every `inputAck` is granted from) is a
+// contract cc owns, so a local edit or a cc-side change that was not re-copied
+// would grant credit from a protocol neither side agreed. Drift aborts both
+// conformance runners, exactly as constant drift does.
+test('our vendored ptyHelper.py is byte-identical to cc\'s', { skip: !process.env.CC_CHECKOUT }, async () => {
+  const sha = async (file) => createHash('sha256').update(await fs.readFile(file)).digest('hex');
+  assert.equal(await sha(PTY_HELPER_PATH),
+    await sha(path.join(process.env.CC_CHECKOUT, 'src', 'systems', 'ptyHelper.py')),
+    'src/launcher/ptyHelper.py differs from $CC_CHECKOUT/src/systems/ptyHelper.py — re-copy it, never edit it');
 });
