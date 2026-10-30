@@ -1,108 +1,108 @@
 
-✖ [all capabilities] the handshake carries the protocol version, the provider name and the capabilities (51.669373ms)
-✔ [all capabilities] exec runs argv and shell forms, and reports stdout, stderr and the exit code (250.522586ms)
-✖ [all capabilities] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (119.992722ms)
-✔ [all capabilities] a command that cannot start carries the provider's own error code (92.889658ms)
-✔ [all capabilities] a timeout is exit 124 with timedOut set (303.473765ms)
-✖ [all capabilities] process-group signalling: the capability decides whether grandchildren are reachable (349.036242ms)
-✔ [all capabilities] detach ends the operation and kills nothing; close kills as far as it reaches (1349.795521ms)
-✔ [all capabilities] a redirected background job outlives its command, in both capability configurations (902.885357ms)
-✔ [all capabilities] concurrent execs are multiplexed by id and never mix their output (361.881456ms)
-✔ [all capabilities] the exec output caps behave identically to the local runner (213.651416ms)
-✔ [all capabilities] stdin:'ignore' hands the command a closed stdin instead of a wait (102.657853ms)
-(node:396592) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+✖ [all capabilities] the handshake carries the protocol version, the provider name and the capabilities (47.182165ms)
+✔ [all capabilities] exec runs argv and shell forms, and reports stdout, stderr and the exit code (256.353928ms)
+✖ [all capabilities] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (102.577223ms)
+✔ [all capabilities] a command that cannot start carries the provider's own error code (102.068149ms)
+✔ [all capabilities] a timeout is exit 124 with timedOut set (301.337433ms)
+✖ [all capabilities] process-group signalling: the capability decides whether grandchildren are reachable (356.559379ms)
+✔ [all capabilities] detach ends the operation and kills nothing; close kills as far as it reaches (1350.613305ms)
+✔ [all capabilities] a redirected background job outlives its command, in both capability configurations (902.646822ms)
+✔ [all capabilities] concurrent execs are multiplexed by id and never mix their output (372.847183ms)
+✔ [all capabilities] the exec output caps behave identically to the local runner (217.334937ms)
+✔ [all capabilities] stdin:'ignore' hands the command a closed stdin instead of a wait (95.02788ms)
+(node:898377) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
 (Use `node --trace-warnings ...` to show where the warning was created)
-✔ [all capabilities] readFile and writeFile round-trip, including a payload past one chunk (131.042788ms)
-✔ [all capabilities] writeFile honours atomic and exclusive, and refuses the pair (164.257886ms)
-✔ [all capabilities] readFile reports absence, a directory, and an unreadable file (115.307778ms)
-✖ [all capabilities] a path that cannot resolve is ENAMETOOLONG or ELOOP, on the derived and the frame path (100.431902ms)
-✔ [all capabilities] a read above the protocol's per-file cap is refused, not streamed (94.968162ms)
-(node:396592) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
-✔ [all capabilities] stat is derived from exec and matches what fs.stat reports (115.876327ms)
-✔ [all capabilities] readDir is derived from exec, reports kinds, and refuses a file (108.997599ms)
-✔ [all capabilities] a filename containing a newline OR A TAB is an ERROR, never a silently dropped entry (115.08283ms)
-(node:396592) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
-✔ [all capabilities] lstat reports a SYMLINK as one, with its target, where stat cannot (118.999451ms)
-(node:396592) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
-✔ [all capabilities] readlink, symlink and removeEntry are derived and behave like fs (160.45075ms)
-✔ [all capabilities] writeFileBytes carries a byte a UTF-8 round trip does not survive (102.14159ms)
-(node:396592) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
-✔ [all capabilities] realpath, mkdir, removeTree, unlink and chmod are derived and behave like fs (252.829988ms)
-✔ [all capabilities] a write reaches the program and its output streams back; ^D ends it (112.02943ms)
-✔ [all capabilities] no argv runs the login shell (133.874319ms)
-✔ [all capabilities] env is added to the environment, and term wins TERM (110.763031ms)
-✔ [all capabilities] the program runs in cwd (107.349684ms)
-✔ [all capabilities] a missing cwd or a missing program rejects ENOENT (165.008579ms)
-✖ [all capabilities] the program's exit code, or the signal that ended it, is the end (177.525053ms)
-✔ [all capabilities] output still in the terminal when the program exits is delivered before onExit (132.877309ms)
-✔ [all capabilities] the terminal has the size asked for, and resize changes it (165.44952ms)
-✔ [all capabilities] ^C interrupts the foreground job (119.143573ms)
-✔ [all capabilities] close kills the program and its background job (189.961824ms)
-✔ [all capabilities] aborting the signal closes the terminal (194.207148ms)
-✔ [all capabilities] pause holds output back and resume delivers it (226.218601ms)
-✔ [all capabilities] the per-system cap refuses one too many, and frees a slot on close or failure (456.0457ms)
-✔ [all capabilities] an invalid spec throws (110.643933ms)
-✖ [all capabilities] the env overlay reaches the program and never the helper (112.986508ms)
-✔ [all capabilities] input past one window arrives intact (160.470848ms)
-✔ [all capabilities] write reports backpressure while the program does not read, and drains when it does (438.962363ms)
-✔ [processGroupSignal:false, pty:false] the handshake carries the protocol version, the provider name and the capabilities (34.179823ms)
-✔ [processGroupSignal:false, pty:false] exec runs argv and shell forms, and reports stdout, stderr and the exit code (228.437933ms)
-✖ [processGroupSignal:false, pty:false] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (85.221701ms)
-✔ [processGroupSignal:false, pty:false] a command that cannot start carries the provider's own error code (87.662322ms)
-✔ [processGroupSignal:false, pty:false] a timeout is exit 124 with timedOut set (290.659262ms)
-✔ [processGroupSignal:false, pty:false] process-group signalling: the capability decides whether grandchildren are reachable (346.304421ms)
-✖ [processGroupSignal:false, pty:false] detach ends the operation and kills nothing; close kills as far as it reaches (1338.323081ms)
-✔ [processGroupSignal:false, pty:false] a redirected background job outlives its command, in both capability configurations (893.174488ms)
-✔ [processGroupSignal:false, pty:false] concurrent execs are multiplexed by id and never mix their output (362.282442ms)
-✔ [processGroupSignal:false, pty:false] the exec output caps behave identically to the local runner (195.99362ms)
-✔ [processGroupSignal:false, pty:false] stdin:'ignore' hands the command a closed stdin instead of a wait (94.468593ms)
-(node:396592) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
-✔ [processGroupSignal:false, pty:false] readFile and writeFile round-trip, including a payload past one chunk (132.995217ms)
-✔ [processGroupSignal:false, pty:false] writeFile honours atomic and exclusive, and refuses the pair (151.679431ms)
-✔ [processGroupSignal:false, pty:false] readFile reports absence, a directory, and an unreadable file (90.772969ms)
-✖ [processGroupSignal:false, pty:false] a path that cannot resolve is ENAMETOOLONG or ELOOP, on the derived and the frame path (93.410432ms)
-✔ [processGroupSignal:false, pty:false] a read above the protocol's per-file cap is refused, not streamed (84.41779ms)
-(node:396592) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
-✔ [processGroupSignal:false, pty:false] stat is derived from exec and matches what fs.stat reports (102.076693ms)
-✔ [processGroupSignal:false, pty:false] readDir is derived from exec, reports kinds, and refuses a file (90.481051ms)
-✔ [processGroupSignal:false, pty:false] a filename containing a newline OR A TAB is an ERROR, never a silently dropped entry (150.852914ms)
-(node:396592) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
-✔ [processGroupSignal:false, pty:false] lstat reports a SYMLINK as one, with its target, where stat cannot (101.00801ms)
-(node:396592) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
-✔ [processGroupSignal:false, pty:false] readlink, symlink and removeEntry are derived and behave like fs (129.303385ms)
-✔ [processGroupSignal:false, pty:false] writeFileBytes carries a byte a UTF-8 round trip does not survive (142.608664ms)
-(node:396592) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
-✔ [processGroupSignal:false, pty:false] realpath, mkdir, removeTree, unlink and chmod are derived and behave like fs (222.226288ms)
-✔ [processGroupSignal:false, pty:false] a provider without pty is refused SYSTEM_NO_PTY by name (33.191421ms)
-✔ a provider refuses a corrupted write payload — it never lands a partial file (44.938924ms)
-✖ a bound handle names its remote on exec, readFile and writeFile (33.184881ms)
-✖ an id is bound to one remote for its whole lifetime — follow-on frames carry none (34.192751ms)
-✖ ENOREMOTE is id-addressed: one dead remote is not a dead connection (35.006125ms)
-✖ a request that names NO remote is refused, never answered from a default (33.129307ms)
-﹣ a provider that does not advertise remotes is never handed a remoteId (0.494992ms) # cc-side fixture, pinned to the reference provider: asserts what CC does, not what a provider does
-✔ msFromNanos is pinned to LITERALS, because every other observation of it mutates with it (0.183477ms)
-✔ msFromFindStamp parses two integers out of the stamp, never one float (0.133528ms)
-✔ parseFindLines refuses a malformed entry rather than skipping it (0.584221ms)
-✖ describeRemote round-trips the mirror root and the exclude list (32.444042ms)
-﹣ a provider without the capability advertises no mirror (0.41802ms) # cc-side fixture, pinned to the reference provider: asserts what CC does, not what a provider does
-✖ describeRemote for an unknown remote is an id-addressed ENOREMOTE (36.59058ms)
-✔ an unrecognised field on a remoteDescriptor is ignored, not an error (26.667585ms)
-✖ listRemotes enumerates exactly the configured targets; an unconfigured id refuses ENOREMOTE (34.411018ms)
-✖ listRemotes is one id among many: answered beside an in-flight exec, never disturbing it (34.504684ms)
-﹣ a provider without remoteListing refuses listRemotes EUNSUPPORTED, id-addressed (1.193339ms) # a provider that does not advertise a capability may ignore its frame (§2); the reference provider refuses it
-✔ a provider that does not advertise remoteListing skips the enumeration rows, never fails them (0.706466ms)
-✔ a write above the protocol cap is refused before a byte reaches the wire (131.036315ms)
-﹣ CC_CONFORMANCE_REMOTE_ID binds the fixture handle, and an explicit remoteId still wins (0.149212ms) # asserts the unset default
-✔ an empty or blank CC_CONFORMANCE_REMOTE_ID is unbound, never bound to a nonsense target (0.590966ms)
-✔ a bound run is refused at the handshake unless the provider serves that target (0.461047ms)
-✔ the third-party capability assertion tolerates a superset but pins the toggle (0.872245ms)
-✔ a flooding terminal holds one credit window and blocks nothing else on the pipe (423.172884ms)
-✖ input credit is granted for bytes written to the terminal, not bytes received, and every byte's credit returns (603.023578ms)
-✔ the op ceiling abandons a plain exec but not an open terminal (2527.714409ms)
-✔ a provider going away fails an open terminal ETRANSPORT and kills its program (184.518492ms)
-✖ bound views share their provider's terminal cap, and each terminal runs on its own remote (35.306188ms)
-✔ a provider that does not advertise pty skips the terminal rows, never fails them (0.333838ms)
-﹣ every code in the taxonomy is produced by a real failure somewhere in this suite (0.041501ms) # counts producers across rows a third-party run skips
+✔ [all capabilities] readFile and writeFile round-trip, including a payload past one chunk (129.205566ms)
+✔ [all capabilities] writeFile honours atomic and exclusive, and refuses the pair (174.79265ms)
+✔ [all capabilities] readFile reports absence, a directory, and an unreadable file (109.43449ms)
+✖ [all capabilities] a path that cannot resolve is ENAMETOOLONG or ELOOP, on the derived and the frame path (147.227181ms)
+✔ [all capabilities] a read above the protocol's per-file cap is refused, not streamed (98.789423ms)
+(node:898377) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+✔ [all capabilities] stat is derived from exec and matches what fs.stat reports (116.19982ms)
+✔ [all capabilities] readDir is derived from exec, reports kinds, and refuses a file (136.778884ms)
+✔ [all capabilities] a filename containing a newline OR A TAB is an ERROR, never a silently dropped entry (108.364939ms)
+(node:898377) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+✔ [all capabilities] lstat reports a SYMLINK as one, with its target, where stat cannot (111.366414ms)
+(node:898377) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+✔ [all capabilities] readlink, symlink and removeEntry are derived and behave like fs (165.228404ms)
+✔ [all capabilities] writeFileBytes carries a byte a UTF-8 round trip does not survive (120.710149ms)
+(node:898377) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+✔ [all capabilities] realpath, mkdir, removeTree, unlink and chmod are derived and behave like fs (254.738072ms)
+✔ [all capabilities] a write reaches the program and its output streams back; ^D ends it (138.728163ms)
+✔ [all capabilities] no argv runs the login shell (122.193146ms)
+✔ [all capabilities] env is added to the environment, and term wins TERM (108.367262ms)
+✔ [all capabilities] the program runs in cwd (104.511673ms)
+✔ [all capabilities] a missing cwd or a missing program rejects ENOENT (158.492418ms)
+✖ [all capabilities] the program's exit code, or the signal that ended it, is the end (177.316277ms)
+✔ [all capabilities] output still in the terminal when the program exits is delivered before onExit (147.280688ms)
+✔ [all capabilities] the terminal has the size asked for, and resize changes it (166.461783ms)
+✔ [all capabilities] ^C interrupts the foreground job (115.918219ms)
+✔ [all capabilities] close kills the program and its background job (185.958995ms)
+✔ [all capabilities] aborting the signal closes the terminal (193.908023ms)
+✔ [all capabilities] pause holds output back and resume delivers it (233.784056ms)
+✔ [all capabilities] the per-system cap refuses one too many, and frees a slot on close or failure (445.791879ms)
+✔ [all capabilities] an invalid spec throws (102.791892ms)
+✖ [all capabilities] the env overlay reaches the program and never the helper (128.240149ms)
+✔ [all capabilities] input past one window arrives intact (140.887945ms)
+✔ [all capabilities] write reports backpressure while the program does not read, and drains when it does (429.218477ms)
+✔ [processGroupSignal:false, pty:false] the handshake carries the protocol version, the provider name and the capabilities (32.366229ms)
+✔ [processGroupSignal:false, pty:false] exec runs argv and shell forms, and reports stdout, stderr and the exit code (244.80348ms)
+✖ [processGroupSignal:false, pty:false] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (84.319617ms)
+✔ [processGroupSignal:false, pty:false] a command that cannot start carries the provider's own error code (83.217989ms)
+✔ [processGroupSignal:false, pty:false] a timeout is exit 124 with timedOut set (286.814784ms)
+✔ [processGroupSignal:false, pty:false] process-group signalling: the capability decides whether grandchildren are reachable (345.990611ms)
+✖ [processGroupSignal:false, pty:false] detach ends the operation and kills nothing; close kills as far as it reaches (1363.304855ms)
+✔ [processGroupSignal:false, pty:false] a redirected background job outlives its command, in both capability configurations (880.5508ms)
+✔ [processGroupSignal:false, pty:false] concurrent execs are multiplexed by id and never mix their output (366.337108ms)
+✔ [processGroupSignal:false, pty:false] the exec output caps behave identically to the local runner (196.463629ms)
+✔ [processGroupSignal:false, pty:false] stdin:'ignore' hands the command a closed stdin instead of a wait (90.175485ms)
+(node:898377) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+✔ [processGroupSignal:false, pty:false] readFile and writeFile round-trip, including a payload past one chunk (109.59998ms)
+✔ [processGroupSignal:false, pty:false] writeFile honours atomic and exclusive, and refuses the pair (145.874095ms)
+✔ [processGroupSignal:false, pty:false] readFile reports absence, a directory, and an unreadable file (97.563319ms)
+✖ [processGroupSignal:false, pty:false] a path that cannot resolve is ENAMETOOLONG or ELOOP, on the derived and the frame path (87.119011ms)
+✔ [processGroupSignal:false, pty:false] a read above the protocol's per-file cap is refused, not streamed (93.115458ms)
+(node:898377) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+✔ [processGroupSignal:false, pty:false] stat is derived from exec and matches what fs.stat reports (102.944293ms)
+✔ [processGroupSignal:false, pty:false] readDir is derived from exec, reports kinds, and refuses a file (93.827856ms)
+✔ [processGroupSignal:false, pty:false] a filename containing a newline OR A TAB is an ERROR, never a silently dropped entry (90.055713ms)
+(node:898377) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+✔ [processGroupSignal:false, pty:false] lstat reports a SYMLINK as one, with its target, where stat cannot (107.400074ms)
+(node:898377) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+✔ [processGroupSignal:false, pty:false] readlink, symlink and removeEntry are derived and behave like fs (131.203886ms)
+✔ [processGroupSignal:false, pty:false] writeFileBytes carries a byte a UTF-8 round trip does not survive (92.371375ms)
+(node:898377) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 connect listeners added to [Socket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+✔ [processGroupSignal:false, pty:false] realpath, mkdir, removeTree, unlink and chmod are derived and behave like fs (219.450051ms)
+✔ [processGroupSignal:false, pty:false] a provider without pty is refused SYSTEM_NO_PTY by name (31.522825ms)
+✔ a provider refuses a corrupted write payload — it never lands a partial file (42.129829ms)
+✖ a bound handle names its remote on exec, readFile and writeFile (31.369575ms)
+✖ an id is bound to one remote for its whole lifetime — follow-on frames carry none (34.425654ms)
+✖ ENOREMOTE is id-addressed: one dead remote is not a dead connection (30.589139ms)
+✖ a request that names NO remote is refused, never answered from a default (31.076156ms)
+﹣ a provider that does not advertise remotes is never handed a remoteId (0.303653ms) # cc-side fixture, pinned to the reference provider: asserts what CC does, not what a provider does
+✔ msFromNanos is pinned to LITERALS, because every other observation of it mutates with it (0.082361ms)
+✔ msFromFindStamp parses two integers out of the stamp, never one float (0.067277ms)
+✔ parseFindLines refuses a malformed entry rather than skipping it (0.357884ms)
+✖ describeRemote round-trips the mirror root and the exclude list (31.834031ms)
+﹣ a provider without the capability advertises no mirror (0.274507ms) # cc-side fixture, pinned to the reference provider: asserts what CC does, not what a provider does
+✖ describeRemote for an unknown remote is an id-addressed ENOREMOTE (30.029115ms)
+✔ an unrecognised field on a remoteDescriptor is ignored, not an error (27.087457ms)
+✖ listRemotes enumerates exactly the configured targets; an unconfigured id refuses ENOREMOTE (31.892615ms)
+✖ listRemotes is one id among many: answered beside an in-flight exec, never disturbing it (35.713086ms)
+﹣ a provider without remoteListing refuses listRemotes EUNSUPPORTED, id-addressed (0.423389ms) # a provider that does not advertise a capability may ignore its frame (§2); the reference provider refuses it
+✔ a provider that does not advertise remoteListing skips the enumeration rows, never fails them (0.266573ms)
+✔ a write above the protocol cap is refused before a byte reaches the wire (153.417342ms)
+﹣ CC_CONFORMANCE_REMOTE_ID binds the fixture handle, and an explicit remoteId still wins (0.134505ms) # asserts the unset default
+✔ an empty or blank CC_CONFORMANCE_REMOTE_ID is unbound, never bound to a nonsense target (0.147809ms)
+✔ a bound run is refused at the handshake unless the provider serves that target (0.329047ms)
+✔ the third-party capability assertion tolerates a superset but pins the toggle (0.931046ms)
+✔ a flooding terminal holds one credit window and blocks nothing else on the pipe (376.717822ms)
+✖ input credit is granted for bytes written to the terminal, not bytes received, and every byte's credit returns (581.346464ms)
+✔ the op ceiling abandons a plain exec but not an open terminal (2514.178743ms)
+✔ a provider going away fails an open terminal ETRANSPORT and kills its program (187.117217ms)
+✖ bound views share their provider's terminal cap, and each terminal runs on its own remote (33.155991ms)
+✔ a provider that does not advertise pty skips the terminal rows, never fails them (0.333632ms)
+﹣ every code in the taxonomy is produced by a real failure somewhere in this suite (0.037475ms) # counts producers across rows a third-party run skips
 ℹ tests 93
 ℹ suites 0
 ℹ pass 69
@@ -110,22 +110,22 @@
 ℹ cancelled 0
 ℹ skipped 5
 ℹ todo 0
-ℹ duration_ms 20499.746537
+ℹ duration_ms 20427.30217
 
 ✖ failing tests:
 
 test at tests/systems-protocol-conformance.test.mjs:96:3
-✖ [all capabilities] the handshake carries the protocol version, the provider name and the capabilities (51.669373ms)
+✖ [all capabilities] the handshake carries the protocol version, the provider name and the capabilities (47.182165ms)
   AssertionError [ERR_ASSERTION]: processGroupSignal: the flag the provider was launched with is what it advertises
   
   false !== true
   
-      at strict.wrapped [as equal] (file:///tmp/cc-pin-c2/tests/dom-assert-tripwire.mjs:79:17)
-      at assertNegotiatedCapabilities (file:///tmp/cc-pin-c2/tests/referenceProviderHarness.mjs:191:12)
-      at file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:99:7
-      at withSystem (file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:68:18)
+      at strict.wrapped [as equal] (file:///tmp/cc-pin-0a73/tests/dom-assert-tripwire.mjs:79:17)
+      at assertNegotiatedCapabilities (file:///tmp/cc-pin-0a73/tests/referenceProviderHarness.mjs:191:12)
+      at file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:99:7
+      at withSystem (file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:68:18)
       at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-      at async TestContext.<anonymous> (file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:97:5)
+      at async TestContext.<anonymous> (file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:97:5)
       at async Test.run (node:internal/test_runner/test:1332:7)
       at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
     generatedMessage: false,
@@ -137,18 +137,18 @@ test at tests/systems-protocol-conformance.test.mjs:96:3
   }
 
 test at tests/systems-protocol-conformance.test.mjs:129:3
-✖ [all capabilities] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (119.992722ms)
+✖ [all capabilities] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (102.577223ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
   + actual - expected
   
   + 'OCI runtime exec failed: exec failed: unable to start container process: exec: "definitely-not-a-real-binary-xyz": executable file not found in $PATH\r\n'
   - 'OCI runtime exec failed: exec failed: unable to start container process: exec: "definitely-not-a-real-binary-xyz": executable file not found in $PATH'
   
-      at strict.wrapped [as equal] (file:///tmp/cc-pin-c2/tests/dom-assert-tripwire.mjs:79:17)
-      at file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:135:14
+      at strict.wrapped [as equal] (file:///tmp/cc-pin-0a73/tests/dom-assert-tripwire.mjs:79:17)
+      at file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:135:14
       at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-      at async withSystem (file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:68:12)
-      at async TestContext.<anonymous> (file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:130:5)
+      at async withSystem (file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:68:12)
+      at async TestContext.<anonymous> (file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:130:5)
       at async Test.run (node:internal/test_runner/test:1332:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
     generatedMessage: true,
@@ -160,17 +160,17 @@ test at tests/systems-protocol-conformance.test.mjs:129:3
   }
 
 test at tests/systems-protocol-conformance.test.mjs:162:3
-✖ [all capabilities] process-group signalling: the capability decides whether grandchildren are reachable (349.036242ms)
+✖ [all capabilities] process-group signalling: the capability decides whether grandchildren are reachable (356.559379ms)
   AssertionError [ERR_ASSERTION]: with group reach the result claims nothing was left behind
   + actual - expected
   
   + true
   - undefined
   
-      at strict.wrapped [as equal] (file:///tmp/cc-pin-c2/tests/dom-assert-tripwire.mjs:79:17)
-      at file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:181:18
-      at async withSystem (file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:68:12)
-      at async TestContext.<anonymous> (file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:163:5)
+      at strict.wrapped [as equal] (file:///tmp/cc-pin-0a73/tests/dom-assert-tripwire.mjs:79:17)
+      at file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:181:18
+      at async withSystem (file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:68:12)
+      at async TestContext.<anonymous> (file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:163:5)
       at async Test.run (node:internal/test_runner/test:1332:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
     generatedMessage: false,
@@ -182,24 +182,24 @@ test at tests/systems-protocol-conformance.test.mjs:162:3
   }
 
 test at tests/systems-protocol-conformance.test.mjs:400:3
-✖ [all capabilities] a path that cannot resolve is ENAMETOOLONG or ELOOP, on the derived and the frame path (100.431902ms)
-  AssertionError [ERR_ASSERTION]: readFile of an over-long name: expected ENAMETOOLONG, got ENOENT (/workspaces/cc-projects/.worktrees/code-system/pty-docker-ssh/.conformance-tmp/run-XNeKyY/cc-conformance-wITfDp/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx: No such file or directory)
+✖ [all capabilities] a path that cannot resolve is ENAMETOOLONG or ELOOP, on the derived and the frame path (147.227181ms)
+  AssertionError [ERR_ASSERTION]: readFile of an over-long name: expected ENAMETOOLONG, got ENOENT (/workspaces/cc-projects/.worktrees/code-system/pty-docker-ssh/.conformance-tmp/run-ukWL1z/cc-conformance-oBjY1w/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx: No such file or directory)
   + actual - expected
   
   + 'ENOENT'
   - 'ENAMETOOLONG'
        ^
   
-      at strict.wrapped [as equal] (file:///tmp/cc-pin-c2/tests/dom-assert-tripwire.mjs:79:17)
-      at expectCode (file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:45:10)
-      at Object.<anonymous> (file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:410:16)
+      at strict.wrapped [as equal] (file:///tmp/cc-pin-0a73/tests/dom-assert-tripwire.mjs:79:17)
+      at expectCode (file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:45:10)
+      at Object.<anonymous> (file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:410:16)
       at expectedException (node:assert:578:17)
       at expectsError (node:assert:703:21)
       at strict.rejects (node:assert:769:3)
       at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-      at async file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:409:7
-      at async withSystem (file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:68:12)
-      at async TestContext.<anonymous> (file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:401:5) {
+      at async file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:409:7
+      at async withSystem (file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:68:12)
+      at async TestContext.<anonymous> (file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:401:5) {
     generatedMessage: false,
     code: 'ERR_ASSERTION',
     actual: 'ENOENT',
@@ -209,7 +209,7 @@ test at tests/systems-protocol-conformance.test.mjs:400:3
   }
 
 test at tests/systems-protocol-conformance.test.mjs:664:7
-✖ [all capabilities] the program's exit code, or the signal that ended it, is the end (177.525053ms)
+✖ [all capabilities] the program's exit code, or the signal that ended it, is the end (177.316277ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
   + actual - expected
   
@@ -221,10 +221,10 @@ test at tests/systems-protocol-conformance.test.mjs:664:7
   -   signal: 'SIGKILL'
     }
   
-      at strict.wrapped [as deepEqual] (file:///tmp/cc-pin-c2/tests/dom-assert-tripwire.mjs:79:17)
-      at file:///tmp/cc-pin-c2/tests/terminalBattery.mjs:223:12
+      at strict.wrapped [as deepEqual] (file:///tmp/cc-pin-0a73/tests/dom-assert-tripwire.mjs:79:17)
+      at file:///tmp/cc-pin-0a73/tests/terminalBattery.mjs:242:12
       at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-      at async TestContext.<anonymous> (file:///tmp/cc-pin-c2/tests/terminalBattery.mjs:148:7)
+      at async TestContext.<anonymous> (file:///tmp/cc-pin-0a73/tests/terminalBattery.mjs:167:7)
       at async Test.run (node:internal/test_runner/test:1332:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
     generatedMessage: true,
@@ -236,7 +236,7 @@ test at tests/systems-protocol-conformance.test.mjs:664:7
   }
 
 test at tests/systems-protocol-conformance.test.mjs:664:7
-✖ [all capabilities] the env overlay reaches the program and never the helper (112.986508ms)
+✖ [all capabilities] the env overlay reaches the program and never the helper (128.240149ms)
   AssertionError [ERR_ASSERTION]: precondition: the program's parent is the pty helper (/bin/sh -c _ccp_n=$1
   [ -t 0 ] || { printf '%s EPTY\n' "$_ccp_n"; exit 1; }
   if ! { [ -n "$2" ] && cd -P -- "$2"; } 2>/dev/null; then
@@ -281,9 +281,9 @@ test at tests/systems-protocol-conformance.test.mjs:664:7
     /usr/bin/env -- "$@"
     exit $?
   fi
-  exec /usr/bin/env -- "$@" sh b3eaece456d09f117b11af50 /workspaces/cc-projects/.worktrees/code-system/pty-docker-ssh/.conformance-tmp/run-XNeKyY/cc-terminal-ch3OKE 80 24 child 5 CC_F4_PROBE=f4-on LD_LIBRARY_PATH=/cc-f4-probe CC_REMOTE=boundconf CC_EXEC_TOKEN=324bb1a305dc82ffac1dac7b TERM=xterm-256color sh -c echo "HOST=$PPID V=$CC_F4_PROBE L=$LD_LIBRARY_PATH"; read x )
-      at file:///tmp/cc-pin-c2/tests/terminalBattery.mjs:383:12
-      at async TestContext.<anonymous> (file:///tmp/cc-pin-c2/tests/terminalBattery.mjs:148:7)
+  exec /usr/bin/env -- "$@" sh 8eaa21a68491279f942aafff /workspaces/cc-projects/.worktrees/code-system/pty-docker-ssh/.conformance-tmp/run-ukWL1z/cc-terminal-I7EN74 80 24 child 5 CC_F4_PROBE=f4-on LD_LIBRARY_PATH=/cc-f4-probe CC_REMOTE=boundconf CC_EXEC_TOKEN=5ddfdbd4e721ffbd4f6d33e8 TERM=xterm-256color sh -c echo "HOST=$PPID V=$CC_F4_PROBE L=$LD_LIBRARY_PATH"; read x )
+      at file:///tmp/cc-pin-0a73/tests/terminalBattery.mjs:402:12
+      at async TestContext.<anonymous> (file:///tmp/cc-pin-0a73/tests/terminalBattery.mjs:167:7)
       at async Test.run (node:internal/test_runner/test:1332:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
     generatedMessage: false,
@@ -295,18 +295,18 @@ test at tests/systems-protocol-conformance.test.mjs:664:7
   }
 
 test at tests/systems-protocol-conformance.test.mjs:129:3
-✖ [processGroupSignal:false, pty:false] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (85.221701ms)
+✖ [processGroupSignal:false, pty:false] exec NEVER rejects — a command that cannot start is a spawnError, not a throw (84.319617ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
   + actual - expected
   
   + 'OCI runtime exec failed: exec failed: unable to start container process: exec: "definitely-not-a-real-binary-xyz": executable file not found in $PATH\r\n'
   - 'OCI runtime exec failed: exec failed: unable to start container process: exec: "definitely-not-a-real-binary-xyz": executable file not found in $PATH'
   
-      at strict.wrapped [as equal] (file:///tmp/cc-pin-c2/tests/dom-assert-tripwire.mjs:79:17)
-      at file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:135:14
+      at strict.wrapped [as equal] (file:///tmp/cc-pin-0a73/tests/dom-assert-tripwire.mjs:79:17)
+      at file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:135:14
       at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-      at async withSystem (file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:68:12)
-      at async TestContext.<anonymous> (file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:130:5)
+      at async withSystem (file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:68:12)
+      at async TestContext.<anonymous> (file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:130:5)
       at async Test.run (node:internal/test_runner/test:1332:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
     generatedMessage: true,
@@ -318,13 +318,13 @@ test at tests/systems-protocol-conformance.test.mjs:129:3
   }
 
 test at tests/systems-protocol-conformance.test.mjs:210:3
-✖ [processGroupSignal:false, pty:false] detach ends the operation and kills nothing; close kills as far as it reaches (1338.323081ms)
+✖ [processGroupSignal:false, pty:false] detach ends the operation and kills nothing; close kills as far as it reaches (1363.304855ms)
   AssertionError [ERR_ASSERTION]: without group reach close cannot get to it either
   
   false !== true
   
-      at strict.wrapped [as equal] (file:///tmp/cc-pin-c2/tests/dom-assert-tripwire.mjs:79:17)
-      at TestContext.<anonymous> (file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:264:16)
+      at strict.wrapped [as equal] (file:///tmp/cc-pin-0a73/tests/dom-assert-tripwire.mjs:79:17)
+      at TestContext.<anonymous> (file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:264:16)
       at async Test.run (node:internal/test_runner/test:1332:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
     generatedMessage: false,
@@ -336,24 +336,24 @@ test at tests/systems-protocol-conformance.test.mjs:210:3
   }
 
 test at tests/systems-protocol-conformance.test.mjs:400:3
-✖ [processGroupSignal:false, pty:false] a path that cannot resolve is ENAMETOOLONG or ELOOP, on the derived and the frame path (93.410432ms)
-  AssertionError [ERR_ASSERTION]: readFile of an over-long name: expected ENAMETOOLONG, got ENOENT (/workspaces/cc-projects/.worktrees/code-system/pty-docker-ssh/.conformance-tmp/run-XNeKyY/cc-conformance-m0d8yq/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx: No such file or directory)
+✖ [processGroupSignal:false, pty:false] a path that cannot resolve is ENAMETOOLONG or ELOOP, on the derived and the frame path (87.119011ms)
+  AssertionError [ERR_ASSERTION]: readFile of an over-long name: expected ENAMETOOLONG, got ENOENT (/workspaces/cc-projects/.worktrees/code-system/pty-docker-ssh/.conformance-tmp/run-ukWL1z/cc-conformance-Jhygb7/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx: No such file or directory)
   + actual - expected
   
   + 'ENOENT'
   - 'ENAMETOOLONG'
        ^
   
-      at strict.wrapped [as equal] (file:///tmp/cc-pin-c2/tests/dom-assert-tripwire.mjs:79:17)
-      at expectCode (file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:45:10)
-      at Object.<anonymous> (file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:410:16)
+      at strict.wrapped [as equal] (file:///tmp/cc-pin-0a73/tests/dom-assert-tripwire.mjs:79:17)
+      at expectCode (file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:45:10)
+      at Object.<anonymous> (file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:410:16)
       at expectedException (node:assert:578:17)
       at expectsError (node:assert:703:21)
       at strict.rejects (node:assert:769:3)
       at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-      at async file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:409:7
-      at async withSystem (file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:68:12)
-      at async TestContext.<anonymous> (file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:401:5) {
+      at async file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:409:7
+      at async withSystem (file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:68:12)
+      at async TestContext.<anonymous> (file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:401:5) {
     generatedMessage: false,
     code: 'ERR_ASSERTION',
     actual: 'ENOENT',
@@ -363,9 +363,9 @@ test at tests/systems-protocol-conformance.test.mjs:400:3
   }
 
 test at tests/systems-protocol-conformance.test.mjs:739:1
-✖ a bound handle names its remote on exec, readFile and writeFile (33.184881ms)
+✖ a bound handle names its remote on exec, readFile and writeFile (31.369575ms)
   Error [SystemError]: provider exited (code 2)
-      at ChildProcess.<anonymous> (file:///tmp/cc-pin-c2/src/systems/providerConnection.ts:202:62)
+      at ChildProcess.<anonymous> (file:///tmp/cc-pin-0a73/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
       at ChildProcess._handle.onexit (node:internal/child_process:295:12) {
     code: 'ETRANSPORT',
@@ -374,9 +374,9 @@ test at tests/systems-protocol-conformance.test.mjs:739:1
   }
 
 test at tests/systems-protocol-conformance.test.mjs:761:1
-✖ an id is bound to one remote for its whole lifetime — follow-on frames carry none (34.192751ms)
+✖ an id is bound to one remote for its whole lifetime — follow-on frames carry none (34.425654ms)
   Error [SystemError]: provider exited (code 2)
-      at ChildProcess.<anonymous> (file:///tmp/cc-pin-c2/src/systems/providerConnection.ts:202:62)
+      at ChildProcess.<anonymous> (file:///tmp/cc-pin-0a73/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
       at ChildProcess._handle.onexit (node:internal/child_process:295:12) {
     code: 'ETRANSPORT',
@@ -385,9 +385,9 @@ test at tests/systems-protocol-conformance.test.mjs:761:1
   }
 
 test at tests/systems-protocol-conformance.test.mjs:774:1
-✖ ENOREMOTE is id-addressed: one dead remote is not a dead connection (35.006125ms)
+✖ ENOREMOTE is id-addressed: one dead remote is not a dead connection (30.589139ms)
   Error [SystemError]: provider exited (code 2)
-      at ChildProcess.<anonymous> (file:///tmp/cc-pin-c2/src/systems/providerConnection.ts:202:62)
+      at ChildProcess.<anonymous> (file:///tmp/cc-pin-0a73/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
       at ChildProcess._handle.onexit (node:internal/child_process:295:12) {
     code: 'ETRANSPORT',
@@ -396,9 +396,9 @@ test at tests/systems-protocol-conformance.test.mjs:774:1
   }
 
 test at tests/systems-protocol-conformance.test.mjs:792:1
-✖ a request that names NO remote is refused, never answered from a default (33.129307ms)
+✖ a request that names NO remote is refused, never answered from a default (31.076156ms)
   Error [SystemError]: provider exited (code 2)
-      at ChildProcess.<anonymous> (file:///tmp/cc-pin-c2/src/systems/providerConnection.ts:202:62)
+      at ChildProcess.<anonymous> (file:///tmp/cc-pin-0a73/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
       at ChildProcess._handle.onexit (node:internal/child_process:295:12) {
     code: 'ETRANSPORT',
@@ -407,9 +407,9 @@ test at tests/systems-protocol-conformance.test.mjs:792:1
   }
 
 test at tests/systems-protocol-conformance.test.mjs:923:1
-✖ describeRemote round-trips the mirror root and the exclude list (32.444042ms)
+✖ describeRemote round-trips the mirror root and the exclude list (31.834031ms)
   Error [SystemError]: provider exited (code 2)
-      at ChildProcess.<anonymous> (file:///tmp/cc-pin-c2/src/systems/providerConnection.ts:202:62)
+      at ChildProcess.<anonymous> (file:///tmp/cc-pin-0a73/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
       at ChildProcess._handle.onexit (node:internal/child_process:295:12) {
     code: 'ETRANSPORT',
@@ -418,9 +418,9 @@ test at tests/systems-protocol-conformance.test.mjs:923:1
   }
 
 test at tests/systems-protocol-conformance.test.mjs:955:1
-✖ describeRemote for an unknown remote is an id-addressed ENOREMOTE (36.59058ms)
+✖ describeRemote for an unknown remote is an id-addressed ENOREMOTE (30.029115ms)
   Error [SystemError]: provider exited (code 2)
-      at ChildProcess.<anonymous> (file:///tmp/cc-pin-c2/src/systems/providerConnection.ts:202:62)
+      at ChildProcess.<anonymous> (file:///tmp/cc-pin-0a73/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
       at ChildProcess._handle.onexit (node:internal/child_process:295:12) {
     code: 'ETRANSPORT',
@@ -429,9 +429,9 @@ test at tests/systems-protocol-conformance.test.mjs:955:1
   }
 
 test at tests/systems-protocol-conformance.test.mjs:1033:1
-✖ listRemotes enumerates exactly the configured targets; an unconfigured id refuses ENOREMOTE (34.411018ms)
+✖ listRemotes enumerates exactly the configured targets; an unconfigured id refuses ENOREMOTE (31.892615ms)
   Error [SystemError]: provider exited (code 2)
-      at ChildProcess.<anonymous> (file:///tmp/cc-pin-c2/src/systems/providerConnection.ts:202:62)
+      at ChildProcess.<anonymous> (file:///tmp/cc-pin-0a73/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
       at ChildProcess._handle.onexit (node:internal/child_process:295:12) {
     code: 'ETRANSPORT',
@@ -440,9 +440,9 @@ test at tests/systems-protocol-conformance.test.mjs:1033:1
   }
 
 test at tests/systems-protocol-conformance.test.mjs:1081:1
-✖ listRemotes is one id among many: answered beside an in-flight exec, never disturbing it (34.504684ms)
+✖ listRemotes is one id among many: answered beside an in-flight exec, never disturbing it (35.713086ms)
   Error [SystemError]: provider exited (code 2)
-      at ChildProcess.<anonymous> (file:///tmp/cc-pin-c2/src/systems/providerConnection.ts:202:62)
+      at ChildProcess.<anonymous> (file:///tmp/cc-pin-0a73/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
       at ChildProcess._handle.onexit (node:internal/child_process:295:12) {
     code: 'ETRANSPORT',
@@ -451,9 +451,9 @@ test at tests/systems-protocol-conformance.test.mjs:1081:1
   }
 
 test at tests/systems-protocol-conformance.test.mjs:1370:1
-✖ input credit is granted for bytes written to the terminal, not bytes received, and every byte's credit returns (603.023578ms)
+✖ input credit is granted for bytes written to the terminal, not bytes received, and every byte's credit returns (581.346464ms)
   AssertionError [ERR_ASSERTION]: while the program reads nothing, less than the window is credited (262144 of 262144)
-      at TestContext.<anonymous> (file:///tmp/cc-pin-c2/tests/systems-protocol-conformance.test.mjs:1408:12)
+      at TestContext.<anonymous> (file:///tmp/cc-pin-0a73/tests/systems-protocol-conformance.test.mjs:1408:12)
       at async Test.run (node:internal/test_runner/test:1332:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
     generatedMessage: false,
@@ -465,9 +465,9 @@ test at tests/systems-protocol-conformance.test.mjs:1370:1
   }
 
 test at tests/systems-protocol-conformance.test.mjs:1475:1
-✖ bound views share their provider's terminal cap, and each terminal runs on its own remote (35.306188ms)
+✖ bound views share their provider's terminal cap, and each terminal runs on its own remote (33.155991ms)
   Error [SystemError]: provider exited (code 2)
-      at ChildProcess.<anonymous> (file:///tmp/cc-pin-c2/src/systems/providerConnection.ts:202:62)
+      at ChildProcess.<anonymous> (file:///tmp/cc-pin-0a73/src/systems/providerConnection.ts:202:62)
       at ChildProcess.emit (node:events:509:28)
       at ChildProcess._handle.onexit (node:internal/child_process:295:12) {
     code: 'ETRANSPORT',
@@ -476,7 +476,7 @@ test at tests/systems-protocol-conformance.test.mjs:1475:1
   }
 
 hang-guard: 1/1 files reported, 0 killed, 0 leaked process(es) swept, stream ended cleanly, run cap not reached
-hang-guard: slowest files (limit 90000ms): systems-protocol-conformance.test.mjs 20497ms
+hang-guard: slowest files (limit 90000ms): systems-protocol-conformance.test.mjs 20425ms
 quiet-reporter: passing files' per-test lines and output were held back; CC_TEST_VERBOSE=1 prints the full spec report.
 
 guardrail: peak concurrent fake-claude subprocesses = 0 (budget 12)
