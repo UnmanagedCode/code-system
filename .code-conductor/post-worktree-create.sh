@@ -79,7 +79,10 @@ if [ ! -d "$parent/node_modules" ]; then
 fi
 
 parent_abs="$(cd "$parent" && pwd)"
-ln -s "$parent_abs/node_modules" "$worktree/node_modules"
+if ! ln -s "$parent_abs/node_modules" "$worktree/node_modules"; then
+  echo "WARNING: could not symlink $worktree/node_modules; continuing without it" >&2
+  exit 0
+fi
 echo "symlinked $worktree/node_modules -> $parent_abs/node_modules"
 
 if [ -x "$worktree/node_modules/.bin/vite" ]; then
