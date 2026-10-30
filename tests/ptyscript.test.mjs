@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto';
 import { promises as fs, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { findMarker, overlayBlob, ptyTrampolineArgv } from '../src/launcher/kinds/ptyscript.mjs';
+import { ENV_NAME_RE, findMarker, overlayBlob, ptyTrampolineArgv } from '../src/launcher/kinds/ptyscript.mjs';
 import { probePtyHelper, spawnPty } from '../src/launcher/ptyhost.mjs';
 
 const PYTHON = process.env.CODE_SYSTEM_PYTHON?.trim() || 'python3';
@@ -39,6 +39,7 @@ function runTrampoline({ cwd, argv = null, env = [], mode = 'exec', cols = 80, r
     let out = '';
     let marker = null;
     let sent = false;
+    let asked = false;
     const timer = setTimeout(() => { proc.close(); reject(new Error(`no exit within 10s: ${JSON.stringify(out)}`)); }, 10_000);
     const proc = spawnPty({
       interpreter: probe.interpreter,
@@ -55,14 +56,14 @@ function runTrampoline({ cwd, argv = null, env = [], mode = 'exec', cols = 80, r
         out += b.toString('latin1');
         if (!marker) marker = findMarker(out, nonce);
         if (marker?.kind === 'overlay') {
-          if (!sent) { sent = true; proc.write(blob); }
+          if (!sent) { sent = true; asked = true; proc.write(blob); }
           out = out.slice(marker.end);
           marker = findMarker(out, nonce);
         }
         if (marker) onOutput?.(proc, out.slice(marker.end));
       },
       onWritten() {},
-      onExit(code, signal) { clearTimeout(timer); resolve({ out, marker, code, signal }); },
+      onExit(code, signal) { clearTimeout(timer); resolve({ out, marker, code, signal, asked }); },
       onFailed(code, message) { clearTimeout(timer); reject(new Error(`${code}: ${message}`)); },
     });
   });
@@ -234,4 +235,81 @@ test('spawnPty refuses a write past maxQueuedBytes', { skip: SKIP }, async (t) =
   t.after(() => proc.close());
   assert.equal(proc.write(Buffer.alloc(1000, 0x61)), true, 'up to the cap is taken');
   assert.equal(proc.write(Buffer.alloc(1, 0x61)), false, 'one byte past it is refused');
+});
+
+// PINS overlayBlob's OWN guard, ungated: the blob is `eval`ed on the target, so
+// it refuses a name outside ENV_NAME_RE whoever calls it — a name like
+// `A;echo X` would otherwise be command execution.
+test('overlayBlob refuses a name outside the identifier rule, and a NUL in a value', () => {
+  for (const name of ['A-B', '1A', 'a.b', 'A;echo X', '', 'A B']) {
+    assert.throws(() => overlayBlob([[name, 'v']]), /environment name/, name);
+  }
+  assert.throws(() => overlayBlob([['A', 'x\0y']]), /NUL/);
+  assert.equal(overlayBlob([['_A1', "it's"]]).toString(), "export _A1='it'\\''s'\n");
+  assert.equal(ENV_NAME_RE.test('_A1'), true);
+});
+
+// A PATH directory of the trampoline's tools: the real ones, minus `omit`,
+// plus `fake` scripts by name.
+async function toolDir(t, { omit = null, fake = {} } = {}) {
+  const dir = await scratch(t);
+  for (const tool of ['stty', 'tty', 'id', 'head']) {
+    if (tool === omit || fake[tool]) continue;
+    await fs.symlink(real(tool), path.join(dir, tool));
+  }
+  for (const [tool, body] of Object.entries(fake)) {
+    await fs.writeFile(path.join(dir, tool), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  }
+  return dir;
+}
+const real = (tool) => spawnSync('/bin/sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
+
+// PINS THE UP-FRONT TOOL CHECK: each tool the trampoline runs before the
+// program is checked first, and a missing one is refused by name — never a
+// start, and never an OVERLAY request.
+test('a missing trampoline tool is refused EPTY by name, and nothing starts', { skip: SKIP }, async (t) => {
+  const dir = await scratch(t);
+  for (const tool of ['stty', 'tty', 'id', 'head']) {
+    const bin = await toolDir(t, { omit: tool });
+    const r = await runTrampoline({ cwd: dir, argv: ['/bin/echo', 'RAN'], helperEnv: { ...process.env, PATH: bin } });
+    assert.deepEqual([r.marker?.kind, r.marker?.code, r.marker?.detail], ['error', 'EPTY', `missing-${tool}`], JSON.stringify(r.out));
+    assert.equal(r.asked, false, 'the environment was never asked for');
+    assert.doesNotMatch(r.out, /RAN/);
+  }
+});
+
+// PINS FAIL-CLOSED ON `stty`: if the terminal cannot be made raw and `-echo`,
+// it is refused BEFORE `OVERLAY`, so the blob never meets a cooked, echoing tty.
+test('a failing stty -g or stty raw -echo is refused before the environment is asked for', { skip: SKIP }, async (t) => {
+  const dir = await scratch(t);
+  const fakes = [
+    'exit 1',
+    `case "$1" in -g) exec ${real('stty')} -g ;; esac; exit 1`,
+  ];
+  for (const body of fakes) {
+    const bin = await toolDir(t, { fake: { stty: body } });
+    const r = await runTrampoline({ cwd: dir, argv: ['/bin/echo', 'RAN'], helperEnv: { ...process.env, PATH: bin } });
+    assert.deepEqual([r.marker?.kind, r.marker?.code, r.marker?.detail], ['error', 'EPTY', 'stty'], `${body}: ${JSON.stringify(r.out)}`);
+    assert.equal(r.asked, false, 'no OVERLAY was printed');
+    assert.doesNotMatch(r.out, /RAN/);
+  }
+});
+
+// PINS FAIL-CLOSED ON THE READ: a `head` that returns short, or fails, is a
+// refusal — never a start without the environment and TERM.
+test('a short or failed read of the environment is refused EPTY, and nothing starts', { skip: SKIP }, async (t) => {
+  const dir = await scratch(t);
+  const fakes = [
+    `${real('head')} -c "$2" | ${real('head')} -c 3`,
+    `${real('head')} -c "$2" >/dev/null; exit 1`,
+  ];
+  for (const body of fakes) {
+    const bin = await toolDir(t, { fake: { head: body } });
+    const r = await runTrampoline({
+      cwd: dir, argv: ['/bin/echo', 'RAN'], env: [['CC_X', 'value']], helperEnv: { ...process.env, PATH: bin },
+    });
+    assert.equal(r.asked, true, 'the environment was asked for');
+    assert.deepEqual([r.marker?.kind, r.marker?.code, r.marker?.detail], ['error', 'EPTY', 'overlay'], `${body}: ${JSON.stringify(r.out)}`);
+    assert.doesNotMatch(r.out, /RAN/);
+  }
 });

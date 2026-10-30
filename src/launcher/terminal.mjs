@@ -60,10 +60,20 @@ const RELAY_TIMEOUT_MS = 5_000;
 
 const MARKER_MESSAGES = {
   EPTY: 'the target gave the terminal no tty (an sshd with `PermitTTY no` refuses one)',
+  'EPTY stty': 'the target\'s `stty` could not make the terminal raw, so its environment was not sent',
+  'EPTY overlay': 'the terminal\'s environment did not arrive whole on the target',
   ENOENT: 'the cwd or the program is not there on the target',
   ENOTDIR: 'the cwd is not a directory on the target',
   EACCES: 'the cwd or the program is not accessible on the target',
 };
+
+// The refusal text for a trampoline marker; an `EPTY` names which check failed.
+function markerMessage(m) {
+  if (m.detail?.startsWith('missing-')) {
+    return `the target has no \`${m.detail.slice('missing-'.length)}\`, which a terminal needs there`;
+  }
+  return MARKER_MESSAGES[m.detail ? `${m.code} ${m.detail}` : m.code] ?? MARKER_MESSAGES[m.code];
+}
 
 const FS_TOKEN = new RegExp(`\\b(${FS_ERROR_CODES.filter(c => c !== 'EUNKNOWN').join('|')})\\b`, 'g');
 // A quoted head carries no bare FS errno token: cc re-parses a refusal's text
@@ -182,6 +192,7 @@ export class Terminals {
       held: null,
       pre: '',
       head: '',
+      quoting: true,
       tty: null,
       input: [],
       relaying: false,
@@ -194,7 +205,8 @@ export class Terminals {
       interpreter: this.#interpreter,
       argv: [plan.file, ...plan.args],
       // The helper — and so the client — run in the launcher's own environment,
-      // or the kind's (a credential). The overlay is in the trampoline's argv.
+      // or the kind's (a credential). The overlay is in no argv and no env of
+      // theirs: it goes in-band as the blob, and the helper's `v` is `{}`.
       env: plan.env ?? process.env,
       programEnv: {},
       cwd: HELPER_CWD,
@@ -215,11 +227,16 @@ export class Terminals {
     if (t.closed) return;
     if (t.started) { this.#emit(t, b); return; }
     const text = b.toString('latin1');
-    if (t.head.length < HEAD_BYTES) t.head = (t.head + text).slice(0, HEAD_BYTES);
+    if (t.quoting && t.head.length < HEAD_BYTES) t.head = (t.head + text).slice(0, HEAD_BYTES);
     t.pre += text;
     let m = findMarker(t.pre, t.nonce);
     if (m?.kind === 'overlay') {
       // The trampoline is reading the program's environment, raw and `-echo`.
+      // NOTHING FROM HERE ON IS QUOTED to cc: the head so far holds the nonce,
+      // and a tty that echoed anyway would hand back the blob — the token and
+      // every overlay value. A client that dies now reports without a quote.
+      t.quoting = false;
+      t.head = '';
       t.pre = t.pre.slice(m.end);
       if (t.blob) {
         t.ownBytes += t.blob.length;
@@ -236,7 +253,7 @@ export class Terminals {
       // The trampoline refused and exits on its own: nothing to reap.
       this.#end(t);
       t.proc.close();
-      this.#fail(t.id, m.code, MARKER_MESSAGES[m.code]);
+      this.#fail(t.id, m.code, markerMessage(m));
       return;
     }
     const rest = Buffer.from(t.pre.slice(m.end), 'latin1');
@@ -380,6 +397,12 @@ export class Terminals {
     // missing or stopped container, auth, an unreachable host — read through
     // the kind's vocabulary. Under a terminal its stdout and stderr are one
     // stream, CRLF-translated, so the head is handed over as stderr, stripped.
+    //
+    // The far side is reaped all the same, by the whole token (no session was
+    // reported): a client that died mid-open — the daemon or the connection
+    // lost, the CLI killed — can leave the trampoline alive, parked in its
+    // read or about to exec, and docker never forwards the hang-up (measured).
+    void this.#reap(t.config, t.handle);
     const head = t.head.replace(/\r/g, '');
     const verdict = this.#transport.classifyFailure?.(t.config, { code: code ?? 1, stdout: '', stderr: head });
     if (verdict) {
@@ -400,6 +423,8 @@ export class Terminals {
       this.#fail(t.id, code, message);
       return;
     }
+    // Reaped by the whole token, as a client death before the marker is.
+    void this.#reap(t.config, t.handle);
     if (code === 'EPTY') { this.#fail(t.id, 'EPTY', message); return; }
     // The CLIENT never ran (a missing docker or ssh): not the target's answer,
     // so no FS code.

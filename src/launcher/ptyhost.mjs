@@ -119,6 +119,7 @@ function parseJson(b) {
  *   program only (the helper's first frame, `v`). `maxQueuedBytes` caps what
  *   `write` holds here plus what the helper has not yet reported written: past
  *   it `write` refuses, so no peer's input can grow this process's memory.
+ *   Absent, it is HELPER_INPUT_WINDOW_BYTES.
  * @param {{onStarted():void, onData(b:Buffer):void, onWritten(n:number):void,
  *          onExit(code:number|null, signal:string|null):void,
  *          onFailed(code:string, message:string):void}} h
@@ -128,6 +129,8 @@ function parseJson(b) {
  *            pause():void, resume():void, close():void}}
  */
 export function spawnPty(spec, h) {
+  // Never uncapped: omitting it is the helper's own window, not no limit.
+  const maxQueued = spec.maxQueuedBytes ?? HELPER_INPUT_WINDOW_BYTES;
   let done = false;
   let started = false;
   let paused = false;
@@ -218,7 +221,9 @@ export function spawnPty(spec, h) {
         + (stderrTail.trim() ? `: ${stderrTail.trim()}` : '')));
       pump();
     });
-    // The overlay is the FIRST frame: the helper starts nothing before it.
+    // `v` is the FIRST frame — the helper starts nothing before it. It is the
+    // only environment the helper adds for its program; this launcher always
+    // sends `{}`, because a terminal's overlay goes in-band to the far side.
     send(encodeHelperFrame('v', Buffer.from(JSON.stringify(spec.programEnv), 'utf8')));
   }
 
@@ -226,7 +231,7 @@ export function spawnPty(spec, h) {
     // False, and nothing taken, when it would exceed `maxQueuedBytes`.
     write(data) {
       if (done || data.length === 0) return true;
-      if (queued + inFlight + data.length > spec.maxQueuedBytes) return false;
+      if (queued + inFlight + data.length > maxQueued) return false;
       input.push(data);
       queued += data.length;
       sendInput();

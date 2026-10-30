@@ -4,8 +4,10 @@
 // One script for `docker`, `ssh` and `host`, for the reason reapscript.mjs is
 // one: the far side's obligations are identical whatever carried us there, and
 // two copies of a script whose refusals cc branches on would drift. It needs
-// only `/bin/sh` and the coreutils `stty`, `tty`, `id` and `head` the tooling
-// baseline already requires.
+// `/bin/sh` and the coreutils `stty`, `tty`, `id` and `head` — and checks for
+// them itself, refusing `EPTY missing-<tool>`: they are a TERMINAL's needs, so
+// they are not in the remote-wide baseline probe (src/baseline.mjs), which
+// gates every operation.
 //
 // WHAT IT OWES, in order (systems-protocol.md §5, "pty exec"):
 //  1. A TERMINAL, proved: ssh through a multiplexed master under `PermitTTY no`
@@ -17,6 +19,10 @@
 //     launcher's `overlayBlob` — the overlay, the plumbing, then `TERM`, as
 //     shell-quoted `export` lines. NOTHING OF THE OVERLAY IS EVER AN ARGV
 //     ELEMENT, here or on the host: /proc/<pid>/cmdline is world-readable.
+//     FAIL CLOSED: if the terminal cannot be made raw and `-echo` it refuses
+//     `EPTY stty` BEFORE asking — the blob never meets a cooked, echoing tty —
+//     and a read short of <N> bytes is `EPTY overlay`, never a start without
+//     the environment.
 //  4. The PROGRAM, pre-checked the way execvp would resolve it — on the
 //     overlay's PATH, read in a subshell so this script's own tools never run
 //     under the overlay — so a missing one is ENOENT, a present but unrunnable
@@ -43,9 +49,13 @@ export const PTY_ENV_BIN = '/usr/bin/env';
 // and exactly what a POSIX shell can `export`.
 export const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-// The codes the trampoline can answer before a start. EPTY is protocol-level,
-// the rest are the spawn failure's FS code (§8).
+// The codes the trampoline can answer before a start. EPTY is protocol-level —
+// the target could not give us a working terminal — and may carry a one-word
+// detail; the rest are the spawn failure's FS code (§8).
 export const MARKER_CODES = ['EPTY', 'ENOENT', 'ENOTDIR', 'EACCES'];
+
+// The tools the trampoline runs before the program, each checked up front.
+export const TRAMPOLINE_TOOLS = ['stty', 'tty', 'id', 'head'];
 
 // Positional parameters: <nonce> <cwd> <cols> <rows> <mode> <N> <argv…>, where
 // <N> is the blob's byte count — a length, never a value.
@@ -61,17 +71,24 @@ export const MARKER_CODES = ['EPTY', 'ENOENT', 'ENOTDIR', 'EACCES'];
 const SCRIPT = [
   '_ccp_n=$1',
   '[ -t 0 ] || { printf \'%s EPTY\\n\' "$_ccp_n"; exit 1; }',
+  `for _ccp_x in ${TRAMPOLINE_TOOLS.join(' ')}; do`,
+  '  command -v "$_ccp_x" >/dev/null 2>&1 || { printf \'%s EPTY missing-%s\\n\' "$_ccp_n" "$_ccp_x"; exit 1; }',
+  'done',
   'if ! { [ -n "$2" ] && cd -P -- "$2"; } 2>/dev/null; then',
   '  if [ -z "$2" ] || [ ! -e "$2" ]; then _ccp_e=ENOENT; elif [ ! -d "$2" ]; then _ccp_e=ENOTDIR; else _ccp_e=EACCES; fi',
   '  printf \'%s %s\\n\' "$_ccp_n" "$_ccp_e"; exit 1',
   'fi',
   '_ccp_c=$3 _ccp_r=$4 _ccp_m=$5 _ccp_v=$6',
   'shift 6',
-  '_ccp_g=$(stty -g)',
-  'stty raw -echo',
+  '{ _ccp_g=$(stty -g) && stty raw -echo; } 2>/dev/null || { printf \'%s EPTY stty\\n\' "$_ccp_n"; exit 1; }',
   'printf \'%s OVERLAY\\n\' "$_ccp_n"',
-  '_ccp_b=$(head -c "$_ccp_v")',
+  // `x` survives `$( )`'s trailing-newline strip; a failed `head` leaves none.
+  '_ccp_b=$(head -c "$_ccp_v" && echo x) || _ccp_b=',
+  '_ccp_b=${_ccp_b%x}',
   'stty "$_ccp_g"',
+  // Bytes, not characters: a value may be UTF-8.
+  '_ccp_l=$(LC_ALL=C; printf %s "${#_ccp_b}")',
+  '[ "$_ccp_l" = "$_ccp_v" ] || { printf \'%s EPTY overlay\\n\' "$_ccp_n"; exit 1; }',
   '_ccp_p=$(eval "$_ccp_b"; printf \'%sx\' "$PATH"); _ccp_p=${_ccp_p%x}',
   'if [ "$#" -gt 0 ]; then',
   '  _ccp_0=$1 _ccp_e=',
@@ -133,6 +150,12 @@ export function ptyTrampolineArgv({ nonce, cwd, cols, rows, mode, blobBytes, arg
  * @returns {Buffer}
  */
 export function overlayBlob(entries) {
+  // Validated HERE as well as by every caller: the trampoline `eval`s this, so
+  // a name outside the rule would be command execution on the target.
+  for (const [k, v] of entries) {
+    if (!ENV_NAME_RE.test(k)) throw new Error(`overlayBlob: ${JSON.stringify(k)} is not an environment name`);
+    if (typeof v !== 'string' || v.includes('\0')) throw new Error(`overlayBlob: the value of ${k} is not a NUL-free string`);
+  }
   return Buffer.from(entries.map(([k, v]) => `export ${k}=${shellQuote(v)}\n`).join(''), 'utf8');
 }
 
@@ -141,15 +164,16 @@ export function overlayBlob(entries) {
  * null. `end` is the offset just past it. `overlay` asks for the blob;
  * `started` means everything from `end` is the program's.
  * @returns {{kind:'started', tty:string, sid:string, end:number}
- *          |{kind:'overlay', end:number}|{kind:'error', code:string, end:number}|null}
+ *          |{kind:'overlay', end:number}
+ *          |{kind:'error', code:string, detail:string|null, end:number}|null}
  */
 export function findMarker(text, nonce) {
-  const re = new RegExp(`${nonce} (?:STARTED (\\S+) ?(\\d*)|(OVERLAY)|(${MARKER_CODES.join('|')}))\\r*\\n`);
+  const re = new RegExp(`${nonce} (?:STARTED (\\S+) ?(\\d*)|(OVERLAY)|(${MARKER_CODES.join('|')})(?: ([\\w-]+))?)\\r*\\n`);
   const m = re.exec(text);
   if (!m) return null;
   const end = m.index + m[0].length;
   if (m[3]) return { kind: 'overlay', end };
-  return m[4] ? { kind: 'error', code: m[4], end } : { kind: 'started', tty: m[1], sid: m[2], end };
+  return m[4] ? { kind: 'error', code: m[4], detail: m[5] ?? null, end } : { kind: 'started', tty: m[1], sid: m[2], end };
 }
 
 /**

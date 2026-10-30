@@ -47,14 +47,26 @@ export function createTransport(opts = {}) {
     // environment. Three test seams ride it: CODE_SYSTEM_FAKE_PTY_GATE holds the
     // trampoline back until a file exists; CODE_SYSTEM_FAKE_PTY_RELAY=1 turns on
     // the resize relay (whose `stty` then runs through `spawnPlan` below); and a
-    // record's `config.ptyFail` makes the "client" exit before any marker, with
-    // a head the classifier below does (`down`) or does not (`garbage`) know.
+    // record's `config.ptyFail` makes the "client" exit before `STARTED`, with
+    // a head the classifier below does (`down`) or does not (`garbage`) know,
+    // or after taking the blob on an echoing tty (`afterOverlay`).
     ...(process.env.CODE_SYSTEM_FAKE_PTY === '1' ? {
       ptyMode: 'exec',
       ptyResizeRelay: process.env.CODE_SYSTEM_FAKE_PTY_RELAY === '1',
       ptyPlan(config, req) {
         if (config.ptyFail === 'down') return { file: '/bin/sh', args: ['-c', 'echo "FAKE-DOWN: no target"; exit 9'] };
         if (config.ptyFail === 'garbage') return { file: '/bin/sh', args: ['-c', 'echo "odd: ENOENT happened"; exit 9'] };
+        // Asks for the blob as the trampoline does, ON A COOKED TTY that echoes
+        // it and prints it back, then dies: the worst case for what a quoted
+        // head could leak. The nonce and the blob's length are the trampoline's
+        // own positional parameters.
+        if (config.ptyFail === 'afterOverlay') {
+          return {
+            file: '/bin/sh',
+            args: ['-c', 'printf "%s OVERLAY\\n" "$1"; head -c "$2"; echo; echo "FAKE-GONE: lost"; exit 9',
+              'sh', req.command[4], req.command[9]],
+          };
+        }
         const gate = process.env.CODE_SYSTEM_FAKE_PTY_GATE;
         const plumbing = [`${TOKEN_VAR}=${req.token}`, ...(req.remoteId ? [`CC_REMOTE=${req.remoteId}`] : [])];
         const command = gate ? ['/bin/sh', '-c', GATED, 'sh', gate, ...req.command] : req.command;

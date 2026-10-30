@@ -231,8 +231,11 @@ as a terminal on a project whose *Remote* is one of these runs there.
   pty helper there. Without one, terminals on that system are refused by name
   (cc's `SYSTEM_NO_PTY`) and everything else keeps working; the launcher's
   stderr says why. `CODE_SYSTEM_PYTHON` names a different interpreter.
-- **`stty`, `tty`, `id` and `env` on the target** — already part of the tooling
-  baseline every remote must pass.
+- **`stty`, `tty`, `id` and `head` on the target**, and a `/bin/sh`. The
+  remote's tooling-baseline probe does **not** check these — they are a
+  terminal's needs, not every operation's. The provider checks them itself as
+  each terminal opens, and refuses by name (`EPTY`, naming the missing tool)
+  rather than starting a terminal that cannot work.
 - **An sshd that grants terminals.** `PermitTTY no` refuses the terminal by name
   (`EPTY`).
 

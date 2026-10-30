@@ -374,6 +374,9 @@ characters per terminal.
 | Line | When | Frame |
 |---|---|---|
 | `<nonce> EPTY` | `[ -t 0 ]` fails — ssh through a master opened under `PermitTTY no` runs the command tty-less | `error` `EPTY` |
+| `<nonce> EPTY missing-<tool>` | `command -v` finds no `stty`, `tty`, `id` or `head` (`TRAMPOLINE_TOOLS`) — a terminal's own needs, checked here and NOT by the remote-wide baseline probe | `error` `EPTY`, naming the tool |
+| `<nonce> EPTY stty` | `stty -g` or `stty raw -echo` fails — refused BEFORE `OVERLAY`, so the blob never meets a cooked, echoing tty | `error` `EPTY` |
+| `<nonce> EPTY overlay` | after `OVERLAY`, the bytes `head -c` returned (counted under `LC_ALL=C`) are not exactly `<N>`, or `head` failed — never a start without the environment | `error` `EPTY` |
 | `<nonce> ENOENT` / `ENOTDIR` / `EACCES` | `cd -P` fails (empty or missing → `ENOENT`, not a directory → `ENOTDIR`, else `EACCES`) | `error` with that code |
 | `<nonce> OVERLAY` | the terminal is now raw and `-echo`; the launcher writes the blob — `export NAME='value'` lines, the overlay then `CC_REMOTE`, `CC_EXEC_TOKEN`, `TERM` — and the trampoline reads exactly `<N>` bytes with `head -c`, then restores the terminal. Its bytes earn no `inputAck` | none |
 | `<nonce> ENOENT` / `EACCES` | `argv[0]` fails the pre-check `ARGV_SCRIPT` makes on cc's side: with a `/`, missing → `ENOENT`, a directory or not executable → `EACCES`; a bare name is searched on the overlay's `PATH` (read in a subshell), where a present but not runnable entry → `EACCES` unless a later one runs | `error` with that code |
@@ -383,8 +386,11 @@ characters per terminal.
   `stdout`. **There are no `stderr` frames.**
 - No argv runs the login shell from `/etc/passwd` for `id -u`, else `$SHELL`,
   else `/bin/sh`, with `-l`.
-- **The client exits before any marker**: the head (≤512 bytes, `\r`
-  stripped) goes to the kind's `classifyFailure` as `{code, stdout: '', stderr:
+- **The client exits before `STARTED`**: the far side is reaped by the whole
+  token (no session was reported — a client lost mid-open can leave the
+  trampoline alive), and the head (≤512 bytes, `\r` stripped, collected only
+  until `OVERLAY`: nothing after it is ever quoted, as it could echo the blob)
+  goes to the kind's `classifyFailure` as `{code, stdout: '', stderr:
   head}` — docker's missing/stopped/identity rows and ssh's
   unreachable/auth/host-key rows apply unchanged, plus ssh's **`PTY allocation
   request failed` at exit 255 → `EPTY`** (a direct connection under
@@ -393,6 +399,7 @@ characters per terminal.
 - **The helper fails before the marker**: `EPTY` when the host could not
   allocate a pty; otherwise `EUNKNOWN` ("the terminal's transport could not
   start"), because a missing docker or ssh CLI is not the target's answer.
+  Either way the far side is reaped by the whole token.
 
 ### Refusals before anything starts
 

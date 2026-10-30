@@ -16,7 +16,8 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { PTY_WINDOW_BYTES } from '../src/launcher/protocol.mjs';
+import { PTY_INPUT_WINDOW_BYTES, PTY_WINDOW_BYTES } from '../src/launcher/protocol.mjs';
+import { overlayBlob } from '../src/launcher/kinds/ptyscript.mjs';
 import { probePtyHelper } from '../src/launcher/ptyhost.mjs';
 import { settle } from './dockerFixture.mjs';
 import { FAKE_TRANSPORT, Launcher, record, tempStore, writeRecord } from './helpers.mjs';
@@ -369,4 +370,104 @@ test('a program exiting on its own is reaped with its session', { skip: SKIP }, 
   assert.equal(exit.code, 5);
   assert.ok(await settle(async () => (await reaps()).length === 1, 5_000), 'the kind was asked to reap');
   assert.equal((await reaps())[0].sid, /PID=(\d+)/.exec(outOf(l, 't1'))[1]);
+});
+
+// PINS THE OVERLAY NAME RULE at the frame: the trampoline `eval`s the blob, so a
+// name outside cc's ENV_NAME_RE — a `-`, a leading digit, a `.`, a `;` — is
+// refused EPROTO, id-addressed, never sent; an ordinary `_A1` starts.
+test('an overlay name outside the identifier rule is EPROTO; _A1 is accepted', { skip: SKIP }, async (t) => {
+  const { l, cwd } = await rig(t);
+  for (const [i, name] of ['A-B', '1A', 'a.b', 'A;echo X'].entries()) {
+    open(l, `n${i}`, cwd, ['true'], { envOverlay: { [name]: 'v' } });
+    const f = await l.waitFor(g => g.id === `n${i}` && ['error', 'ptyStarted'].includes(g.type));
+    assert.deepEqual([f.type, f.code], ['error', 'EPROTO'], name);
+  }
+  open(l, 'ok', cwd, ['true'], { envOverlay: { _A1: 'v' } });
+  assert.equal((await l.waitFor(g => g.id === 'ok' && ['error', 'ptyStarted'].includes(g.type))).type, 'ptyStarted');
+});
+
+// The overlay that makes the blob exactly `bytes` long, given the plumbing the
+// launcher appends for remote 'alpha' (a 24-hex token) and PTY.term. Split
+// across names so no value reaches the kernel's per-string limit at exec.
+function overlayOfBlobSize(bytes) {
+  const plumbing = [['CC_REMOTE', 'alpha'], ['CC_EXEC_TOKEN', '0'.repeat(24)], ['TERM', PTY.term]];
+  const names = ['CC_BIG_A', 'CC_BIG_B', 'CC_BIG_C'];
+  const fixed = overlayBlob([...names.map(n => [n, '']), ...plumbing]).length;
+  const room = bytes - fixed;
+  const each = Math.floor(room / names.length);
+  const sizes = names.map((_, i) => (i === 0 ? room - each * (names.length - 1) : each));
+  const overlay = Object.fromEntries(names.map((n, i) => [n, 'v'.repeat(sizes[i])]));
+  assert.equal(overlayBlob([...Object.entries(overlay), ...plumbing]).length, bytes, 'the helper sized it right');
+  return overlay;
+}
+
+// PINS THE BLOB'S CEILING at exactly one PTY_INPUT_WINDOW_BYTES: one byte over
+// is EPROTO before anything starts, and a blob at it opens.
+test('a blob one byte over PTY_INPUT_WINDOW_BYTES is EPROTO; one exactly at it starts', { skip: SKIP }, async (t) => {
+  const { l, cwd } = await rig(t);
+  open(l, 'over', cwd, ['true'], { envOverlay: overlayOfBlobSize(PTY_INPUT_WINDOW_BYTES + 1) });
+  const over = await l.waitFor(g => g.id === 'over' && ['error', 'ptyStarted'].includes(g.type));
+  assert.deepEqual([over.type, over.code], ['error', 'EPROTO']);
+  open(l, 'at', cwd, ['true'], { envOverlay: overlayOfBlobSize(PTY_INPUT_WINDOW_BYTES) });
+  assert.equal((await l.waitFor(g => g.id === 'at' && ['error', 'ptyStarted'].includes(g.type), { timeoutMs: 20_000 })).type, 'ptyStarted');
+});
+
+// PINS that the blob is the LAUNCHER's bytes, not the peer's: a large overlay
+// costs cc nothing of its input window. Input held before the start, then more
+// once it has started, stays within one window of cc's own bytes and is not
+// refused, though with the blob counted in it would be far over.
+test('the blob does not count against the peer\'s input window', { skip: SKIP }, async (t) => {
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  const gate = path.join(store.dir, 'go');
+  const { l, cwd } = await rig(t, { env: { CODE_SYSTEM_FAKE_PTY_GATE: gate } });
+  open(l, 't1', cwd, ['sh', '-c', 'stty raw -echo; exec sleep 1000'], { envOverlay: overlayOfBlobSize(200 * 1024) });
+  l.send({ type: 'input', id: 't1', dataB64: Buffer.alloc(PTY_INPUT_WINDOW_BYTES - 1000, 0x61).toString('base64') });
+  await barrier(l, cwd);
+  await fs.writeFile(gate, '');
+  await l.waitFor(f => f.id === 't1' && f.type === 'ptyStarted', { timeoutMs: 20_000 });
+  l.send({ type: 'input', id: 't1', dataB64: b64('x') });
+  await barrier(l, cwd);
+  await new Promise(r => setTimeout(r, 200));
+  assert.equal(framesOf(l, 't1').some(f => f.type === 'error'), false, JSON.stringify(framesOf(l, 't1').filter(f => f.type === 'error')));
+  l.send({ type: 'close', id: 't1' });
+});
+
+// PINS ONE REAP PER TERMINAL: a close arriving after the program's own exit
+// finds no terminal and reaps nothing a second time.
+test('a close after a natural exit does not reap twice', { skip: SKIP }, async (t) => {
+  const { l, cwd, reaps } = await rig(t);
+  open(l, 't1', cwd, ['true']);
+  await l.waitFor(f => f.id === 't1' && f.type === 'exit');
+  assert.ok(await settle(async () => (await reaps()).length === 1, 5_000), 'the exit reaped');
+  l.send({ type: 'close', id: 't1' });
+  await barrier(l, cwd);
+  await new Promise(r => setTimeout(r, 200));
+  assert.equal((await reaps()).length, 1, 'and the close did not reap again');
+});
+
+// PINS THE REAP ON A CLIENT THAT DIES BEFORE STARTED: no session was reported,
+// so the far side is reaped by the whole token (sid null) — the trampoline it
+// may have left is not the launcher's descendant.
+test('a client dying before the start is reaped by the whole token', { skip: SKIP }, async (t) => {
+  const { l, cwd, reaps } = await rig(t, { config: { ptyFail: 'down' } });
+  open(l, 't1', cwd, ['true']);
+  await l.waitFor(f => f.id === 't1' && f.type === 'error');
+  assert.ok(await settle(async () => (await reaps()).length === 1, 5_000), 'the kind was asked to reap');
+  const [r] = await reaps();
+  assert.equal(r.sid, null, 'by the whole token');
+  assert.equal(r.remoteId, 'alpha');
+});
+
+// PINS THAT NOTHING AFTER `OVERLAY` IS QUOTED: a client that took the blob on a
+// tty that echoed it, then died, produces an error carrying no nonce, no
+// plumbing and no overlay value.
+test('an error after OVERLAY quotes no nonce and no overlay value', { skip: SKIP }, async (t) => {
+  const { l, cwd } = await rig(t, { config: { ptyFail: 'afterOverlay' } });
+  const secret = `ccsecret${Math.random().toString(16).slice(2)}`;
+  open(l, 't1', cwd, ['true'], { envOverlay: { CC_SECRET: secret } });
+  const err = await l.waitFor(f => f.id === 't1' && f.type === 'error');
+  const text = JSON.stringify(err);
+  assert.doesNotMatch(text, new RegExp(secret), 'no overlay value');
+  assert.doesNotMatch(text, /CC_EXEC_TOKEN|OVERLAY|[0-9a-f]{24}/, 'no plumbing, no marker, no nonce');
 });
