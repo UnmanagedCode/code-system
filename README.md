@@ -48,7 +48,7 @@ creation: it installs `node_modules` into the **parent** checkout once (if absen
 symlinks it into the worktree, and builds the worktree's UI with `npm run prepare`, so the
 worktree already has its dependencies and its `frontend/dist` and you can skip the
 `npm install` step below. If the parent's `node_modules` has no `vite` (installed before the
-UI had a build), the hook builds nothing and says to run `npm install` in the parent. Caution: because the worktree's `node_modules` is a
+UI had a build), the hook builds nothing and says to run `npm install` in the parent. The hook also symlinks the parent's `.wiki/` into the worktree. Caution: because the worktree's `node_modules` is a
 symlink, running `npm install`/`npm ci` *inside* a worktree anyway writes through into the
 parent, which every other worktree shares. Kill-switch: `ORCH_DISABLE_POST_WORKTREE_HOOK=1`.
 
@@ -92,7 +92,7 @@ See [`.wiki/decisions/architecture-shape.md`](.wiki/decisions/architecture-shape
 - [`docs/features.md`](docs/features.md) — user-facing behaviour: cards, the baseline verdict, registration states.
 - [`docs/protocol.md`](docs/protocol.md) — interface contracts: the handshake per kind, `remoteId` routing, the derived file operations, registration, the REST surface, the MCP surface.
 - [`docs/architecture.md`](docs/architecture.md) — internals: the `Transport` seam and how to add a kind, the store and its startup pass, the shutdown/reap contract, test patterns.
-- [`.wiki/`](.wiki/index.md) — durable gotchas and decisions, reviewed and merged like code.
+- [`.wiki/`](.wiki/index.md) — durable gotchas and decisions. It is untracked and local: the main checkout holds it, and each worktree links it in, so links into it resolve only where it is present.
 
 ### Testing
 

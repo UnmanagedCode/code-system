@@ -28,6 +28,18 @@ set -uo pipefail
 
 worktree="${CC_WORKTREE_PATH:-$PWD}"
 
+# .wiki/ is untracked and lives only in the main checkout, so each worktree
+# links the main checkout's copy in. This runs before the node_modules block,
+# whose early exits would skip it. It never fails the hook: any error is
+# reported and ignored, and an unset CC_PARENT_PATH skips it quietly.
+if [ -n "${CC_PARENT_PATH:-}" ] && [ -d "$CC_PARENT_PATH/.wiki" ] \
+  && [ ! -e "$worktree/.wiki" ] && [ ! -L "$worktree/.wiki" ]; then
+  wiki_abs="$(cd "$CC_PARENT_PATH/.wiki" && pwd)" \
+    && ln -s "$wiki_abs" "$worktree/.wiki" \
+    && echo "symlinked $worktree/.wiki -> $wiki_abs" \
+    || echo "could not symlink $worktree/.wiki, continuing without it"
+fi
+
 if [ -e "$worktree/node_modules" ] || [ -L "$worktree/node_modules" ]; then
   echo "node_modules already present in worktree, skipping"
   exit 0
