@@ -56,6 +56,9 @@ export function createTransport(opts = {}) {
       ptyPlan(config, req) {
         if (config.ptyFail === 'down') return { file: '/bin/sh', args: ['-c', 'echo "FAKE-DOWN: no target"; exit 9'] };
         if (config.ptyFail === 'garbage') return { file: '/bin/sh', args: ['-c', 'echo "odd: ENOENT happened"; exit 9'] };
+        // A client the helper cannot exec at all: the helper answers `e` before
+        // anything — no OVERLAY, no STARTED — through `onFailed`.
+        if (config.ptyFail === 'noexec') return { file: '/nonexistent/code-system-client', args: [] };
         // Asks for the blob as the trampoline does, ON A COOKED TTY that echoes
         // it and prints it back, then dies: the worst case for what a quoted
         // head could leak. The nonce and the blob's length are the trampoline's

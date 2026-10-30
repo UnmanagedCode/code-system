@@ -471,3 +471,21 @@ test('an error after OVERLAY quotes no nonce and no overlay value', { skip: SKIP
   assert.doesNotMatch(text, new RegExp(secret), 'no overlay value');
   assert.doesNotMatch(text, /CC_EXEC_TOKEN|OVERLAY|[0-9a-f]{24}/, 'no plumbing, no marker, no nonce');
 });
+
+// PINS THE PRE-START REAP ON THE HELPER-FAILURE PATH: a client the helper cannot
+// exec is the helper's own `e` before any marker — an id-addressed error, and
+// the far side reaped exactly once by the whole token (sid null), as a client
+// that exits before the start is.
+test('a client the helper cannot exec is an id-addressed error, reaped once by the whole token', { skip: SKIP }, async (t) => {
+  const { l, cwd, reaps } = await rig(t, { config: { ptyFail: 'noexec' } });
+  open(l, 't1', cwd, ['true']);
+  const err = await l.waitFor(f => f.id === 't1' && ['error', 'ptyStarted', 'exit'].includes(f.type));
+  assert.equal(err.type, 'error');
+  assert.equal(err.id, 't1');
+  assert.ok(await settle(async () => (await reaps()).length >= 1, 5_000), 'the kind was asked to reap');
+  await barrier(l, cwd);
+  const r = await reaps();
+  assert.equal(r.length, 1, 'exactly once');
+  assert.equal(r[0].sid, null, 'by the whole token');
+  assert.equal(r[0].remoteId, 'alpha');
+});

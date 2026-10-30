@@ -14,7 +14,7 @@ import { promises as fs, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ENV_NAME_RE, findMarker, overlayBlob, ptyTrampolineArgv } from '../src/launcher/kinds/ptyscript.mjs';
-import { probePtyHelper, spawnPty } from '../src/launcher/ptyhost.mjs';
+import { HELPER_INPUT_WINDOW_BYTES, probePtyHelper, spawnPty } from '../src/launcher/ptyhost.mjs';
 
 const PYTHON = process.env.CODE_SYSTEM_PYTHON?.trim() || 'python3';
 const probe = await probePtyHelper({ python: PYTHON });
@@ -312,4 +312,16 @@ test('a short or failed read of the environment is refused EPTY, and nothing sta
     assert.deepEqual([r.marker?.kind, r.marker?.code, r.marker?.detail], ['error', 'EPTY', 'overlay'], `${body}: ${JSON.stringify(r.out)}`);
     assert.doesNotMatch(r.out, /RAN/);
   }
+});
+
+// PINS THE DEFAULT CAP: a caller that omits `maxQueuedBytes` still gets one —
+// HELPER_INPUT_WINDOW_BYTES, never no limit.
+test('spawnPty without maxQueuedBytes caps its queue at HELPER_INPUT_WINDOW_BYTES', { skip: SKIP }, async (t) => {
+  const dir = await scratch(t);
+  const proc = spawnPty({
+    interpreter: probe.interpreter, argv: ['sleep', '10'], env: process.env, programEnv: {}, cwd: dir, cols: 80, rows: 24,
+  }, { onStarted() {}, onData() {}, onWritten() {}, onExit() {}, onFailed() {} });
+  t.after(() => proc.close());
+  assert.equal(proc.write(Buffer.alloc(HELPER_INPUT_WINDOW_BYTES, 0x61)), true, 'a full window is taken');
+  assert.equal(proc.write(Buffer.alloc(1, 0x61)), false, 'one byte past it is refused');
 });
