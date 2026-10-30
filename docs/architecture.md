@@ -37,10 +37,12 @@ an absolute path — which is what forces the store location below.
 | `src/mcp.mjs` | the MCP tool catalog and the `list_remotes` rendering |
 | `src/launcher/protocol.mjs` | NDJSON codec, spec-fixed constants, stderr→code table |
 | `src/launcher/session.mjs` | the frame loop: handshake, routing, exec lifecycle, shutdown |
+| `src/launcher/terminal.mjs` | every pty exec: the marker, output and input credit, held input, the resize relay, close and reap — composed into the session |
+| `src/launcher/ptyhost.mjs` | the host pty: the python3 probe and a driver for the vendored `ptyHelper.py` (a byte-for-byte copy of cc's) |
 | `src/launcher/fileops.mjs` | `readFile`/`writeFile`, derived over `exec`, once for every kind |
 | `src/launcher/run.mjs` | run one script on a target — shared by fileops and the probe |
 | `src/launcher/remotes.mjs` | `RemoteSource`: store-backed (production) and flag-backed (conformance) — `lookup` resolves a named target, `list` answers its configured set (`listRemotes`), both from one configuration predicate |
-| `src/launcher/kinds/` | one file per kind, plus the registry and the kill-relay script (`reapscript.mjs`) shared by `docker` and `ssh` |
+| `src/launcher/kinds/` | one file per kind, plus the registry, the kill-relay script (`reapscript.mjs`) shared by `docker` and `ssh`, and the terminal trampoline (`ptyscript.mjs`) shared by all three |
 
 ## The `Transport` seam
 
@@ -98,6 +100,12 @@ implementation covers `exec`, `readFile`/`writeFile` and the baseline probe:
 `session.mjs`'s child-`close` handler (which keeps a bounded 512-byte head of
 each stream for it), and `run.mjs`'s single funnel. Returning `null` — the common
 case, and every kind without the member — leaves behaviour exactly as it was.
+
+`ptyPlan(config, {command, token, remoteId})` is **optional** and **pure**, with
+`ptyMode` (`'exec'`/`'child'`) and `ptyResizeRelay`. It wraps the far-side
+command `src/launcher/terminal.mjs` hands it — the shared trampoline — in the
+kind's client, which the pty helper then runs under a host pty. A kind without
+it never advertises `pty`. See "Terminals" below.
 
 **`ExecRequest.env` is THE FRAME'S OWN `env`**, with `null` meaning "inherit the
 **far side's**". The core never substitutes its own `process.env` for an absent
@@ -1016,6 +1024,48 @@ addresses are unchanged) and reads it back with
    bound run sums it across every launcher session of an arm and prints the
    total; it is a measurement, not a gate, and the channel-off arm correctly
    reports none at all.
+
+## Terminals
+
+`docs/protocol.md` → "Terminals — the pty exec" has the wire contract; this is
+how it is built. Measurements: `.wiki/gotchas/pty-transport.md`.
+
+**Three pieces, each with one job:**
+
+| Module | Owns | Does not |
+|---|---|---|
+| `src/launcher/ptyhost.mjs` | the probe, and driving `ptyHelper.py` over its stdio protocol: `v` first (always `{}`), `d`/`r` in, `S`/`o`/`w`/`x`/`e` out, with `pause`/`resume`/`close` | know about frames, kinds or the far side |
+| `src/launcher/kinds/ptyscript.mjs` | the far-side trampoline, its marker (`findMarker`), and the resize relay's script | spawn anything |
+| `src/launcher/terminal.mjs` | `Terminals`: validation, the plan, the marker, credit, held input, the relay, close/shutdown | build argv (the kind does) |
+
+`Session` only routes: an `exec` with `pty` to `Terminals.open` (after the
+routing gate and the root fence, like any exec), `input`/`resize`/`ack` to it,
+`close` to it first, and `shutdown()` adds its reaps to the MUST-3 race.
+
+**The vendored helper.** `src/launcher/ptyHelper.py` is a byte-for-byte copy of
+cc's `src/systems/ptyHelper.py`, never edited: its stdio protocol — including the
+`w` drain report every `inputAck` is granted from — is cc's contract. The gated
+half of `tests/protocol-constants.test.mjs` compares its sha256 to
+`$CC_CHECKOUT/src/systems/ptyHelper.py`, so drift aborts both conformance runners
+as constant drift does. To move the pin, re-copy the file from the new checkout.
+
+`src/launcher/ptyhost.mjs` is a port of cc's `src/systems/ptyHost.ts` with two
+differences: no cwd check (the frame's cwd is far-side) and no start timeout (cc
+bounds the open).
+
+**The host pty is the terminal device the provider owns.** Its master is what
+the helper writes input into and reads output from. The docker or ssh client on
+its other side puts it in raw mode and carries bytes to the far tty, so output
+needs no fix-up, and input credit is counted here — not at the far tty, which
+nothing on cc's host can see.
+
+**Tests:** `tests/ptyscript.test.mjs` (the trampoline under the real helper),
+`tests/terminal.test.mjs` (the core over the wire, through `--kind fake` with
+`CODE_SYSTEM_FAKE_PTY=1`), `tests/reapscript.test.mjs` (the session reap against
+local `/proc`), the `ptyPlan` rows in each kind's unit file, and the shared live
+rows `tests/ptyLiveRows.mjs` run by `tests/docker-live.test.mjs` and
+`tests/ssh-live.test.mjs` (ssh on both arms: mux and direct). All but the kind
+rows skip without python3, naming `CODE_SYSTEM_PYTHON`.
 
 ## Shutdown and reaping — protocol MUST 3
 

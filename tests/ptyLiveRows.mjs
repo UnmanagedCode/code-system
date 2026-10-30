@@ -84,8 +84,9 @@ row('pty: close kills the far program and its background job, and spares a setsi
   ctx.clean([bg, away]);
   openTerminal(ctx, 'k1', ['sh', '-c', `sleep ${bg} & setsid sleep ${away} & echo READY; wait`]);
   await until(l, 'k1', /READY/);
-  // The negative control: the program (whose cmdline names both) and both jobs run.
-  assert.ok(await settle(async () => (await ctx.count(bg)) === 2 && (await ctx.count(away)) === 2, 10_000),
+  // The negative control: three carry each marker — the trampoline and the
+  // program (whose argv both name it) and the job itself.
+  assert.ok(await settle(async () => (await ctx.count(bg)) === 3 && (await ctx.count(away)) === 3, 10_000),
     `running before the close: ${await ctx.count(bg)} / ${await ctx.count(away)}`);
   l.send({ type: 'close', id: 'k1' });
   assert.ok(await settle(async () => (await ctx.count(bg)) === 0, 10_000), `the program and its job are gone (${await ctx.count(bg)})`);
@@ -100,7 +101,8 @@ row('pty: stdin EOF to the launcher reaps an open terminal on the target', async
   ctx.clean([m]);
   openTerminal(ctx, 'e1', ['sh', '-c', `sleep ${m} & echo READY; wait`]);
   await until(l, 'e1', /READY/);
-  assert.ok(await settle(async () => (await ctx.count(m)) === 2, 10_000), 'running before the EOF');
+  // The trampoline, the program and the job.
+  assert.ok(await settle(async () => (await ctx.count(m)) === 3, 10_000), `running before the EOF (${await ctx.count(m)})`);
   l.closeStdin();
   await l.exited;
   assert.ok(await settle(async () => (await ctx.count(m)) === 0, 5_000), `gone after the EOF (${await ctx.count(m)})`);

@@ -40,6 +40,19 @@ import { KIND_META as SSH_META, createSshTransport } from './ssh.mjs';
  *   A KIND WITHOUT IT IS UNTOUCHED. Every call site treats an absent member as
  *   "no channel offered" and takes the per-op spawn path, which is why `ssh` and
  *   `host` are byte-identical although `makeRunner` is shared by every kind.
+ * @property {(config:object, req:{command:string[], token:string, remoteId:string|null})
+ *            => {file:string, args:string[], env?:Record<string,string>}} [ptyPlan]
+ *   OPTIONAL, and PURE. A TERMINAL's client: wraps `command` — the far-side
+ *   trampoline (kinds/ptyscript.mjs), opaque here — in whatever reaches the
+ *   target WITH A TTY, putting `token` (as CC_EXEC_TOKEN) and `remoteId` (as
+ *   CC_REMOTE) on the trampoline's own environment and nothing else: the env
+ *   overlay rides `command` and must reach the program only. The core runs it
+ *   under the host pty helper. A kind without it never advertises `pty`.
+ * @property {'exec'|'child'} [ptyMode]  Whether the trampoline `exec`s the program
+ *                                   or stays as its parent. Default `exec`.
+ * @property {boolean} [ptyResizeRelay]  Whether a `resize` is also set on the far
+ *                                   tty by an `stty` through `spawnPlan`, holding
+ *                                   input until it lands.
  * @property {(config:object) => Promise<Reachability>} reachability
  * @property {(config:object, handle:ExecHandle) => Promise<void>} reap
  *   MAY THROW. A kind that cannot prove its relay reached the far side must say
@@ -113,7 +126,11 @@ import { KIND_META as SSH_META, createSshTransport } from './ssh.mjs';
  */
 
 /** @typedef {{connected:boolean, detail:string, fingerprint:string|null}} Reachability */
-/** @typedef {{pid:number|null, token:string, remoteId:string|null}} ExecHandle */
+/**
+ * @typedef {{pid:number|null, token:string, remoteId:string|null, sid?:string|null}} ExecHandle
+ * `sid` is set only for a terminal whose trampoline reported its session: the
+ * reap is then scoped to it (`reapScriptFor`, kinds/reapscript.mjs).
+ */
 
 const FACTORIES = {
   docker: createDockerTransport,

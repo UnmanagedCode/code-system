@@ -218,6 +218,47 @@ Three further differences the mode really has, stated rather than glossed:
 If you need a `cd`, exported variables or a background job to survive, put them
 in a single command, or in a profile file on the target.
 
+## Terminals on a docker or ssh remote
+
+A docker or ssh remote also serves **terminals**: an interactive program — your
+login shell when none is named — under a real pseudo-terminal on the target,
+with keystrokes, `^C`, resizes and output flowing both ways. Whatever cc offers
+as a terminal on a project whose *Remote* is one of these runs there.
+
+**What it needs:**
+
+- **python3 on cc's machine**, not on the target. The provider drives cc's own
+  pty helper there. Without one, terminals on that system are refused by name
+  (cc's `SYSTEM_NO_PTY`) and everything else keeps working; the launcher's
+  stderr says why. `CODE_SYSTEM_PYTHON` names a different interpreter.
+- **`stty`, `tty`, `id` and `env` on the target** — already part of the tooling
+  baseline every remote must pass.
+- **An sshd that grants terminals.** `PermitTTY no` refuses the terminal by name
+  (`EPTY`).
+
+**How it behaves:**
+
+- **The terminal opens in the project's directory**; a directory or program
+  that is not there is refused before anything starts.
+- **Environment variables cc adds reach the program only** — not the docker or
+  ssh client, and not anything the provider runs on the target around it.
+- **Closing the terminal ends the program and the jobs it backgrounded.** A job
+  started with `setsid` (or `nohup setsid …`) survives, as it does when a local
+  terminal window closes.
+- **A program killed by a signal reports exit code 128+n**, never the signal
+  name — the provider runs it under a small shell on the target, and a shell
+  cannot tell the two apart.
+- **A paste into a program that is not reading** is accepted until the
+  transport's own buffer is full, then the keyboard stalls until it reads:
+  about **2 MiB** on ssh and about **300 KiB** on docker. Nothing is lost; it
+  waits.
+- **docker: a lone `ctrl-\` is held until the next key.** docker detaches a
+  terminal on a key sequence it cannot be told to ignore, so the provider sets
+  one no paste produces — eight control keys starting with `ctrl-\` — and docker
+  holds that first key until it sees whether the rest follows.
+- **ssh has no `~` escape** inside these terminals, so `~.` in a paste is just
+  text.
+
 ## Field explanations
 
 The add and edit forms show only labels, inputs and buttons. Each field's
