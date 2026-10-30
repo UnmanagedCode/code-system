@@ -1044,9 +1044,9 @@ live('pty: PermitTTY no is EPTY, direct and through the mux; the same box with P
 // PINS THE INPUT BOUND ssh actually has (documented in docs/features.md): input
 // credit is granted as bytes enter the HOST pty, and behind it ssh's own channel
 // window keeps accepting while the far program reads nothing — ~2 MiB
-// (measured), far above PTY_INPUT_WINDOW_BYTES. It is still FIXED: past it,
-// credit stops. Driven past cc's window on purpose, as cc never would, to see
-// where the transport stops.
+// (measured), far above PTY_INPUT_WINDOW_BYTES. Driven exactly as cc drives it,
+// never more than one window ahead of the credit returned, so what this
+// measures is where credit STOPS: fixed, and past one window.
 live('pty: a far program that reads nothing stalls input at ssh\'s own window, ~2 MiB', async (t, g) => {
   const target = await withSshTarget(t, g);
   const store = await storeFor(t, target);
@@ -1054,12 +1054,16 @@ live('pty: a far program that reads nothing stalls input at ssh\'s own window, ~
   await l.hello();
   openTerminal({ l, remoteId: 'alpha' }, 's1', ['sh', '-c', 'stty raw -echo; echo READY; exec sleep 1000']);
   await until(l, 's1', /READY/);
-  const SENT = 4 * 1024 * 1024;
-  const chunk = Buffer.alloc(64 * 1024, 0x61).toString('base64');
-  for (let at = 0; at < SENT; at += 64 * 1024) l.send({ type: 'input', id: 's1', dataB64: chunk });
-  // Settled: no new credit for a whole second.
+  const CHUNK = 64 * 1024;
+  const chunk = Buffer.alloc(CHUNK, 0x61).toString('base64');
+  let sent = 0;
   let last = -1;
+  // Send while credit allows; settled once a whole second brings no new credit.
   await settle(async () => {
+    while (sent + CHUNK - creditedOf(l, 's1') <= PTY_INPUT_WINDOW_BYTES) {
+      l.send({ type: 'input', id: 's1', dataB64: chunk });
+      sent += CHUNK;
+    }
     const now = creditedOf(l, 's1');
     if (now === last) return true;
     last = now;
@@ -1067,9 +1071,11 @@ live('pty: a far program that reads nothing stalls input at ssh\'s own window, ~
     return false;
   }, 60_000);
   const credited = creditedOf(l, 's1');
-  assert.ok(credited > PTY_INPUT_WINDOW_BYTES, `more than one cc window is absorbed (${credited})`);
   assert.ok(credited >= 1024 * 1024 && credited <= 3 * 1024 * 1024, `about ssh's 2 MiB window (${credited})`);
-  assert.ok(credited < SENT, 'and then it stops: the bound is fixed');
+  // The sender is saturated: what is out uncredited is within one chunk of a
+  // whole window, so credit — not the sender — is what stopped.
+  assert.ok(sent - credited > PTY_INPUT_WINDOW_BYTES - CHUNK && sent - credited <= PTY_INPUT_WINDOW_BYTES,
+    `and then it stops, with a window outstanding (${sent - credited})`);
   assert.equal(framesOf(l, 's1').some(f => f.type === 'exit' || f.type === 'error'), false, 'the terminal stays open');
   l.send({ type: 'close', id: 's1' });
 });
