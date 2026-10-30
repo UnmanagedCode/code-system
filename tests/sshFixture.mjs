@@ -136,6 +136,8 @@ export async function withSshTarget(t, gate, {
   stem = 'box', image = 'debian', alias = uniqueName('alias'), extraConfig = [], allowPassword = false,
   // sshd's listening ports (default: 22). The first becomes `config.port`.
   ports,
+  // sshd's `PermitTTY` (default: sshd's own, yes).
+  permitTty,
 } = {}) {
   // THE ALIAS IS UNIQUE PER TARGET BY DEFAULT, and that is not cosmetic:
   // `controlPathFor` keys on (user, host), so two targets sharing an alias
@@ -155,7 +157,8 @@ export async function withSshTarget(t, gate, {
   const started = await run([...cli, 'run', '-d', '--name', name, '-e', `AUTHORIZED_KEY=${pub}`,
     // Lets sshd accept passwords (the image's entrypoint writes the drop-in).
     ...(allowPassword ? ['-e', 'ALLOW_PASSWORD=1'] : []),
-    ...(ports ? ['-e', `SSHD_PORTS=${ports.join(' ')}`] : []), imageTag]);
+    ...(ports ? ['-e', `SSHD_PORTS=${ports.join(' ')}`] : []),
+    ...(permitTty ? ['-e', `SSHD_PERMIT_TTY=${permitTty}`] : []), imageTag]);
   const config = { host: alias, user: 'root', ...(ports ? { port: ports[0] } : {}) };
 
   // Registered BEFORE the started-ok check, so a container that came up and

@@ -15,6 +15,7 @@ import {
 import { admits } from './admission.mjs';
 import { readFileOp, shellQuote, writeFileOp } from './fileops.mjs';
 import { makeRunner } from './run.mjs';
+import { Terminals } from './terminal.mjs';
 import { withinRoot } from './remotes.mjs';
 
 // THE ONE CWD A FENCE MUST NOT REFUSE, and it is cc's placeholder, not a
@@ -79,6 +80,8 @@ export class Session {
   // leave the far-side command running. A file operation is as much a far-side
   // process as an `exec` is, so it gets the same reap treatment.
   #fileOps = new Map();
+  // Every open pty exec (src/launcher/terminal.mjs).
+  #terminals;
   #greeted = false;
   #chain = Promise.resolve();
 
@@ -88,6 +91,9 @@ export class Session {
     // stderr, of which cc keeps a bounded tail (MUST 1).
     warn = (msg) => { try { process.stderr.write(`${msg}\n`); } catch { /* nobody listening */ } },
     version = '0.1.0', reapDeadlineMs = REAP_DEADLINE_MS, channels = null,
+    // The probed python3 that runs the pty helper, or null when `pty` is not
+    // advertised.
+    ptyInterpreter = null,
   }) {
     this.#transport = transport;
     this.#source = source;
@@ -98,6 +104,10 @@ export class Session {
     this.#version = version;
     this.#reapDeadlineMs = reapDeadlineMs;
     this.#channels = channels;
+    this.#terminals = new Terminals({
+      transport, write, warn, channels, interpreter: ptyInterpreter,
+      reap: (config, handle) => this.#reap({ config, handle }),
+    });
   }
 
   // Frames are handled STRICTLY IN ARRIVAL ORDER. Resolving a remote is an
@@ -162,9 +172,16 @@ export class Session {
     }
 
     switch (f.type) {
-      case 'exec': return this.#exec(f, remote);
+      case 'exec':
+        if (f.pty !== undefined && f.pty !== null) return this.#terminals.open(f, remote);
+        return this.#exec(f, remote);
+      // A `signal` or `detach` naming a terminal finds no exec and is dropped:
+      // cc never sends either for a pty id, and §5 lets a provider ignore them.
       case 'signal': return this.#signal(f);
-      case 'close': return this.#close(f);
+      case 'close': return this.#terminals.close(String(f.id)) ? undefined : this.#close(f);
+      case 'input': return this.#terminals.input(f);
+      case 'resize': return this.#terminals.resize(f);
+      case 'ack': return this.#terminals.ack(f);
       case 'detach': return this.#detach(f);
       case 'readFile': return this.#readFileOpen(f, remote);
       case 'writeFile': return this.#writeOpen(f, remote);
@@ -785,7 +802,8 @@ export class Session {
   // Neither dies when we do (measured: .wiki/gotchas/docker-exec-transport.md),
   // and cc has no way to clean up after a provider that does not do this itself.
   async shutdown() {
-    const pending = [];
+    // Terminals first: each hangs its host pty up, and its reap joins the race.
+    const pending = [...this.#terminals.shutdown()];
     for (const [, state] of this.#execs) {
       state.closed = true;
       if (state.timer) clearTimeout(state.timer);

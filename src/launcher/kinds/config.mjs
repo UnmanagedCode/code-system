@@ -91,3 +91,17 @@ export function execEnv(frameEnv, remoteId, base = process.env) {
   if (frameEnv === null && !remoteId) return null;
   return { ...(frameEnv ?? base), ...overlay };
 }
+
+/**
+ * The operand a trampoline's `cd` receives — ssh's exec and every kind's
+ * terminal. Absolute passes through (including `/`). A relative cwd is anchored
+ * with `./`, because `cd -` means $OLDPWD and a relative name is searched on
+ * $CDPATH — both silently relocate the command and print on STDOUT, which would
+ * corrupt the first line a reader parses. A relative cwd still resolves against
+ * the login directory, as chdir(2) did. Empty stays empty and the trampoline
+ * refuses it.
+ */
+export function cdOperand(cwd) {
+  const dir = String(cwd);
+  return dir === '' || dir.startsWith('/') ? dir : `./${dir}`;
+}

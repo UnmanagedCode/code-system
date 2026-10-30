@@ -34,16 +34,21 @@ const b64 = (s) => Buffer.from(s).toString('base64');
 // and a launcher speaking terminals. `env` adds the fake's seams.
 async function rig(t, { env = {}, config = {}, args = [] } = {}) {
   const store = await tempStore();
-  t.after(() => store.cleanup());
   await writeRecord(store.dir, record('alpha', { config }));
   const cwd = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-system-term-')));
-  t.after(() => fs.rm(cwd, { recursive: true, force: true }));
   const reapLog = path.join(store.dir, 'reap.log');
   const l = new Launcher(['--kind', 'fake', ...args], {
     CODE_SYSTEM_STORE: store.dir, CODE_SYSTEM_FAKE_TRANSPORT: FAKE_TRANSPORT,
     CODE_SYSTEM_FAKE_PTY: '1', CODE_SYSTEM_FAKE_REAP_LOG: reapLog, CODE_SYSTEM_PYTHON: PYTHON, ...env,
   });
-  t.after(() => l.kill());
+  // ONE hook, in this order: the launcher reaps into the store as it dies, so
+  // the store goes only once the launcher has.
+  t.after(async () => {
+    l.kill();
+    await l.exited;
+    await store.cleanup();
+    await fs.rm(cwd, { recursive: true, force: true });
+  });
   await l.hello();
   const reaps = async () => (await fs.readFile(reapLog, 'utf8').catch(() => '')).split('\n').filter(Boolean).map(JSON.parse);
   return { l, cwd, store, reaps };

@@ -26,6 +26,7 @@ import { buildReapScript } from '../src/launcher/kinds/reapscript.mjs';
 import { makeRunner } from '../src/launcher/run.mjs';
 import { SCHEMA } from '../src/store.mjs';
 import { Launcher, tempStore, writeRecord } from './helpers.mjs';
+import { PTY_LIVE_ROWS, framesOf, openTerminal } from './ptyLiveRows.mjs';
 import {
   countingShim, inContainer, markerCount, resolveDockerCli, run, settle, skipUnlessDocker,
   tempDir, withContainer,
@@ -1061,6 +1062,41 @@ live('a container stopped under an open channel still answers ENOREMOTE', async 
   const err = await l.waitFor(f => f.type === 'error' && f.id === 'afterstop');
   assert.equal(err.code, 'ENOREMOTE', `got ${JSON.stringify(err)}`);
   assert.match(err.message, /ATTACH-ONLY/);
+});
+
+// ── terminals ────────────────────────────────────────────────────────
+
+// The shared live rows (tests/ptyLiveRows.mjs), through the shipped launcher
+// against a real container.
+for (const r of PTY_LIVE_ROWS) {
+  live(r.name, async (t, d) => {
+    const box = await withContainer(t, d.cli);
+    const store = await tempStore();
+    t.after(() => store.cleanup());
+    await writeRecord(store.dir, dockerRecord('alpha', box));
+    const l = launcherFor(t, store, d.cli);
+    assert.equal((await l.hello()).capabilities.pty, true, `this host must run the pty helper: ${l.stderr}`);
+    await r.fn({
+      t, l, remoteId: 'alpha', marker: newMarker,
+      count: (m) => markerCount(d.cli, box, m),
+      // The container goes with the test, and everything in it.
+      clean: () => {},
+    });
+  });
+}
+
+// PINS the pre-marker classification: the client's own refusal, CRLF and all,
+// read through the kind's classifier before anything counts as started.
+live('pty: a missing container is ENOREMOTE before any ptyStarted', async (t, d) => {
+  const store = await tempStore();
+  t.after(() => store.cleanup());
+  await writeRecord(store.dir, dockerRecord('alpha', `code-system-no-such-${process.pid}`));
+  const l = launcherFor(t, store, d.cli);
+  await l.hello();
+  openTerminal({ l, remoteId: 'alpha' }, 'm1', ['true']);
+  const err = await l.waitFor(f => f.id === 'm1' && (f.type === 'error' || f.type === 'exit'), { timeoutMs: 15_000 });
+  assert.deepEqual([err.type, err.code], ['error', 'ENOREMOTE'], JSON.stringify(err));
+  assert.equal(framesOf(l, 'm1').some(f => f.type === 'ptyStarted'), false);
 });
 
 // ── registration, and the count proof ────────────────────────────────

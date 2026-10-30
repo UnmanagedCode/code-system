@@ -45,6 +45,15 @@ export function remoteIdDefect(id) {
   return null;
 }
 
+// A pty exec's two credit windows (systems-protocol.md §5, "pty exec"): the
+// most unacked `stdout` bytes a terminal may have on the wire, and the most
+// `input` bytes cc sends before an `inputAck` returns credit for them.
+export const PTY_WINDOW_BYTES = 4 * CHUNK_BYTES;
+export const PTY_INPUT_WINDOW_BYTES = 4 * CHUNK_BYTES;
+
+// A terminal's `cols` and `rows` are integers in 1..PTY_DIM_MAX.
+export const PTY_DIM_MAX = 4096;
+
 // SIGTERM → SIGKILL delay when the frame names none.
 export const DEFAULT_KILL_GRACE_MS = 100;
 
@@ -59,11 +68,11 @@ export const REQUEST_FRAMES = new Set(['exec', 'readFile', 'writeFile', 'describ
 
 // The frame types whose meaning IS their payload, so a bad payload is a bad
 // frame.
-const PAYLOAD_FRAMES = new Set(['stdout', 'stderr', 'data']);
+const PAYLOAD_FRAMES = new Set(['stdout', 'stderr', 'data', 'input']);
 
 export const PROTOCOL_ERROR_CODES = [
   'EPROTO', 'ETRANSPORT', 'ETIMEDOUT', 'EUNSUPPORTED', 'ESHELLGONE',
-  'EFBIG', 'ECANCELLED', 'ENOREMOTE',
+  'EFBIG', 'ECANCELLED', 'ENOREMOTE', 'EPTY',
 ];
 
 export const FS_ERROR_CODES = [

@@ -12,7 +12,7 @@ import { spawn } from 'node:child_process';
 import { asObject, execEnv, operand, operatorError } from './config.mjs';
 // The kill relay's far-side script is SHARED with `ssh`: identical mechanism,
 // identical reason (a far-side child is not this process's OS descendant).
-import { REAP_TAG, TOKEN_VAR, buildReapScript } from './reapscript.mjs';
+import { REAP_TAG, TOKEN_VAR, reapScriptFor } from './reapscript.mjs';
 
 // THE OPERATOR SEAM for a host where the docker CLI needs a prefix (this one:
 // the socket is root-owned, so live tests want ["sudo","-n","docker"]).
@@ -199,6 +199,15 @@ const DAEMON_PREFIX = 'Error response from daemon: ';
 
 const first = (s) => String(s ?? '').split('\n')[0].trim();
 
+// A TERMINAL'S DETACH SEQUENCE. docker's default `^P^Q` — and
+// `--detach-keys=""`, which falls back to it (measured) — ends the client
+// mid-stream on those two bytes in any paste, leaving the program running in the
+// container; there is no value that turns detaching off. So the sequence is
+// eight distinct control keys, which no paste or typist produces. Its cost is
+// the FIRST key alone: docker's escape proxy holds a lone `ctrl-\` until the
+// next byte decides whether it began the sequence.
+export const DETACH_KEYS = 'ctrl-\\,ctrl-],ctrl-^,ctrl-_,ctrl-@,ctrl-y,ctrl-x,ctrl-v';
+
 export function createDockerTransport({ cli } = {}) {
   const argv0 = cli ?? dockerCliArgv();
 
@@ -339,6 +348,32 @@ export function createDockerTransport({ cli } = {}) {
       };
     },
 
+    // A TERMINAL (systems-protocol.md §5, "pty exec"). `child`: under
+    // `docker exec -t` the far process's parent is outside the namespace —
+    // `$PPID` reads 0 (measured) — so the trampoline stays as the program's
+    // parent rather than exec'ing it. And the client relays a resize late or not
+    // at all (measured: input sent right after a resize beat it 197/200 times,
+    // and one in the first ~0.3 s is lost), so the core relays it itself.
+    ptyMode: 'child',
+    ptyResizeRelay: true,
+
+    // PURE, like `spawnPlan`. `-i -t` for the tty; NO `-w`, because the
+    // trampoline (`req.command`, kinds/ptyscript.mjs) enters the cwd and
+    // answers a missing one with its own marker rather than an OCI line on the
+    // terminal; the identity; and the two PLUMBING variables as `-e` — on the
+    // trampoline itself, where the reap finds them — and nothing else: the
+    // caller's env overlay is in the trampoline's argv and reaches only the
+    // program.
+    ptyPlan(config, req) {
+      const container = String(config?.container ?? '');
+      const args = ['exec', '-i', '-t', '--detach-keys', DETACH_KEYS];
+      const user = String(config?.user ?? '');
+      if (user) args.push('-u', user);
+      if (req.remoteId !== null) args.push('-e', `CC_REMOTE=${req.remoteId}`);
+      args.push('-e', `${TOKEN_VAR}=${req.token}`, '--', container, ...req.command);
+      return { file: argv0[0], args: [...argv0.slice(1), ...args], env: undefined };
+    },
+
     // THE HELD-OPEN CHANNEL'S ARGV. PURE, exactly as `spawnPlan` is, and for
     // the same reason: the core spawns what this returns, so the whole argv is
     // assertable with no docker present.
@@ -445,7 +480,7 @@ export function createDockerTransport({ cli } = {}) {
       const user = String(config?.user ?? '');
       const res = await runDocker(
         argv0,
-        ['exec', ...(user ? ['-u', user] : []), '--', container, '/bin/sh', '-c', buildReapScript(handle.token)],
+        ['exec', ...(user ? ['-u', user] : []), '--', container, '/bin/sh', '-c', reapScriptFor(handle)],
         { timeoutMs: REAP_TIMEOUT_MS });
 
       // A REAP THAT COULD NOT RUN MUST NOT READ AS A REAP THAT FOUND NOTHING.
