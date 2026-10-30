@@ -4,6 +4,8 @@
 //
 //   node src/launcher/main.mjs --kind <docker|ssh|host>
 //                              [--no-process-group-signal]
+//                              [--no-pty]   (every kind: advertise no
+//                                terminals, and skip the python3 probe)
 //                              [--remote <id>=<absolute root>]…   (host only;
 //                                <id> must be one cc accepts as a Remote —
 //                                `remoteIdDefect`, at most REMOTE_ID_MAX
@@ -20,6 +22,7 @@ import {
   NdjsonDecoder, ProtocolError, REMOTE_ID_MAX, encodeFrame, remoteIdDefect,
 } from './protocol.mjs';
 import { createChannelPool } from './channel.mjs';
+import { probePtyHelper, pythonName } from './ptyhost.mjs';
 import { FlagRemoteSource, StoreRemoteSource } from './remotes.mjs';
 import { createTransport, isKnownKind } from './kinds/index.mjs';
 import { hostKindRefusal, hostUnfencedRefusal } from './kinds/host.mjs';
@@ -50,6 +53,7 @@ export function parseArgs(argv) {
   const o = {
     kind: null,
     processGroupSignal: true,
+    pty: true,
     remotes: new Map(),
     mirrors: new Map(),
   };
@@ -62,6 +66,10 @@ export function parseArgs(argv) {
     const a = argv[i];
     if (a === '--kind') o.kind = argv[++i] ?? '';
     else if (a === '--no-process-group-signal') o.processGroupSignal = false;
+    // cc's conformance configuration 2 appends it, to every provider. Accepted
+    // on every kind: exiting on it would fail that whole configuration at the
+    // handshake (systems-protocol.md §10).
+    else if (a === '--no-pty') o.pty = false;
     else if (a === '--remote') {
       const spec = argv[++i] ?? '';
       const eq = spec.indexOf('=');
@@ -160,12 +168,24 @@ export async function runLauncher(argv, { stdin = process.stdin, stdout = proces
   // `remoteListing` FOLLOWS `remotes`, because every source this launcher builds
   // can list its configured set completely: `StoreRemoteSource` from the store,
   // `FlagRemoteSource` from the `--remote` flags (§2.2, configured membership).
+  // TERMINALS need the pty helper's python3 on cc's host — never on the
+  // target — probed once, BEFORE stdin is read, so the hello can answer it.
+  // Without one the launcher still serves and advertises `pty:false`, so cc
+  // refuses a terminal SYSTEM_NO_PTY by name; the reason goes to stderr.
+  let ptyInterpreter = null;
+  if (opts.pty && typeof transport.ptyPlan === 'function') {
+    const probe = await probePtyHelper({ python: pythonName() });
+    if (probe.ok) ptyInterpreter = probe.interpreter;
+    else stderr.write(`code-system launcher (${opts.kind}): terminals are off — ${probe.reason}\n`);
+  }
+
   const remotes = transport.remotes === true;
   const capabilities = {
     processGroupSignal: transport.processGroupSignal === true,
     remotes,
     remoteDescriptors: transport.remoteDescriptors === true,
     remoteListing: remotes,
+    pty: ptyInterpreter !== null,
   };
 
   // NOTHING BUT FRAMES GOES TO STDOUT (MUST 1). Everything diagnostic goes to
@@ -197,6 +217,7 @@ export async function runLauncher(argv, { stdin = process.stdin, stdout = proces
     capabilities,
     write,
     channels,
+    ptyInterpreter,
     version: VERSION,
     // Diagnostics the session must report but must not die of — a failed reap.
     warn: (msg) => { stderr.write(`${msg}\n`); },

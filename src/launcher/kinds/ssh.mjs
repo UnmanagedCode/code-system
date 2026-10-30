@@ -28,12 +28,13 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { asObject, execEnv, operand, operatorError } from './config.mjs';
+import { asObject, cdOperand, execEnv, operand, operatorError } from './config.mjs';
 import { shellQuote } from '../fileops.mjs';
 // The kill relay's far-side script is SHARED with `docker`: identical
 // mechanism, identical reason (a far-side child is not this process's OS
 // descendant).
-import { REAP_TAG, TOKEN_VAR, buildReapScript } from './reapscript.mjs';
+import { REAP_TAG, TOKEN_VAR, reapScriptFor } from './reapscript.mjs';
+import { PTY_ENV_BIN } from './ptyscript.mjs';
 
 // THE OPERATOR SEAM for a host where the ssh invocation needs to differ (a
 // pinned config file, a wrapper). A WHOLE ARGV, JSON — not a path — because the
@@ -204,19 +205,6 @@ const CHDIR_SCRIPT = '[ -n "$1" ] && cd -P -- "$1" 2>/dev/null || { printf "'
   + `exec ${ENV_BIN} "$@"`;
 
 /**
- * The operand `cd` receives. Absolute passes through (including `/`). A relative
- * cwd is anchored with `./`, because `cd -` means $OLDPWD and a relative name is
- * searched on $CDPATH — both silently relocate the command and print on STDOUT,
- * which would corrupt the first line the file-operation readers parse. A relative
- * cwd still resolves against the login directory, as chdir(2) did. Empty stays
- * empty and the script refuses it.
- */
-function dirOperand(cwd) {
-  const dir = String(cwd);
-  return dir === '' || dir.startsWith('/') ? dir : `./${dir}`;
-}
-
-/**
  * The per-uid directory the ControlPath sockets live in. NOT a bare /tmp entry —
  * see `ensureControlDir` for what the directory's ownership and mode buy.
  */
@@ -344,7 +332,9 @@ export async function ensureControlDir() {
  *
  * `-T` IS LOAD-BEARING: we honour the operator's ssh config, so a `RequestTTY
  * force` in it would give us a pty, and a pty's CR translation corrupts
- * fileops' `CCSTAT` header parse (src/launcher/fileops.mjs).
+ * fileops' `CCSTAT` header parse (src/launcher/fileops.mjs). Only a TERMINAL
+ * (`ptyPlan`) passes `tty: true`, for `-tt`: a tty forced although the client's
+ * own stdin is the helper's pty, not a terminal ssh was started from.
  *
  * NO CONFIG VALUE EVER BECOMES AN `-o`. Every value here is a provider-owned
  * constant or the provider-computed ControlPath. Config values reach
@@ -357,10 +347,11 @@ export async function ensureControlDir() {
  *
  * @param {'no'|'yes'} master
  * @param {object} [config] the remote's stored config
+ * @param {boolean} [tty]
  */
-export function sshBaseArgs(controlPath, { master, config }) {
+export function sshBaseArgs(controlPath, { master, config, tty = false }) {
   return [
-    '-T',
+    tty ? '-tt' : '-T',
     '-o', `BatchMode=${config?.password ? 'no' : 'yes'}`,
     '-o', 'StrictHostKeyChecking=accept-new',
     '-o', `ConnectTimeout=${CONNECT_TIMEOUT_S}`,
@@ -577,6 +568,7 @@ const BAD_HOSTNAME = 'hostname contains invalid characters';
 // operator to fix their `~/.ssh/config` for somebody else's failure.
 const AUTH_DENIED = /^(\S+: )?Permission denied \([a-z,-]+\)/;
 const HOSTKEY_FAILED = /^Host key verification failed/;
+const PTY_REFUSED = /^PTY allocation request failed/;
 
 // The notice `accept-new` writes when it records an unknown key — FIRST on
 // stderr, ahead of an auth refusal on the same dial (measured, CRLF).
@@ -789,7 +781,7 @@ export function createSshTransport({ cli, env = process.env } = {}) {
       // FRAME's argv[0] and may start with `-`.
       //
       // `<dir>` is a positional parameter of the trampoline and never begins
-      // with `-` (see `dirOperand`), and the script `shift`s it off before
+      // with `-` (see `cdOperand`), and the script `shift`s it off before
       // `env` sees its arguments, so `<dir>` is no part of `env`'s option
       // section. The trampoline replaces docker's `-w`, which has no ssh
       // equivalent.
@@ -798,7 +790,7 @@ export function createSshTransport({ cli, env = process.env } = {}) {
         '-c',
         CHDIR_SCRIPT,
         'sh',
-        dirOperand(req.cwd),
+        cdOperand(req.cwd),
         ...(req.env === null ? [] : ['-i']),
         '--',
         ...assignments,
@@ -838,6 +830,44 @@ export function createSshTransport({ cli, env = process.env } = {}) {
       // spawn's stdio[0], so 'ignore' already gives ssh a closed stdin (it
       // cannot eat the launcher's frame stream) and 'pipe' is how writeFile's
       // base64 payload arrives and how EOF propagates. No `-n` and no `-i`.
+    },
+
+    // A TERMINAL (systems-protocol.md §5, "pty exec"). `child`, because a far
+    // program that dies by a signal reads as exit 255 through ssh — the same
+    // code as a transport failure — while a trampoline that stays its parent
+    // hands back 128+n (measured). The resize relay, because the multiplexed
+    // client relays a resize late enough to lose the race to the next keystroke
+    // (measured: 18/200; direct ssh 0/200).
+    ptyMode: 'child',
+    ptyResizeRelay: true,
+
+    // PURE, like `spawnPlan`. `-tt` for the tty; `LogLevel=ERROR`, or ssh
+    // writes "(Shared) connection to … closed." into the terminal at exit
+    // (measured); escape char `none`, or `\n~.` in a paste disconnects. The
+    // remote is ONE element, in which the plumbing rides `env` ahead of the
+    // trampoline — on the trampoline itself, where the reap finds it. The
+    // caller's env overlay is in no argv: it goes in-band over the terminal and
+    // reaches the program only. The client's own env is the credential's, as
+    // for every invocation.
+    ptyPlan(config, req) {
+      const auth = sshAuth(config, env);
+      const remote = [
+        PTY_ENV_BIN, '--',
+        ...(req.remoteId !== null ? [`CC_REMOTE=${req.remoteId}`] : []),
+        `${TOKEN_VAR}=${req.token}`,
+        ...req.command,
+      ].map(shellQuote).join(' ');
+      return {
+        file: argv0[0],
+        args: [
+          ...argv0.slice(1),
+          ...sshBaseArgs(controlPathFor(config), { master: 'no', config, tty: true }),
+          '-o', 'LogLevel=ERROR', '-e', 'none',
+          ...auth.args,
+          '--', destFor(config), remote,
+        ],
+        env: auth.env,
+      };
     },
 
     // TIER 1 of the two-tier baseline probe: it reads a HOST-SIDE artifact —
@@ -1073,7 +1103,7 @@ export function createSshTransport({ cli, env = process.env } = {}) {
 
       // The relay carries NO token in its own environment, so it cannot kill
       // itself — the token appears only inside the script it scans FOR.
-      const remote = [REAP_SHELL, '-c', buildReapScript(handle.token)].map(shellQuote).join(' ');
+      const remote = [REAP_SHELL, '-c', reapScriptFor(handle)].map(shellQuote).join(' ');
       const auth = sshAuth(config, env);
       const res = await runSsh(
         argv0, [...sshBaseArgs(controlPath, { master: 'no', config }), ...auth.args, '--', dest, remote],
@@ -1133,6 +1163,14 @@ export function createSshTransport({ cli, env = process.env } = {}) {
             message: `ssh refused the configured host '${host}' as a hostname: ${first(stderr)}`,
             stderr: allOf(stderr),
           };
+        }
+        // A TERMINAL REFUSED BY THE SERVER (`PermitTTY no`) on a DIRECT
+        // connection: under `-tt` ssh refuses it itself and never runs the
+        // command (measured, OpenSSH 10). Through a multiplexed master it runs
+        // the command tty-less instead, which the trampoline answers.
+        const ptyLine = sshOwnLine(stderr, PTY_REFUSED);
+        if (ptyLine) {
+          return { code: 'EPTY', message: `'${dest}' refused this provider a terminal: ${ptyLine}`, stderr: allOf(stderr) };
         }
         // OUR ACCESS FAILING IS NOT THE REMOTE BEING ABSENT, so never
         // ENOREMOTE: that would send a user to rebuild a host that is fine.

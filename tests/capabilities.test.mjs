@@ -11,6 +11,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { ALL_KINDS, REGISTERED_KINDS, createTransport } from '../src/launcher/kinds/index.mjs';
 import { createDockerTransport } from '../src/launcher/kinds/docker.mjs';
 import { createSshTransport } from '../src/launcher/kinds/ssh.mjs';
@@ -19,7 +20,15 @@ import { FAKE_TRANSPORT, Launcher, tempStore } from './helpers.mjs';
 // cc's `Capabilities` interface, verbatim (`src/systems/protocol.ts`). A
 // missing key is false; an unknown key is ignored — so an extra key would be a
 // field with no reader.
-const CAPABILITY_KEYS = ['processGroupSignal', 'remoteDescriptors', 'remoteListing', 'remotes'];
+const CAPABILITY_KEYS = ['processGroupSignal', 'pty', 'remoteDescriptors', 'remoteListing', 'remotes'];
+
+// THIS HOST's answer to "can the pty helper run here", asked independently of
+// the launcher's own probe: the same import line, the same interpreter name.
+// `pty` is advertised iff it succeeds, so it is a fact about the host, never a
+// constant.
+// The same interpreter NAME the launcher probes: CODE_SYSTEM_PYTHON, else python3.
+const HOST_PTY = spawnSync(process.env.CODE_SYSTEM_PYTHON?.trim() || 'python3',
+  ['-I', '-c', 'import pty,termios,fcntl,select,sys'], { stdio: 'ignore' }).status === 0;
 
 test('only docker and ssh are auto-registered — host is deliberately not', () => {
   assert.deepEqual(REGISTERED_KINDS, ['docker', 'ssh']);
@@ -40,6 +49,7 @@ for (const kind of ['docker', 'ssh']) {
       remotes: true,
       remoteDescriptors: true,
       remoteListing: true,
+      pty: HOST_PTY,
     });
     assert.match(hs.provider, new RegExp(`^code-system-${kind}/\\S+$`));
   });
@@ -60,6 +70,35 @@ for (const kind of ['docker', 'ssh']) {
     assert.equal(caps.remoteListing, true);
   });
 }
+
+// PINS the absent-behaviour of `pty` (systems-protocol.md §2): without a
+// runnable python3 the provider advertises `pty:false` — so cc refuses a
+// terminal SYSTEM_NO_PTY naming the system and provider — says why on stderr,
+// and goes on serving everything else. A crash or a silent `false` would both
+// red this.
+for (const kind of ['docker', 'ssh', 'host']) {
+  test(`${kind}: no runnable python3 advertises pty:false, names the reason on stderr, and still serves`, async (t) => {
+    const store = await tempStore();
+    t.after(() => store.cleanup());
+    const l = new Launcher(['--kind', kind], {
+      CODE_SYSTEM_STORE: store.dir, CODE_SYSTEM_PYTHON: '/nonexistent/python3',
+      CODE_SYSTEM_ALLOW_HOST_KIND: '1', CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED: '1',
+    });
+    t.after(() => l.kill());
+    const hs = await l.hello();
+    assert.equal(hs.capabilities.pty, false);
+    assert.match(l.stderr, /\/nonexistent\/python3/, `the stderr line names the interpreter it tried: ${l.stderr}`);
+    // Still serving: a frame after the hello is answered.
+    l.send({ type: 'listRemotes', id: 'l1' });
+    await l.waitFor(f => f.id === 'l1');
+  });
+}
+
+test('host advertises pty iff this host can run the pty helper', async (t) => {
+  const l = new Launcher(['--kind', 'host'], { CODE_SYSTEM_ALLOW_HOST_KIND: '1', CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED: '1' });
+  t.after(() => l.kill());
+  assert.equal((await l.hello()).capabilities.pty, HOST_PTY);
+});
 
 test('docker and ssh validate their own config, and the store never inspects it', () => {
   const docker = createTransport('docker');

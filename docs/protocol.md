@@ -1,8 +1,8 @@
 # Interface contracts
 
 What this plugin puts on the wire: the `hello` each kind sends, the `remoteId`
-routing rules, the derived file-operation scripts, the auto-registration
-exchange, and the backend's two HTTP surfaces — REST and MCP.
+routing rules, terminals (the pty exec), the derived file-operation scripts, the
+auto-registration exchange, and the backend's two HTTP surfaces — REST and MCP.
 
 The wire contract itself is code-conductor's `docs/systems-protocol.md`; this
 page records only **our** side of it.
@@ -18,7 +18,7 @@ Sent once, before any other frame, in answer to cc's `hello`.
 
 ```json
 {"type":"hello","protocol":1,"provider":"code-system-docker/0.1.0",
- "capabilities":{"processGroupSignal":false,"remotes":true,"remoteDescriptors":true,"remoteListing":true}}
+ "capabilities":{"processGroupSignal":false,"remotes":true,"remoteDescriptors":true,"remoteListing":true,"pty":true}}
 ```
 
 | Capability | `docker` | `ssh` | `host` |
@@ -27,6 +27,17 @@ Sent once, before any other frame, in answer to cc's `hello`.
 | `remotes` | `true` always | `true` always | at least one `--remote` |
 | `remoteDescriptors` | `true` always | `true` always | at least one `--mirror`/`--exclude` |
 | `remoteListing` | `true` always | `true` always | at least one `--remote` — derived from `remotes` in `src/launcher/main.mjs` |
+| `pty` | the probe, unless `--no-pty` | the probe, unless `--no-pty` | the probe, unless `--no-pty` |
+
+**`pty` is a fact about cc's host, not the target**: `true` iff python3 runs the
+vendored pty helper there, probed once per launcher (`probePtyHelper`,
+`src/launcher/ptyhost.mjs`). The interpreter is `python3`, or
+`CODE_SYSTEM_PYTHON`. A failed probe advertises `false`, writes one stderr line
+naming the reason (`terminals are off — …`), and the launcher serves everything
+else; cc then refuses a terminal `SYSTEM_NO_PTY`, naming the system and
+provider. **`--no-pty` is accepted by every kind** — cc's conformance
+configuration 2 appends it to every provider — and skips the probe. See
+[Terminals](#terminals--the-pty-exec).
 
 **Those keys and no more.** They are cc's `Capabilities` interface
 verbatim (`src/systems/protocol.ts`); a missing key reads as `false` and an
@@ -310,6 +321,141 @@ sending none today is not licence to drop the branch: without it a provider
 would silently *overlay* where the contract says *replace*. `docker` satisfies it
 with `env -i --` (below); pinned by `tests/dockerkind.test.mjs` and, against a
 real container, by `tests/docker-live.test.mjs` L7.
+
+## Terminals — the pty exec
+
+An `exec` carrying `pty` (`systems-protocol.md` §5, "pty exec"), answered by
+`ptyStarted`, then `stdout` frames and one `exit`; cc sends `input`, `resize`,
+`ack` and `close` for it. The same code serves every kind
+(`src/launcher/terminal.mjs`); a kind supplies `ptyPlan`, `ptyMode` and
+`ptyResizeRelay`.
+
+**The chain**, and which hop sees what:
+
+```
+launcher ─ python3 ptyHelper.py (host pty) ─ client ─▶ far side:
+  /bin/sh trampoline        (its own env + CC_EXEC_TOKEN + CC_REMOTE)
+    └─ exec <argv | login shell -l>   (+ the in-band blob: overlay, then CC_REMOTE, CC_EXEC_TOKEN, TERM)
+```
+
+| Kind | Client the helper runs | `ptyMode` | Resize relay |
+|---|---|---|---|
+| `docker` | `docker exec -i -t --detach-keys <DETACH_KEYS> [-u <user>] -e CC_REMOTE=… -e CC_EXEC_TOKEN=… -- <container> <trampoline>` — no `-w` | `child` | yes |
+| `ssh` | `ssh -tt … -o LogLevel=ERROR -e none [auth] -- <dest> '/usr/bin/env' '--' 'CC_REMOTE=…' 'CC_EXEC_TOKEN=…' <trampoline>` (one remote element); `ControlMaster=no`, so it multiplexes when a master exists | `child` | yes |
+| `host` | `/usr/bin/env -- CC_REMOTE=… CC_EXEC_TOKEN=… <trampoline>` | `exec` | no |
+
+- **The overlay is in no argv and reaches the program only.**
+  `/proc/<pid>/cmdline` is world-readable, so no overlay value is ever an argv
+  element — not the helper's, the client's (nor ssh's remote string), nor the
+  trampoline's. It travels **in-band over the terminal** (below), and is
+  applied only where the program inherits it: never by `docker exec -e` (with
+  or without a value), the client's environment, the helper's (its `v` frame
+  is always `{}`), or the trampoline's own tools. Order: the far side's own
+  environment, the overlay, the plumbing (so an overlay cannot unbind
+  `CC_REMOTE` or the reap token), then `TERM`.
+- **The program is exec'd as given** (`exec "$@"`), with no `env(1)` in front:
+  an `argv[0]` containing `=` is a program, never an assignment.
+- **`ptyMode`.** `exec`: the trampoline `exec`s the program, which leads the
+  session. `child`: the trampoline stays as its parent and session leader, with
+  `trap : INT QUIT`, and exits with its status. Docker needs it because the
+  exec'd process's `$PPID` reads 0; ssh because a far signal death otherwise
+  reads 255. **A signal death is reported as `code: 128+n, signal: null` on
+  both** — a shell cannot tell the two apart.
+- **No other operation asks for a tty.** `spawnPlan`, `channelPlan`, `reap`,
+  `connect`, `disconnect` and the checks keep docker's no-`-t` and ssh's `-T`.
+
+### The trampoline's marker
+
+`src/launcher/kinds/ptyscript.mjs`. Positional parameters: `<nonce> <cwd> <cols>
+<rows> <mode> <N> <argv…>`, where `<N>` is the environment blob's byte count. It
+prints ONE line through the terminal at each step; the nonce is 24 random hex
+characters per terminal.
+
+| Line | When | Frame |
+|---|---|---|
+| `<nonce> EPTY` | `[ -t 0 ]` fails — ssh through a master opened under `PermitTTY no` runs the command tty-less | `error` `EPTY` |
+| `<nonce> EPTY missing-<tool>` | `command -v` finds no `stty`, `tty`, `id` or `head` (`TRAMPOLINE_TOOLS`) — a terminal's own needs, checked here and NOT by the remote-wide baseline probe | `error` `EPTY`, naming the tool |
+| `<nonce> EPTY stty` | `stty -g` or `stty raw -echo` fails — refused BEFORE `OVERLAY`, so the blob never meets a cooked, echoing tty | `error` `EPTY` |
+| `<nonce> EPTY overlay` | after `OVERLAY`, the bytes `head -c` returned (counted under `LC_ALL=C`) are not exactly `<N>`, or `head` failed — never a start without the environment | `error` `EPTY` |
+| `<nonce> ENOENT` / `ENOTDIR` / `EACCES` | `cd -P` fails (empty or missing → `ENOENT`, not a directory → `ENOTDIR`, else `EACCES`) | `error` with that code |
+| `<nonce> OVERLAY` | the terminal is now raw and `-echo`; the launcher writes the blob — `export NAME='value'` lines, the overlay then `CC_REMOTE`, `CC_EXEC_TOKEN`, `TERM` — and the trampoline reads exactly `<N>` bytes with `head -c`, then restores the terminal. Its bytes earn no `inputAck` | none |
+| `<nonce> ENOENT` / `EACCES` | `argv[0]` fails the pre-check `ARGV_SCRIPT` makes on cc's side: with a `/`, missing → `ENOENT`, a directory or not executable → `EACCES`; a bare name is searched on the overlay's `PATH` (read in a subshell), where a present but not runnable entry → `EACCES` unless a later one runs | `error` with that code |
+| `<nonce> STARTED <tty> <sid>` | after `stty cols C rows R`; `sid` is field 4 after the last `)` of `/proc/$$/stat`, empty without `/proc` | `ptyStarted` |
+
+- Everything up to and including the marker is discarded; everything after is
+  `stdout`. **There are no `stderr` frames.**
+- No argv runs the login shell from `/etc/passwd` for `id -u`, else `$SHELL`,
+  else `/bin/sh`, with `-l`.
+- **The client exits before `STARTED`**: the far side is reaped by the whole
+  token (no session was reported — a client lost mid-open can leave the
+  trampoline alive), and the head (≤512 bytes, `\r` stripped, collected only
+  until `OVERLAY`: nothing after it is ever quoted, as it could echo the blob)
+  goes to the kind's `classifyFailure` as `{code, stdout: '', stderr:
+  head}` — docker's missing/stopped/identity rows and ssh's
+  unreachable/auth/host-key rows apply unchanged, plus ssh's **`PTY allocation
+  request failed` at exit 255 → `EPTY`** (a direct connection under
+  `PermitTTY no`). Anything else is `EUNKNOWN` quoting the head with FS errno
+  tokens lowercased.
+- **The helper fails before the marker**: `EPTY` when the host could not
+  allocate a pty; otherwise `EUNKNOWN` ("the terminal's transport could not
+  start"), because a missing docker or ssh CLI is not the target's answer.
+  Either way the far side is reaped by the whole token.
+
+### Refusals before anything starts
+
+| Frame | Answer |
+|---|---|
+| pty exec while `pty` is not advertised | `error` `EUNSUPPORTED` |
+| `cols`/`rows` outside `1..PTY_DIM_MAX`, a non-string `term`, a non-object `pty`, `shell`/`env`/`timeoutMs` present, `argv` empty or not strings, an `envOverlay` name outside cc's `ENV_NAME_RE` or a non-string value, a blob larger than `PTY_INPUT_WINDOW_BYTES` | `error` `EPROTO`, id-addressed |
+| `signal` or `detach` naming a terminal | ignored (§5 allows it) |
+
+### Credit
+
+- **Output:** at most `PTY_WINDOW_BYTES` unacked `stdout` bytes; a chunk is
+  split at the credit edge, the remainder held and the helper paused until an
+  `ack`. Pre-marker bytes never count.
+- **Input:** `{"type":"inputAck","id":…,"bytes":n}` for exactly the bytes the
+  helper's `w` frame reports written into the **host** pty's master — never on
+  receipt. Input that arrives before `ptyStarted`, or while a resize relay is in
+  flight, is held and earns nothing until written.
+- **The launcher holds at most one window of a peer's input**: what was sent
+  and not yet reported written (held, queued in the helper, or in flight) past
+  `PTY_INPUT_WINDOW_BYTES` ends that terminal `EPROTO`, id-addressed — the
+  mirror of cc's own over-grant rule. The helper driver has its own hard cap.
+- **The effective input bound for docker and ssh is one window plus the
+  transport's own buffer**, which keeps accepting past the host pty while the
+  far program reads nothing: docker ~270–300 KiB, ssh ~2 MiB (its channel
+  window), measured. Both are fixed; past them credit stops.
+
+### Resize
+
+`resize` resizes the host pty (the client relays it as SIGWINCH). With
+`ptyResizeRelay` the core also runs `stty -F <tty> cols C rows R` on the target
+through the kind's own exec path (`makeRunner`, the channel when one is idle),
+coalesced to the latest size and bounded at 5 s; input is held until it lands.
+A failed relay warns once on stderr and releases the input. `close` and
+shutdown abort a relay still in flight, so its detached client cannot outlive
+the terminal or the launcher.
+
+### Close and shutdown
+
+`close`, or the launcher's stdin closing (MUST 3): the helper hangs the host pty
+up (ending the client), then the kind's `reap` runs with the handle's `sid`:
+
+- **`buildSessionReapScript`** (`src/launcher/kinds/reapscript.mjs`): SIGHUP to
+  every process carrying the token **whose session is `sid`**, then after
+  `SESSION_GRACE_S` SIGKILL to what is left. A job that left the session with
+  `setsid` survives; the program and its `&` jobs do not. Same `CCREAP ok|blind`
+  proof as the whole-token script.
+- No `sid` (no marker yet, or no `/proc`): the whole-token `buildReapScript`.
+- `host`'s reap is a no-op: the helper's own hang-up and `killpg` are the close.
+
+**The program exiting on its own is reaped too**, after its `exit` frame, with
+the same session scope: docker never forwards a hang-up (measured), so a job the
+program left in its session — or the program itself, when it was the client
+that died — would outlive the `exit`. Reaping an empty session costs one round
+trip and kills nothing. No abandon timer runs once `ptyStarted` is sent: the
+terminal's life is its owner's.
 
 ## `docker` — what goes on the wire
 

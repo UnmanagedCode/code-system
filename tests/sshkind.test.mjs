@@ -1407,3 +1407,77 @@ test('the live-ssh gate needs BOTH a daemon and a client, and says so when it sk
   // expecting the live tests to start running.
   assert.match(SKIP_REASON, /CODE_SYSTEM_SSH/);
 });
+
+// ── terminals: ptyPlan ───────────────────────────────────────────────
+
+const PTY_REQ = { command: ['/bin/sh', '-c', 'TRAMPOLINE', 'sh', 'nonce', '/w'], token: 'tok', remoteId: 'r1' };
+
+// PINS the terminal's ssh argv: `-tt` in place of `-T` (a tty forced even with
+// no local one); `LogLevel=ERROR`, without which ssh writes "Connection to …
+// closed." INTO the terminal at exit (measured, mux and direct); escape char
+// `none`, without which `\n~.` in a paste disconnects; and the remote as ONE
+// element in which the plumbing rides `env` ahead of the trampoline — on the
+// trampoline itself, so the reap finds it, and never in the client's own env.
+test('ptyPlan: -tt not -T, LogLevel=ERROR, no escape char, plumbing on the trampoline, one remote element', async (t) => {
+  await withTmpdir(t);
+  const p = transport().ptyPlan(CONFIG, PTY_REQ);
+  assert.equal(p.file, 'ssh');
+  assert.equal(p.args[0], '-tt');
+  assert.equal(p.args.includes('-T'), false);
+  assert.ok(runIndex(p.args, ['-o', 'LogLevel=ERROR']) !== -1);
+  assert.ok(runIndex(p.args, ['-e', 'none']) !== -1);
+  assert.ok(runIndex(p.args, ['-o', 'ControlMaster=no']) !== -1, 'it multiplexes when a master exists');
+  assert.deepEqual(p.args.slice(-3), ['--', DEST,
+    ['/usr/bin/env', '--', 'CC_REMOTE=r1', 'CC_EXEC_TOKEN=tok', ...PTY_REQ.command].map(shellQuote).join(' ')]);
+  assert.equal(p.env, undefined, 'no credential, no client env of its own');
+  const pw = transport().ptyPlan({ ...CONFIG, password: 'pw' }, PTY_REQ);
+  assert.equal(pw.env?.CODE_SYSTEM_SSH_PASSWORD, 'pw', 'a password remote still carries it in the client env');
+});
+
+test('ptyMode is child and the resize relay is on: a far signal reads 255 under exec, and the mux loses resizes', () => {
+  assert.equal(transport().ptyMode, 'child');
+  assert.equal(transport().ptyResizeRelay, true);
+});
+
+// EVERY NON-TERMINAL INVOCATION KEEPS `-T`: a tty's CR translation corrupts
+// fileops' header parse, and an operator's `RequestTTY force` would otherwise
+// give one.
+test('spawnPlan, reap, connect, disconnect and the check keep -T; only ptyPlan says -tt', async (t) => {
+  await withTmpdir(t);
+  assert.equal(plan().args[0], '-T');
+  assert.equal(sshBaseArgs('/cp', { master: 'no', config: CONFIG })[0], '-T');
+  assert.equal(sshBaseArgs('/cp', { master: 'yes', config: CONFIG })[0], '-T');
+  assert.equal(sshBaseArgs('/cp', { master: 'no', config: CONFIG, tty: true })[0], '-tt');
+  const stub = await stubSsh(t, {});
+  const tr = createSshTransport({ cli: stub.cli });
+  await tr.reap(CONFIG, { token: 'tok', sid: '7', remoteId: 'r1' }).catch(() => {});
+  await tr.disconnect(CONFIG).catch(() => {});
+  await tr.reachability(CONFIG).catch(() => {});
+  const argv = await stub.argv();
+  assert.equal(argv.filter(a => a === '-T').length, 3, 'one -T per invocation');
+  assert.equal(argv.includes('-tt'), false);
+});
+
+// THE QUOTING SURFACE. ssh hands the far login shell ONE string, so every argv
+// word and overlay value must come out of that shell's single tokenization
+// byte-exact. Re-parsed here by a real /bin/sh with a printer in the
+// trampoline's place.
+test('ptyPlan: the remote string hands the far side every word byte-exact', async (t) => {
+  await withTmpdir(t);
+  const values = ['a file with spaces', 'two\nlines', 'hello — héllo', "it's", '$HOME', '*', 'A=b c'];
+  const p = transport().ptyPlan(CONFIG, { ...PTY_REQ, command: ['/usr/bin/printf', '%s\\0', ...values] });
+  const r = spawnSync('/bin/sh', ['-c', p.args.at(-1)], { cwd: os.tmpdir(), env: { PATH: '/usr/bin:/bin', HOME: '/nowhere' } });
+  assert.equal(r.status, 0, String(r.stderr));
+  assert.deepEqual(r.stdout.toString('utf8').split('\0').slice(0, -1), values);
+});
+
+// `PermitTTY no` on a DIRECT connection: ssh refuses the tty itself, exit 255,
+// and never runs the command (measured, OpenSSH 10). Through a multiplexed
+// master it runs it tty-less instead, which the trampoline answers.
+test('classifyFailure: a refused pty request is EPTY', () => {
+  const v = transport().classifyFailure(CONFIG,
+    { code: 255, stdout: '', stderr: 'PTY allocation request failed on channel 0\n' });
+  assert.equal(v?.code, 'EPTY');
+  assert.equal(transport().classifyFailure(CONFIG,
+    { code: 255, stdout: 'x', stderr: 'PTY allocation request failed on channel 0\n' }), null, 'a command\'s own output disowns it');
+});

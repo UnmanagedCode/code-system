@@ -52,3 +52,50 @@ export function buildReapScript(token) {
     'exit 0',
   ].join('\n');
 }
+
+// How long a hung-up session gets before what is left of it is SIGKILLed — the
+// pty helper's own CLOSE_GRACE_S, so a remote terminal closes on cc's clock.
+export const SESSION_GRACE_S = 0.5;
+
+// A CLOSED TERMINAL's relay (systems-protocol.md §5, pty `close`): hang its
+// session up, then SIGKILL what is left of it after a grace. SCOPED TO THE
+// SESSION the trampoline's marker named, so a job that left it with `setsid`
+// survives — as it does when a local terminal window closes — while the program
+// and every job it backgrounded in the session go. The token still has to
+// match: a session id alone is a number another terminal could hold next.
+//
+// The same proof of sight as `buildReapScript`: no readable environ at all is
+// `CCREAP blind`, exit 3.
+export function buildSessionReapScript(token, sid) {
+  if (!/^\d+$/.test(String(sid))) throw new Error(`a session id is a number, got ${JSON.stringify(sid)}`);
+  return [
+    'LC_ALL=C; export LC_ALL',
+    `t='${TOKEN_VAR}=${token}'`,
+    `s=${sid}`,
+    'scan() {',
+    '  pids=; readable=0',
+    '  for d in /proc/[0-9]*; do',
+    '    e=$(tr \'\\0\' \'\\n\' < "$d/environ" 2>/dev/null)',
+    '    [ -n "$e" ] && readable=$((readable+1))',
+    '    case "$e" in *"$t"*) ;; *) continue ;; esac',
+    '    st=; { read -r st < "$d/stat"; } 2>/dev/null',
+    '    st=${st##*\\)}; st=${st# }; st=${st#* }; st=${st#* }; st=${st#* }',
+    '    [ "${st%% *}" = "$s" ] && pids="$pids ${d#/proc/}"',
+    '  done',
+    '}',
+    'scan',
+    `if [ "$readable" -eq 0 ]; then printf '${REAP_TAG} blind\\n'; exit 3; fi`,
+    'hung=0',
+    'for p in $pids; do kill -HUP "$p" 2>/dev/null && hung=$((hung+1)); done',
+    `if [ -n "$pids" ]; then sleep ${SESSION_GRACE_S}; scan; for p in $pids; do kill -9 "$p" 2>/dev/null; done; fi`,
+    `printf '${REAP_TAG} ok %s %s\\n' "$hung" "$readable"`,
+    'exit 0',
+  ].join('\n');
+}
+
+// The relay a kind sends for a reap handle: a terminal's is scoped to the
+// session its marker named; every other operation's — and a terminal that never
+// reported one — takes the whole token.
+export function reapScriptFor(handle) {
+  return handle.sid ? buildSessionReapScript(handle.token, handle.sid) : buildReapScript(handle.token);
+}

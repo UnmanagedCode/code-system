@@ -14,7 +14,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  ALLOWED_SUBCOMMANDS, DOCKER_ENV, assertAttachOnly, createDockerTransport, dockerCliArgv,
+  ALLOWED_SUBCOMMANDS, DETACH_KEYS, DOCKER_ENV, assertAttachOnly, createDockerTransport, dockerCliArgv,
 } from '../src/launcher/kinds/docker.mjs';
 // MOVED to kinds/reapscript.mjs when card 2026-0004 landed: `ssh` needs the
 // identical relay, so the script is shared rather than copied.
@@ -869,4 +869,60 @@ test('only `docker` offers a channelPlan; `ssh` and `host` expose none', async (
   assert.equal(typeof createDockerTransport({ cli: ['docker'] }).channelPlan, 'function');
   assert.equal(createSshTransport({ cli: ['ssh'] }).channelPlan, undefined);
   assert.equal(createHostTransport({}).channelPlan, undefined);
+});
+
+// ── terminals: ptyPlan ───────────────────────────────────────────────
+
+// A terminal request as terminal.mjs hands it to a kind: the far-side command
+// (the shared trampoline, opaque here) and the plumbing.
+const PTY_REQ = { command: ['/bin/sh', '-c', 'TRAMPOLINE', 'sh', 'nonce', '/w'], token: 'tok', remoteId: 'r1' };
+
+// PINS the terminal's docker argv: a tty (`-i -t`), NO `-w` (the trampoline
+// enters the cwd, so a missing one is our marker rather than an OCI line on the
+// tty), the identity, the two plumbing variables as `-e` and nothing else — the
+// env overlay rides the trampoline's own argv and never reaches the client — and
+// the trampoline after the container operand.
+test('ptyPlan: -i -t, the detach keys, -u, plumbing-only -e, no -w, and the trampoline after the operand', () => {
+  const p = createDockerTransport({ cli: ['sudo', '-n', 'docker'] }).ptyPlan({ container: 'app', user: 'node' }, PTY_REQ);
+  assert.equal(p.file, 'sudo');
+  assert.deepEqual(p.args, [
+    '-n', 'docker', 'exec', '-i', '-t', '--detach-keys', DETACH_KEYS, '-u', 'node',
+    '-e', 'CC_REMOTE=r1', '-e', 'CC_EXEC_TOKEN=tok', '--', 'app', ...PTY_REQ.command,
+  ]);
+  assert.equal(p.env, undefined, 'the client gets the launcher\'s environment, nothing added');
+  const unrouted = createDockerTransport({ cli: ['docker'] }).ptyPlan({ container: 'app' }, { ...PTY_REQ, remoteId: null });
+  assert.equal(unrouted.args.includes('-u'), false, 'no identity, no -u');
+  assert.equal(unrouted.args.some(a => a.startsWith('CC_REMOTE=')), false);
+});
+
+// PINS the detach-key choice. docker's default `^P^Q` — and `--detach-keys=""`,
+// which falls back to it (measured) — detaches mid-stream on those two bytes in
+// any paste, leaving the program running in the container. A long sequence of
+// control keys makes that unreachable in practice; its FIRST key is the one byte
+// a lone keystroke of is held until the next (the client's escape proxy), so it
+// is `ctrl-\`, which a user rarely types alone.
+test('ptyPlan: the detach sequence is long, control keys only, and opens with ctrl-\\', () => {
+  const keys = DETACH_KEYS.split(',');
+  assert.ok(keys.length >= 8, `long enough not to occur in a paste (${keys.length})`);
+  assert.ok(keys.every(k => /^ctrl-[@\\\]^_a-z[]$/.test(k)), DETACH_KEYS);
+  assert.equal(keys[0], 'ctrl-\\');
+  assert.notDeepEqual(keys.slice(0, 2), ['ctrl-p', 'ctrl-q']);
+});
+
+test('ptyMode is child and the resize relay is on: the far parent is outside the namespace, and docker loses resizes', () => {
+  const t = createDockerTransport({ cli: ['docker'] });
+  assert.equal(t.ptyMode, 'child');
+  assert.equal(t.ptyResizeRelay, true);
+});
+
+// A TTY ON THE PLAIN PATHS WOULD CORRUPT THEM: its CR translation breaks
+// fileops' header parse and merges the two streams. Only `ptyPlan` may ask for
+// one.
+test('spawnPlan and channelPlan never ask for a tty', () => {
+  const t = createDockerTransport({ cli: ['docker'] });
+  const isTty = (a) => a === '-t' || a === '--tty' || /^-[a-z]*t[a-z]*$/.test(a);
+  for (const over of [{}, { stdinMode: 'pipe' }, { shell: 'ls', argv: null }, { env: { A: 'b' } }]) {
+    assert.equal(t.spawnPlan({ container: 'app', user: 'u' }, req(over)).args.some(isTty), false, JSON.stringify(over));
+  }
+  assert.equal(t.channelPlan({ container: 'app' }, { remoteId: 'r1' }).args.some(isTty), false);
 });

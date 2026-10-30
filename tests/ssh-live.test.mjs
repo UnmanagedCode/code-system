@@ -26,6 +26,8 @@ import { PROBE_SCRIPT, parseProbeOutput } from '../src/baseline.mjs';
 import { makeRunner } from '../src/launcher/run.mjs';
 import { SCHEMA } from '../src/store.mjs';
 import { Launcher, tempStore, writeRecord } from './helpers.mjs';
+import { PTY_INPUT_WINDOW_BYTES } from '../src/launcher/protocol.mjs';
+import { PTY_LIVE_ROWS, creditedOf, framesOf, openTerminal, until } from './ptyLiveRows.mjs';
 import {
   authCount, controlPathProcs, inTarget, markerCount, resolveSshGate, run, settle, skipUnlessSsh,
   tempDir, withSshTarget, writeSshConfig,
@@ -986,6 +988,98 @@ live('ALPINE: the baseline probe runs over ssh and names the four real gaps', as
 // ── registration, and the count proof ────────────────────────────────
 
 let ran = 0;
+// ── terminals ────────────────────────────────────────────────────────
+
+// The shared live rows (tests/ptyLiveRows.mjs) on BOTH paths a terminal can
+// take: through the multiplexed master, and with none (a direct connection).
+// They differ where it matters here — the mux relays a resize late and runs a
+// tty-less command where a direct connection refuses it.
+const ARMS = [['mux', true], ['direct', false]];
+for (const [arm, mux] of ARMS) {
+  for (const r of PTY_LIVE_ROWS) {
+    live(`${r.name} [${arm}]`, async (t, g) => {
+      const target = await withSshTarget(t, g);
+      if (mux) await target.transport().connect(target.config);
+      const store = await storeFor(t, target);
+      const l = launcherFor(t, store, target.sshEnv);
+      assert.equal((await l.hello()).capabilities.pty, true, `this host must run the pty helper: ${l.stderr}`);
+      await r.fn({
+        t, l, remoteId: 'alpha', marker: newMarker,
+        count: (m) => markerCount(g.cli, target.name, m),
+        clean: (ms) => cleanMarkers(t, g.cli, target.name, ms),
+      });
+    });
+  }
+}
+
+// PINS EPTY on both arms of `PermitTTY no`, which ssh answers DIFFERENTLY: a
+// direct connection exits 255 with "PTY allocation request failed" and never
+// runs the command (the classifier's row), while the mux runs it with NO tty
+// (the trampoline's `[ -t 0 ]`). The negative control is the same box with
+// sshd's PermitTTY set back to yes: then it opens.
+live('pty: PermitTTY no is EPTY, direct and through the mux; the same box with PermitTTY yes opens', async (t, g) => {
+  const target = await withSshTarget(t, g, { permitTty: 'no' });
+  const store = await storeFor(t, target);
+  const attempt = async (id) => {
+    const l = launcherFor(t, store, target.sshEnv);
+    await l.hello();
+    openTerminal({ l, remoteId: 'alpha' }, id, ['true']);
+    const f = await l.waitFor(x => x.id === id && ['error', 'ptyStarted'].includes(x.type), { timeoutMs: 15_000 });
+    l.kill();
+    return f;
+  };
+  const direct = await attempt('d1');
+  assert.deepEqual([direct.type, direct.code], ['error', 'EPTY'], `direct: ${JSON.stringify(direct)}`);
+  await target.transport().connect(target.config);
+  const viaMux = await attempt('m1');
+  assert.deepEqual([viaMux.type, viaMux.code], ['error', 'EPTY'], `mux: ${JSON.stringify(viaMux)}`);
+
+  await target.transport().disconnect(target.config);
+  const re = await inTarget(g.cli, target.name, 'printf "PermitTTY yes\\n" > /etc/ssh/sshd_config.d/00-tty.conf && kill -HUP 1');
+  assert.equal(re.code, 0, re.stderr);
+  assert.ok(await settle(async () => (await attempt(`y${Date.now()}`)).type === 'ptyStarted', 10_000),
+    'with PermitTTY yes the same box opens a terminal');
+});
+
+// PINS THE INPUT BOUND ssh actually has (documented in docs/features.md): input
+// credit is granted as bytes enter the HOST pty, and behind it ssh's own channel
+// window keeps accepting while the far program reads nothing — ~2 MiB
+// (measured), far above PTY_INPUT_WINDOW_BYTES. Driven exactly as cc drives it,
+// never more than one window ahead of the credit returned, so what this
+// measures is where credit STOPS: fixed, and past one window.
+live('pty: a far program that reads nothing stalls input at ssh\'s own window, ~2 MiB', async (t, g) => {
+  const target = await withSshTarget(t, g);
+  const store = await storeFor(t, target);
+  const l = launcherFor(t, store, target.sshEnv);
+  await l.hello();
+  openTerminal({ l, remoteId: 'alpha' }, 's1', ['sh', '-c', 'stty raw -echo; echo READY; exec sleep 1000']);
+  await until(l, 's1', /READY/);
+  const CHUNK = 64 * 1024;
+  const chunk = Buffer.alloc(CHUNK, 0x61).toString('base64');
+  let sent = 0;
+  let last = -1;
+  // Send while credit allows; settled once a whole second brings no new credit.
+  await settle(async () => {
+    while (sent + CHUNK - creditedOf(l, 's1') <= PTY_INPUT_WINDOW_BYTES) {
+      l.send({ type: 'input', id: 's1', dataB64: chunk });
+      sent += CHUNK;
+    }
+    const now = creditedOf(l, 's1');
+    if (now === last) return true;
+    last = now;
+    await new Promise(r => setTimeout(r, 1_000));
+    return false;
+  }, 60_000);
+  const credited = creditedOf(l, 's1');
+  assert.ok(credited >= 1024 * 1024 && credited <= 3 * 1024 * 1024, `about ssh's 2 MiB window (${credited})`);
+  // The sender is saturated: what is out uncredited is within one chunk of a
+  // whole window, so credit — not the sender — is what stopped.
+  assert.ok(sent - credited > PTY_INPUT_WINDOW_BYTES - CHUNK && sent - credited <= PTY_INPUT_WINDOW_BYTES,
+    `and then it stops, with a window outstanding (${sent - credited})`);
+  assert.equal(framesOf(l, 's1').some(f => f.type === 'exit' || f.type === 'error'), false, 'the terminal stays open');
+  l.send({ type: 'close', id: 's1' });
+});
+
 for (const item of ROSTER) {
   test(`live: ${item.name}`, async (t) => {
     const g = await skipUnlessSsh(t);

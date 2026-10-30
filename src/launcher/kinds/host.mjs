@@ -39,6 +39,8 @@
 import os from 'node:os';
 
 import { execEnv } from './config.mjs';
+import { PTY_ENV_BIN } from './ptyscript.mjs';
+import { TOKEN_VAR } from './reapscript.mjs';
 
 // The test seam, sibling to CODE_SYSTEM_STORE. cc spawns the launcher with the
 // ORCHESTRATOR's environment (providerConnection.ts, the provider spawn), so a
@@ -137,6 +139,21 @@ export function createHostTransport({
         // whole of the processGroupSignal capability: without it one kill
         // cannot reach a grandchild.
         detached: processGroupSignal,
+      };
+    },
+
+    // A TERMINAL, run here under the helper. `exec`, so the program's parent is
+    // the helper itself, as on cc's reference provider. No resize relay: the
+    // helper's own resize IS this terminal's.
+    ptyMode: 'exec',
+
+    // PURE. The plumbing rides `env` onto the trampoline's own environment —
+    // `CC_REMOTE` is the routing evidence cc's bound-views row reads — and the
+    // caller's overlay goes in-band over the terminal, reaching the program only.
+    ptyPlan(_config, req) {
+      return {
+        file: PTY_ENV_BIN,
+        args: ['--', ...(req.remoteId !== null ? [`CC_REMOTE=${req.remoteId}`] : []), `${TOKEN_VAR}=${req.token}`, ...req.command],
       };
     },
 
