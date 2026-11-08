@@ -16,6 +16,7 @@
 // EVERY VIEW READS CONFIG ONLY THROUGH `exposedConfig`, so the credential fields
 // the kind marks (`secret`, `credential`) reach neither view.
 
+import os from 'node:os';
 import { cardFor } from './cards.mjs';
 import { exposedConfig, identityFieldFor, withheldFieldsFor } from './launcher/kinds/index.mjs';
 import { listRemotes } from './store.mjs';
@@ -154,12 +155,29 @@ const REDACTED = '[withheld]';
 
 // ssh echoes the `-i` key path in `-O check` stderr (`Identity file <path> not
 // accessible`) and the probe copies that line into `detail`, so every stored
-// value of a withheld field is replaced — longest first, no regex.
+// value of a withheld field is replaced — longest first, no regex — together
+// with the forms ssh expands it to. Absolute, `%d/…`, `$HOME/…` and relative
+// paths are echoed verbatim; a leading `~` is the one expansion: `~` and `~/…`
+// become the home directory, and `~<name>/…` does too when <name> is the
+// current user. Another user's `~name` needs a passwd lookup that can throw, so
+// it is not expanded here and is not scrubbed in its expanded form.
+function expansionsOf(value) {
+  const m = /^~([^/]*)(\/.*)?$/.exec(value);
+  if (!m) return [];
+  let home;
+  try {
+    home = os.homedir();
+    if (m[1] !== '' && os.userInfo().username !== m[1]) return [];
+  } catch { return []; }
+  return home ? [home + (m[2] ?? '')] : [];
+}
+
 function scrubber(record) {
   const config = record.config && typeof record.config === 'object' ? record.config : {};
   const values = withheldFieldsFor(record.kind)
     .map(name => (Object.hasOwn(config, name) ? config[name] : undefined))
     .filter(v => typeof v === 'string' && v.length > 0)
+    .flatMap(v => [v, ...expansionsOf(v)])
     .sort((a, b) => b.length - a.length);
   return text => values.reduce((out, v) => out.split(v).join(REDACTED), text);
 }
@@ -246,7 +264,8 @@ export async function handle(body) {
     return { status: 200, body: view === 'json' ? { structured: built } : { text: built } };
   } catch (e) {
     if (e instanceof Refusal) return refuse(e.code, e.message, e.details);
-    // Defensive: nothing on today's path throws past `cardFor` and `listing`.
+    // Not a normal outcome, but reachable: a malformed CODE_SYSTEM_SSH or
+    // CODE_SYSTEM_DOCKER makes `createTransport` throw inside `cardFor`.
     return refuse('INTERNAL_ERROR', e instanceof Error ? e.message : String(e));
   }
 }

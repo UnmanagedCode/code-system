@@ -10,8 +10,10 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { migrate } from '../src/migrate.mjs';
 import { SCHEMA } from '../src/store.mjs';
+import os from 'node:os';
 import { stubDockerCli, stubSshCli, withApi } from './helpers.mjs';
 import { checkReply } from './_mcpContract.mjs';
+import { checkSchema, validate } from './_jsonSchemaSubset.mjs';
 
 const RUNNING = 'true img 2026-09-01T00:00:00Z\n';
 const STOPPED = 'false img 2026-09-01T00:00:00Z\n';
@@ -237,7 +239,10 @@ test('wrong-typed file values are carried verbatim and the call is 200', async (
   const { call, store } = await withApi(t);
   await plant(store,
     remoteRecord('fine', { enabled: false }),
-    remoteRecord('odd', { kind: 42, label: ['x'], createdAt: {}, config: 'str', enabled: false }));
+    remoteRecord('odd', { kind: 42, label: ['x'], createdAt: {}, config: 'str', enabled: false }),
+    remoteRecord('odd2', {
+      mirror: 'str', baseline: 42, updatedAt: {}, config: { container: 7 }, enabled: false,
+    }));
   const res = await listRemotes(call, 'json');
   assert.equal(res.status, 200);
   const odd = res.body.structured.remotes.find(r => r.remoteId === 'odd');
@@ -245,7 +250,13 @@ test('wrong-typed file values are carried verbatim and the call is 200', async (
   assert.deepEqual(odd.label, ['x']);
   assert.deepEqual(odd.createdAt, {});
   assert.deepEqual(odd.config, {});
-  assert.equal(res.body.structured.remotes.length, 2);
+  const odd2 = res.body.structured.remotes.find(r => r.remoteId === 'odd2');
+  assert.equal(odd2.mirror, 'str');
+  assert.equal(odd2.baseline, 42);
+  assert.deepEqual(odd2.updatedAt, {});
+  assert.deepEqual(odd2.target, { field: 'container', value: 7 });
+  assert.equal(odd2.config.container, 7);
+  assert.equal(res.body.structured.remotes.length, 3);
   // And the text view survives it too.
   await listRemotes(call, 'text');
 });
@@ -293,4 +304,99 @@ test('an empty store is {remotes: []} in json and a sentence in text', async (t)
   const { call } = await withApi(t);
   assert.deepEqual((await listRemotes(call, 'json')).body, { structured: { remotes: [] } });
   assert.equal((await listRemotes(call, 'text')).body.text, 'no remotes are registered');
+});
+
+// Invariant: a registered kind with no identity value still has a `target` whose
+// `value` is null (never dropped, or cc rejects the whole listing).
+test('a registered kind with no identity value has target.value null', async (t) => {
+  const { call, store } = await withApi(t);
+  await plant(store,
+    remoteRecord('d', { kind: 'docker', config: {}, enabled: false }),
+    remoteRecord('s', { kind: 'ssh', config: {}, enabled: false }));
+  const [d, s] = await remotesOf(call);
+  assert.deepEqual(d.target, { field: 'container', value: null });
+  assert.deepEqual(s.target, { field: 'host', value: null });
+});
+
+// Invariant: only a stored literal `true` opens the gate, in json too, and no
+// probe runs for anything else.
+test('a non-literal-true enabled is a closed gate with no probe', async (t) => {
+  const stub = await stubDockerCli(t, { stdout: RUNNING });
+  const { call, store } = await withApi(t, {}, dockerEnv(stub));
+  await plant(store,
+    remoteRecord('num', { enabled: 1 }),
+    remoteRecord('str', { enabled: 'yes' }));
+  const remotes = await remotesOf(call);
+  assert.equal(remotes.length, 2);
+  for (const r of remotes) {
+    assert.equal(r.enabled, false);
+    assert.equal(r.status, 'disabled');
+    assert.equal(r.reachability, null);
+  }
+  assert.deepEqual(await stub.argv(), []);
+});
+
+// Invariant: a withheld value stored in `~` form never reaches a view in the
+// form ssh echoes it in (expanded). The stub echoes the expanded path.
+test('a tilde key path is scrubbed in its expanded form', async (t) => {
+  const home = os.homedir();
+  const expanded = `${home}/PLANTED_tilde_key`;
+  const stub = await stubSshCli(t, {
+    checkExit: 255, checkStderr: `Warning: Identity file ${expanded} not accessible: No such file.\\n`,
+  });
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_SSH: JSON.stringify(stub.cli) });
+  await plant(store, remoteRecord('on', {
+    kind: 'ssh', enabled: true, config: { host: 'h', identityFile: '~/PLANTED_tilde_key' },
+  }));
+  const json = await listRemotes(call, 'json');
+  const text = await listRemotes(call, 'text');
+  for (const body of [json.body, text.body]) {
+    const dump = JSON.stringify(body);
+    assert.equal(dump.includes(expanded), false);
+    assert.equal(dump.includes('PLANTED_tilde_key'), false);
+  }
+  assert.ok(json.body.structured.remotes[0].reachability.detail.includes('[withheld]'));
+});
+
+// Invariant: when one withheld value contains another, the longer is replaced
+// whole and leaves no fragment, whichever field holds the longer one.
+for (const [name, password, identityFile] of [
+  ['password inside the key path', 'PLANTED-short', '/keys/PLANTED-short-long_id'],
+  ['key path inside the password', '/keys/PLANTED-short-long_id', 'PLANTED-short'],
+]) {
+  test(`longest-first scrub: ${name}`, async (t) => {
+    const stub = await stubSshCli(t, {
+      checkExit: 255, checkStderr: 'Identity file /keys/PLANTED-short-long_id not accessible\\n',
+    });
+    const { call, store } = await withApi(t, {}, { CODE_SYSTEM_SSH: JSON.stringify(stub.cli) });
+    await plant(store, remoteRecord('on', {
+      kind: 'ssh', enabled: true, config: { host: 'h', password, identityFile },
+    }));
+    const [r] = await remotesOf(call);
+    assert.ok(r.reachability.detail.includes('[withheld]'));
+    assert.equal(r.reachability.detail.includes('PLANTED'), false, r.reachability.detail);
+    assert.equal(r.reachability.detail.includes('long_id'), false, r.reachability.detail);
+  });
+}
+
+// Invariant: a transport that cannot even be built is a coded refusal, not a crash.
+test('a malformed CLI override is INTERNAL_ERROR', async (t) => {
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_DOCKER: 'not json' });
+  await plant(store, remoteRecord('on'));
+  for (const format of ['text', 'json']) {
+    const res = await listRemotes(call, format);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.code, 'INTERNAL_ERROR');
+    assert.equal(typeof res.body.error, 'string');
+  }
+});
+
+// Invariant: the schema port still has both halves — a missing
+// additionalProperties is a schema error, and an undeclared property under
+// `additionalProperties: false` is a validation error.
+test('the cc schema port rejects what cc rejects', () => {
+  assert.throws(() => checkSchema({ type: 'object', properties: {} }), /additionalProperties/);
+  const errors = validate({ type: 'object', additionalProperties: false, properties: {} }, { extra: 1 });
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /unexpected property 'extra'/);
 });

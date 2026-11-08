@@ -1169,7 +1169,7 @@ conductor's own `validateArgs` refuses an unknown argument before forwarding.
 | unknown tool name | 200 | `{error: "unknown tool: <name>", code: "TOOL_UNKNOWN"}`. **The lookup never falls through to the prototype chain**: a name like `toString`, `constructor` or `hasOwnProperty` is an unknown tool, not a handler to call |
 | `format` present and not `text`/`json` | 200 | `{error, code: "FORMAT_UNKNOWN", details: {format: <sent value>, accepted: ["text","json"]}}` — the sent value is in `details`, never in `error` |
 | the store cannot be listed | 200 | `{error: <message>, code: "STORE_UNREADABLE", details: {errno}}` — `errno` is the fs error code when there is one |
-| anything else thrown | 200 | `{error: <message>, code: "INTERNAL_ERROR"}` — defensive; nothing on today's path reaches it |
+| anything else thrown | 200 | `{error: <message>, code: "INTERNAL_ERROR"}` — not a normal outcome; e.g. a malformed `CODE_SYSTEM_SSH`/`CODE_SYSTEM_DOCKER` makes transport construction throw |
 | `tool` missing or not a string | **400** | `{error, code: "BAD_ENVELOPE"}` |
 | a body express itself refused (malformed JSON, over the 256kb limit) | **400** | `{error}`, from the router tail |
 
@@ -1286,7 +1286,7 @@ against the `outputSchema` in `conductor.plugin.json`, which owns the field list
 - **Store order, no cap** — every stored record, an unreadable one as a
   `not readable` entry with its `reason` and `message`. An empty store is
   `{remotes: []}`.
-- **The full public record**, minus credentials. The five-field limit is the text
+- **Each remote's configuration** — config, mirror, baseline, timestamps, the probe — minus credentials; the record's `schema` and keys the store does not define are not carried. The five-field limit is the text
   view's alone.
 - **`reachability` is `null` when the gate is off**, because no probe runs;
   `enabled` and `reachability` are carried separately, and `status` is the same
@@ -1304,5 +1304,10 @@ against the `outputSchema` in `conductor.plugin.json`, which owns the field list
 - **`reachability.detail` is scrubbed**: every stored value of a withheld field
   is replaced by `[withheld]`. ssh prints `Identity file <path> not accessible`
   when the `-i` file is missing, and the probe copies that line into `detail`.
+  ssh echoes `~` and `~/…` **expanded**, so those expansions (and `~<current user>/…`)
+  are scrubbed too; another user's `~name/…` is not expanded and not scrubbed.
+  The scrub covers stored config values only: on a spawn failure `detail` echoes
+  the operator's `CODE_SYSTEM_SSH`/`CODE_SYSTEM_DOCKER` invocation, so a secret
+  must never be put in that override.
 - **The ssh `fingerprint` is carried** (in `reachability` and `baseline`): it is
   a one-way hash, neither a credential nor the path.

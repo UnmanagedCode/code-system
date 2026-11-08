@@ -1,8 +1,9 @@
 // PINS THE MCP SURFACE: the `list_remotes` TEXT rendering, byte for byte, and
 // the envelope contract around it (the json view is tests/mcp-json.test.mjs).
 //
-// Every reply in this file is also checked by `checkReply` against the cc reply
-// contract and the manifest's outputSchema.
+// Every contract-shaped reply in this file is also checked by `checkReply`
+// against the cc reply contract and the manifest's outputSchema. Exempt: the
+// router-tail 400 for a malformed body, which is shared with REST.
 //
 // The text rendering is what a text-format caller sees and nothing else — so the
 // tests below assert on exact lines rather than on
@@ -349,15 +350,18 @@ test('an unknown tool is a 200 error body; a missing tool is the only 400', asyn
   const { call, raw } = await withApi(t);
 
   const unknown = await call('POST', '/mcp', { tool: 'bogus', arguments: {} });
+  checkReply('list_remotes', undefined, unknown.status, unknown.body);
   assert.equal(unknown.status, 200);
   assert.deepEqual(unknown.body, { error: 'unknown tool: bogus', code: 'TOOL_UNKNOWN' });
 
   const missing = await call('POST', '/mcp', { arguments: {} });
+  checkReply('list_remotes', undefined, missing.status, missing.body);
   assert.equal(missing.status, 400);
   assert.match(missing.body.error, /tool/);
   assert.equal(missing.body.code, 'BAD_ENVELOPE');
 
   const notAString = await call('POST', '/mcp', { tool: 42 });
+  checkReply('list_remotes', undefined, notAString.status, notAString.body);
   assert.equal(notAString.status, 400);
 
   // Express's own body-parser refusal, answered as JSON by the router tail.
@@ -381,6 +385,7 @@ test('the conductor\'s caller envelope field is accepted and ignored', async (t)
     arguments: {},
     caller: { sessionId: 'abc', project: 'somewhere' },
   });
+  checkReply('list_remotes', undefined, withCaller.status, withCaller.body);
   assert.equal(withCaller.status, 200);
   assert.equal(withCaller.body.text, 'disabled  r  docker  container=app  "R"');
 });
@@ -592,6 +597,7 @@ test('an inherited Object.prototype member is an unknown tool, not a handler', a
   for (const name of ['toString', 'constructor', 'hasOwnProperty', 'valueOf', '__proto__']) {
     for (const format of [undefined, 'text', 'json']) {
       const res = await call('POST', '/mcp', { tool: name, ...(format ? { format } : {}) });
+      checkReply('list_remotes', format, res.status, res.body);
       assert.equal(res.status, 200, name);
       assert.deepEqual(res.body, { error: `unknown tool: ${name}`, code: 'TOOL_UNKNOWN' }, `${name} ${format}`);
     }

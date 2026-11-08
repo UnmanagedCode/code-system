@@ -720,7 +720,7 @@ construction.
 
 A field may carry **`secret: true`** (withheld from every response) or
 **`credential: true`** (a path naming a credential: served by REST, withheld
-from MCP). `withheldFieldsFor(kind)` is the single funnel — both flags, and
+from MCP). `withheldFieldsFor(kind)` is the single funnel for both flags.
 `exposedConfig(kind, config)` is the allowlist projection every MCP view reads
 config through: declared, non-withheld keys in `config`; every other own key
 named in `withheld`.
@@ -1366,8 +1366,8 @@ global.
 - **Every MCP reply is contract-checked.** `tests/_jsonSchemaSubset.mjs` is a
   test-only port of cc's `checkSchema`/`validate` (pinned to a cc commit in its
   header, for diffing), and `tests/_mcpContract.mjs`'s `checkReply` runs on every
-  `POST /mcp` reply in `tests/mcp.test.mjs` and `tests/mcp-json.test.mjs`
-  against the manifest's `outputSchema`. `src/` never imports either.
+  contract-shaped `POST /mcp` reply in `tests/mcp.test.mjs` and
+  `tests/mcp-json.test.mjs` (the router-tail 400s are exempt) against the manifest's `outputSchema`. `src/` never imports either.
 - **Barrier, not sleep.** Frames are handled in arrival order, so a short `exec`
   whose `exit` you await proves the earlier frames were processed.
 
