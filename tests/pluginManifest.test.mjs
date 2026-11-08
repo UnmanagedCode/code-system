@@ -4,17 +4,19 @@
 // runs under the conductor, so these assertions are the only place that reach
 // is available.
 //
-// THIS DOES NOT RE-IMPLEMENT THE CONDUCTOR'S VALIDATOR. A local copy of
-// somebody else's checker drifts from it silently and then lies in both
-// directions. What is asserted here is what THIS manifest declares — one flat,
-// scalar-typed schema — which is inside the subset whatever that subset's exact
-// edges turn out to be.
+// inputSchemas are asserted structurally (flat, scalar-typed), which is inside
+// cc's subset whatever its exact edges are. outputSchemas are checked by
+// tests/_jsonSchemaSubset.mjs, a test-only port of cc's checker pinned to a cc
+// commit that a reviewer diffs against cc.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { REPO } from './helpers.mjs';
+import { NOT_READABLE, READABLE_STATUSES } from '../src/mcp.mjs';
+import { MANIFEST } from './_mcpContract.mjs';
+import { checkSchema } from './_jsonSchemaSubset.mjs';
 
 const readJson = async (name) => JSON.parse(await fs.readFile(path.join(REPO, name), 'utf8'));
 
@@ -93,4 +95,31 @@ test('every tool schema is a flat object of scalar properties', async () => {
       assert.ok(SCALARS.has(spec.type), `${label}.properties.${prop}.type must be a scalar`);
     }
   }
+});
+
+// PINS THAT NO TOOL STAYS TEXT-ONLY: a tool with no outputSchema is hidden from
+// cc's JSON tools/list and REST. Importing _mcpContract already ran checkSchema
+// and the object-root rule; this names it.
+test('every tool declares an outputSchema inside cc\'s subset with an object root', () => {
+  for (const tool of MANIFEST.mcp.tools) {
+    assert.ok(tool.outputSchema, `${tool.name} needs an outputSchema`);
+    checkSchema(tool.outputSchema);
+    assert.equal(tool.outputSchema.type, 'object');
+  }
+});
+
+// PINS THAT THE SCHEMA AND THE RENDERER CANNOT DRIFT on the status words.
+test('the status enum and the broken branch match src/mcp.mjs', () => {
+  const { outputSchema } = MANIFEST.mcp.tools.find(t => t.name === 'list_remotes');
+  const [readable, broken] = outputSchema.properties.remotes.items.anyOf;
+  assert.deepEqual(readable.properties.status.enum, READABLE_STATUSES);
+  assert.equal(broken.properties.status.const, NOT_READABLE);
+});
+
+// PINS THAT THE DESCRIPTION IS FORMAT-NEUTRAL: the shape lives in the schema.
+test('the list_remotes description names no output format', () => {
+  const { description } = MANIFEST.mcp.tools.find(t => t.name === 'list_remotes');
+  assert.doesNotMatch(description, /plain text|\bJSON\b|one line/i);
+  assert.match(description, /`enumerate_remotes`/);
+  assert.doesNotMatch(description, /Remote field/);
 });

@@ -34,7 +34,7 @@ an absolute path — which is what forces the store location below.
 | `src/cards.mjs` | the card view — a record plus a live reachability, composed once for both read surfaces |
 | `src/http.mjs` | the HTTP app: headers, the API mount, the built UI or its 503, the plain-text 404/500 tail ("Serving and headers" below) |
 | `src/api.mjs` | the REST surface (`docs/protocol.md` has the routes) |
-| `src/mcp.mjs` | the MCP tool catalog and the `list_remotes` rendering |
+| `src/mcp.mjs` | the MCP tool catalog and `list_remotes`'s two views, text and typed JSON |
 | `src/launcher/protocol.mjs` | NDJSON codec, spec-fixed constants, stderr→code table |
 | `src/launcher/session.mjs` | the frame loop: handshake, routing, exec lifecycle, shutdown |
 | `src/launcher/terminal.mjs` | every pty exec: the marker, output and input credit, held input, the resize relay, close and reap — composed into the session |
@@ -718,6 +718,13 @@ serves. `kindDescriptors` builds its own object field by field rather than
 spreading the meta, which is what keeps a new `KIND_META` key off the wire by
 construction.
 
+A field may carry **`secret: true`** (withheld from every response) or
+**`credential: true`** (a path naming a credential: served by REST, withheld
+from MCP). `withheldFieldsFor(kind)` is the single funnel for both flags.
+`exposedConfig(kind, config)` is the allowlist projection every MCP view reads
+config through: declared, non-withheld keys in `config`; every other own key
+named in `withheld`.
+
 A field may carry **`advanced: true`** (docker's `user`; ssh's `port`, `password`,
 `identityFile`). It is a **rendering flag only** —
 `kindDescriptors()` passes `configFields` through by reference, the card form
@@ -1356,6 +1363,11 @@ global.
   what makes it a fake is that it **records its `reap` calls** to a file, which
   is how MUST 3 is asserted for a kind whose children are not our OS
   descendants.
+- **Every MCP reply is contract-checked.** `tests/_jsonSchemaSubset.mjs` is a
+  test-only port of cc's `checkSchema`/`validate` (pinned to a cc commit in its
+  header, for diffing), and `tests/_mcpContract.mjs`'s `checkReply` runs on every
+  contract-shaped `POST /mcp` reply in `tests/mcp.test.mjs` and
+  `tests/mcp-json.test.mjs` (the router-tail 400s are exempt) against the manifest's `outputSchema`. `src/` never imports either.
 - **Barrier, not sleep.** Frames are handled in arrival order, so a short `exec`
   whose `exit` you await proves the earlier frames were processed.
 

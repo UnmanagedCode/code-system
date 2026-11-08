@@ -11,6 +11,7 @@
 import { KIND_META as DOCKER_META, createDockerTransport } from './docker.mjs';
 import { createHostTransport } from './host.mjs';
 import { KIND_META as SSH_META, createSshTransport } from './ssh.mjs';
+import { asObject } from './config.mjs';
 
 /**
  * @typedef {object} Transport
@@ -190,6 +191,39 @@ export function kindDescriptors(kinds = REGISTERED_KINDS) {
  */
 export function secretFieldsFor(kind) {
   return (own(METAS, kind)?.configFields ?? []).filter(f => f.secret === true).map(f => f.name);
+}
+
+/**
+ * The names a kind's MCP views never carry: every `secret: true` field and every
+ * `credential: true` one, in declaration order. `secret` is also withheld from
+ * REST; `credential` (a path naming a key) is withheld from MCP only. A field
+ * flagged `secret` is therefore withheld from MCP with no second flag.
+ */
+export function withheldFieldsFor(kind) {
+  return (own(METAS, kind)?.configFields ?? [])
+    .filter(f => f.secret === true || f.credential === true).map(f => f.name);
+}
+
+/**
+ * A config as an MCP view may carry it — an ALLOWLIST: the own keys of `config`
+ * the kind declares and does not withhold, verbatim, in record order. Every
+ * other own key (secret, credential, or not declared by the kind at all) is
+ * named in `withheld`. A kind with no KIND_META exposes nothing.
+ *
+ * EVERY MCP VIEW READS CONFIG ONLY THROUGH THIS.
+ *
+ * @returns {{config:object, withheld:string[]}}
+ */
+export function exposedConfig(kind, config) {
+  const declared = new Set((own(METAS, kind)?.configFields ?? []).map(f => f.name));
+  const hidden = new Set(withheldFieldsFor(kind));
+  const out = {};
+  const withheld = [];
+  for (const key of Object.keys(asObject(config))) {
+    if (declared.has(key) && !hidden.has(key)) out[key] = config[key];
+    else withheld.push(key);
+  }
+  return { config: out, withheld };
 }
 
 /**

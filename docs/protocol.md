@@ -1013,7 +1013,7 @@ only and re-derived at every start.
 | `GET /api/health` | any response counts as alive |
 | `GET /api/registration` | `{state, rows:[{id,state,httpStatus,message}], checkedAt}` — `blocked`/`unreachable` messages are rendered verbatim |
 | `POST /api/registration/retry` | the only retry; user-driven |
-| `GET /api/kinds` | `{kinds:[{kind,label,configFields,mirrorByDefault}], mirrorDefaults:{root,exclude}}` — the card UI's form definition, per registered kind, plus the Advanced group's prefill from `src/mirror.mjs`'s `DEFAULT_MIRROR`. **`mirrorByDefault`** is always a boolean, read from the kind's `KIND_META` (`true` for docker and ssh): whether a new remote's create form starts with the mirror box ticked. A `configFields` entry may carry **`advanced: true`** (docker's `user`; ssh's `port`, `password`, `identityFile`): render it in the card's Advanced group instead of the connection block. It is otherwise an ordinary config field — same validator, same store, same reset-on-change. `GET /api/health` keeps a **plain** kind-name list: a liveness probe has no use for descriptors or defaults |
+| `GET /api/kinds` | `{kinds:[{kind,label,configFields,mirrorByDefault}], mirrorDefaults:{root,exclude}}` — the card UI's form definition, per registered kind, plus the Advanced group's prefill from `src/mirror.mjs`'s `DEFAULT_MIRROR`. **`mirrorByDefault`** is always a boolean, read from the kind's `KIND_META` (`true` for docker and ssh): whether a new remote's create form starts with the mirror box ticked. A `configFields` entry may carry **`advanced: true`** (docker's `user`; ssh's `port`, `password`, `identityFile`): render it in the card's Advanced group instead of the connection block. A field may also carry **`credential: true`** (ssh's `identityFile`, additive on the descriptor): REST still serves it, but the MCP views withhold it. It is otherwise an ordinary config field — same validator, same store, same reset-on-change. `GET /api/health` keeps a **plain** kind-name list: a liveness probe has no use for descriptors or defaults |
 | `GET /api/remotes` | every stored remote, each with a live `reachability`, a `baseline` and its `mirror`; a record `readRemote` refuses appears as `{remoteId, broken:{reason,message}}` under its **filename stem**, rather than being hidden; `reason` is one of `unreadable`, `malformed`, `too-deep` (nested past `MAX_RECORD_DEPTH` in `src/store.mjs`), `schema` or `id-mismatch` (the record's `remoteId` is not its filename). A record whose `kind` names no registered kind — including a name inherited from `Object.prototype` such as `constructor` or `__proto__`, which the lookup never falls through to — is listed with `reachability: {connected: false, detail: "unknown kind '<kind>'", fingerprint: null}`, never a 500. Its `kinds` field is the **descriptor array**, the same shape `GET /api/kinds` serves, and it carries the same `mirrorDefaults` |
 | `POST /api/remotes` | create — validates the `remoteId` charset, delegates `config` to the kind, and validates `mirror` with `src/mirror.mjs` (**400**, message quoting the offending value and an exclude entry's index). An **absent** `mirror` stores `DEFAULT_MIRROR` for a kind with `mirrorByDefault` (docker, ssh) and `null` otherwise; an explicit `mirror: null` stores `null`. The default applies at creation only: a `PATCH` that omits `mirror` keeps the stored value, and no stored record is re-defaulted. Created **`enabled: false`**. 400 / 409 |
 | `PATCH /api/remotes/:id` | edit everything **except** `remoteId`; a changed `config` resets `baseline` to `unknown` **and `enabled` to `false`**; a label-only edit preserves both. **A `mirror` change resets neither** — it names the same target — and an omitted `mirror` preserves the stored one. An invalid `mirror` is a 400 and writes nothing. A `config` on a record whose stored kind no transport answers to is **409** `{error: "unknown kind '<k>'"}` and writes nothing. The Advanced group is **not** uniformly reset-free: an Advanced-rendered *config* field (docker `user`) is a config change and resets both |
@@ -1022,6 +1022,12 @@ only and re-derived at every start.
 | `DELETE /api/remotes/:id` | delete, **warning** when any cc project still names this `remoteId` |
 | `POST /api/mcp` | the MCP surface — one read-only tool. Its own contract is **MCP surface** below |
 | *(router tail)* | every response from a route under `/api` is JSON, including express's own body-parser refusals — the client reads `{error}` off every status. The rule: every **5xx** is logged. A 5xx whose error is **not** marked `expose: true` is answered `{error: "Internal error"}`, so no internal message (a TypeError, a stack overflow) reaches a client. Every other error answers `{error: <its message>}`: a **4xx** is a refusal meant for the client (body-parser's malformed JSON is 400, a body past 256kb is 413), and an exposed 5xx was written for the operator — `operatorError` in `src/launcher/kinds/config.mjs`, used for a malformed `CODE_SYSTEM_SSH` / `CODE_SYSTEM_DOCKER`, which reaches the card UI's "Backend unreachable" banner verbatim |
+
+**Credential config fields (MCP only).** `credential: true` marks a field whose
+value names a credential — ssh's `identityFile`, a private-key path. REST serves
+it to the card UI; neither MCP view carries it. `withheldFieldsFor` in
+`src/launcher/kinds/index.mjs` is the one funnel: every `secret` field is
+withheld from MCP too, with no second flag.
 
 **Secret config fields.** A `configFields` entry may carry **`secret: true`**
 (ssh's `password`). No response — `GET /remotes`, `POST`, `PATCH`, connect,
@@ -1148,25 +1154,31 @@ nothing on any target.
 
 ### The envelope
 
-Request body: `{tool, arguments, caller}`. `caller` is accepted and unused —
+Request body: `{tool, arguments, caller, format}`. **`format`** picks the view:
+absent or `"text"` is the text view (so a caller that predates the field keeps
+working), `"json"` the typed view; anything else — `null`, `"JSON"`, a non-string
+— is refused `FORMAT_UNKNOWN`. `caller` is accepted and unused —
 nothing scopes a plugin's tools, so there is no caller-dependent answer to give.
 `arguments` is ignored by `list_remotes`, which declares no properties; the
 conductor's own `validateArgs` refuses an unknown argument before forwarding.
 
 | Outcome | Status | Body |
 |---|---|---|
-| success | 200 | `{text}` |
-| unknown tool name | 200 | `{error: "unknown tool: <name>"}`. **The lookup never falls through to the prototype chain**: a name like `toString`, `constructor` or `hasOwnProperty` is an unknown tool, not a handler to call |
-| the tool itself failed | 200 | `{error: <message>}` |
-| `tool` missing or not a string | **400** | `{error}` |
+| success, text | 200 | `{text}` |
+| success, json | 200 | `{structured}` and no other key |
+| unknown tool name | 200 | `{error: "unknown tool: <name>", code: "TOOL_UNKNOWN"}`. **The lookup never falls through to the prototype chain**: a name like `toString`, `constructor` or `hasOwnProperty` is an unknown tool, not a handler to call |
+| `format` present and not `text`/`json` | 200 | `{error, code: "FORMAT_UNKNOWN", details: {format: <sent value>, accepted: ["text","json"]}}` — the sent value is in `details`, never in `error` |
+| the store cannot be listed | 200 | `{error: <message>, code: "STORE_UNREADABLE", details: {errno}}` — `errno` is the fs error code when there is one |
+| anything else thrown | 200 | `{error: <message>, code: "INTERNAL_ERROR"}` — not a normal outcome; e.g. a malformed `CODE_SYSTEM_SSH`/`CODE_SYSTEM_DOCKER` makes transport construction throw |
+| `tool` missing or not a string | **400** | `{error, code: "BAD_ENVELOPE"}` |
 | a body express itself refused (malformed JSON, over the 256kb limit) | **400** | `{error}`, from the router tail |
 
 **A malformed envelope is the only non-200.** An unknown tool name and a
 tool-level failure are normal outcomes for the calling model to read and recover
 from, not transport failures.
 
-**The success channel is `text`, never `result`.** The conductor's bridge
-unwraps `{text}` into raw, **unescaped** text blocks; a `{result}` body is
+**The text success channel is `text`, never `result`; json is `structured`.** The
+conductor's bridge unwraps `{text}` into raw, **unescaped** text blocks; a `{result}` body is
 JSON-stringified into one block, which would escape every newline of the
 rendering. `text` is one string and `meta` is omitted, so the caller receives
 exactly one raw block carrying the rendering. See [`.wiki/gotchas/plugin-mcp-surface.md`](../.wiki/gotchas/plugin-mcp-surface.md).
@@ -1174,6 +1186,12 @@ exactly one raw block carrying the rendering. See [`.wiki/gotchas/plugin-mcp-sur
 No `timeoutMs` is declared, so the conductor's default of 30000 ms applies.
 
 ### `list_remotes`
+
+Two views of the same listing, each read-only (no baseline write, and no probe of
+a gate-off remote). Both read config only through `exposedConfig`, so an ssh
+**`password`** and **`identityFile`** (the private-key path) reach neither.
+
+#### Text view
 
 One line per remote, in the store's own order, joined by `\n` with **no
 trailing newline**. An empty store renders the single line
@@ -1186,7 +1204,8 @@ disabled  db  docker  container=pg  "Postgres"
 not readable  bad-rec
 ```
 
-**A row carries these five things and nothing else** — no `mirror`, no
+**In the text view a row carries these five things and nothing else** — the text
+view summarises; the json view carries the rest of each record. No `mirror`, no
 `baseline`, no docker `user`, no `schema`, no `createdAt`/`updatedAt`, no
 `fingerprint`. They are written in this order, set off by two spaces:
 
@@ -1257,3 +1276,46 @@ the mechanics).
 |---|---|---|
 | `reachability` | `'always'` — probes a switched-off remote too, because a card must still show reality | `'gated'` — the gate-off branch contacts nothing |
 | `baseline` | `true` — refreshes the tooling verdict, and **persists** a moved one | `false` — no baseline probe and no write, which is what makes the tool read-only |
+
+#### json view
+
+`format: "json"` answers `{structured: {remotes: [...]}}`, validated by cc
+against the `outputSchema` in `conductor.plugin.json`, which owns the field list
+(it is not restated here).
+
+- **Store order, no cap** — every stored record, an unreadable one as a
+  `not readable` entry with its `reason` and `message`. An empty store is
+  `{remotes: []}`.
+- **Each remote's configuration** — config, mirror, baseline, timestamps, the probe — minus credentials; the record's `schema` and keys the store does not define are not carried. The five-field limit is the text
+  view's alone.
+- **`reachability` is `null` when the gate is off**, because no probe runs;
+  `enabled` and `reachability` are carried separately, and `status` is the same
+  folded word as in text.
+- **An absent stored key is `null`** (`enabled` is `false`, `config` `{}`,
+  `withheld` `[]`), so an older stored shape still validates.
+- **File-sourced values are permissive** (`kind`, `label`, `target.value`, config
+  values, `mirror`, `baseline`, timestamps carry no `type`): `readRemote` never
+  re-validates them, and one hand-edited record must cost one entry, not cc's
+  runtime check for the whole listing.
+- **`config` and `withheld`**: `config` holds the kind's declared fields that are
+  not `secret` or `credential`; `withheld` names every other stored key (secret,
+  credential, or one the kind does not declare). A kind with no card exposes an
+  empty `config`.
+- **`reachability.detail` is scrubbed**: every stored value of a withheld field
+  is replaced by `[withheld]`. ssh prints `Identity file <path> not accessible`
+  when the `-i` file is missing, and the probe copies that line into `detail`.
+  ssh expands a leading `~` with the **passwd** home (not `$HOME`) before echoing,
+  so for `~`, `~/rest` and `~<current user>/rest` both the passwd-home form and
+  the `$HOME` form (when different) are scrubbed. For `~/rest` and `~<name>/rest`
+  the bare suffix `/rest` is scrubbed as well, so another user's `~name/rest`
+  has its key tail withheld, though that user's home directory may still appear.
+  Each candidate is also scrubbed in its first-line form (cut at the first LF
+  and trimmed), because the probe keeps only the first line of ssh's stderr, and
+  a needle that is empty, whitespace-only, or `/` is never used, so a home of
+  `/` or a password of `" "` cannot shred the detail.
+  The scrub covers stored config values only: the operator's
+  `CODE_SYSTEM_SSH`/`CODE_SYSTEM_DOCKER` override is echoed in the spawn-failure
+  `detail` (`could not run '<argv>'`) and, when malformed, in the
+  `INTERNAL_ERROR` message — so a secret must never be put in that override.
+- **The ssh `fingerprint` is carried** (in `reachability` and `baseline`): it is
+  a one-way hash, neither a credential nor the path.

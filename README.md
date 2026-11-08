@@ -72,7 +72,7 @@ CODE_SYSTEM_DOCKER='["sudo","-n","docker"]' npm test
 | **Config store** (`src/store.mjs`) | per-`remoteId` connection config, one JSON file per remote |
 | **Backend** (`server.mjs`, `src/http.mjs`, `src/api.mjs`) | the REST API, serving the built card UI, auto-registration, the tooling-baseline probe |
 | **Card UI** (`frontend/`) | the React page cc embeds; its decisions are pure functions in `frontend/src/lib/cardState.mjs` |
-| **MCP surface** (`src/mcp.mjs`) | one read-only tool, `list_remotes`, rendering the remote catalog as plain text |
+| **MCP surface** (`src/mcp.mjs`) | one read-only tool, `list_remotes`, the remote catalog, as text or typed JSON |
 | `conductor.plugin.json` | the plugin manifest: `backend`, `frontend` and `mcp` |
 
 The launcher and the backend share **no in-memory state**: the launcher reads the store fresh on every request frame, and the backend is the only writer.
