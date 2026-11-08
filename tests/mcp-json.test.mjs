@@ -336,27 +336,39 @@ test('a non-literal-true enabled is a closed gate with no probe', async (t) => {
   assert.deepEqual(await stub.argv(), []);
 });
 
-// Invariant: a withheld value stored in `~` form never reaches a view in the
-// form ssh echoes it in (expanded). The stub echoes the expanded path.
-test('a tilde key path is scrubbed in its expanded form', async (t) => {
-  const home = os.homedir();
-  const expanded = `${home}/PLANTED_tilde_key`;
-  const stub = await stubSshCli(t, {
-    checkExit: 255, checkStderr: `Warning: Identity file ${expanded} not accessible: No such file.\\n`,
+// Invariants: OpenSSH expands `~` with the PASSWD home (getpwuid), not $HOME,
+// so the stub's echo is derived from `os.userInfo().homedir` — as ssh does —
+// never from the code under test's own choice. Each fixture pins that a withheld
+// value stored in `~` form never reaches either view in the form ssh echoes
+// (with `[withheld]` present, so the assertion is not vacuous):
+const PASSWD_HOME = os.userInfo().homedir;
+const USER = os.userInfo().username;
+for (const [name, stored, echoed, mustNotAppear] of [
+  ['~/key: echoed under the passwd home', '~/PLANTED_key', `${PASSWD_HOME}/PLANTED_key`,
+    ['PLANTED_key', `${PASSWD_HOME}/PLANTED_key`]],
+  ['bare ~: echoed as the passwd home itself', '~', PASSWD_HOME, [PASSWD_HOME, os.homedir()]],
+  ['~<current user>/key', `~${USER}/PLANTED_key`, `${PASSWD_HOME}/PLANTED_key`,
+    ['PLANTED_key', `${PASSWD_HOME}/PLANTED_key`]],
+  ['~<other user>/key: the key tail is withheld whatever home ssh printed', '~someotheruser/PLANTED_other_key',
+    '/home/someotheruser/PLANTED_other_key', ['PLANTED_other_key']],
+]) {
+  test(`a tilde key path is scrubbed as ssh echoes it: ${name}`, async (t) => {
+    const stub = await stubSshCli(t, {
+      checkExit: 255, checkStderr: `Warning: Identity file ${echoed} not accessible: No such file.\\n`,
+    });
+    const { call, store } = await withApi(t, {}, { CODE_SYSTEM_SSH: JSON.stringify(stub.cli) });
+    await plant(store, remoteRecord('on', {
+      kind: 'ssh', enabled: true, config: { host: 'h', identityFile: stored },
+    }));
+    const json = await listRemotes(call, 'json');
+    const text = await listRemotes(call, 'text');
+    for (const body of [json.body, text.body]) {
+      const dump = JSON.stringify(body);
+      for (const bad of mustNotAppear) assert.equal(dump.includes(bad), false, `${bad} leaked`);
+    }
+    assert.ok(json.body.structured.remotes[0].reachability.detail.includes('[withheld]'));
   });
-  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_SSH: JSON.stringify(stub.cli) });
-  await plant(store, remoteRecord('on', {
-    kind: 'ssh', enabled: true, config: { host: 'h', identityFile: '~/PLANTED_tilde_key' },
-  }));
-  const json = await listRemotes(call, 'json');
-  const text = await listRemotes(call, 'text');
-  for (const body of [json.body, text.body]) {
-    const dump = JSON.stringify(body);
-    assert.equal(dump.includes(expanded), false);
-    assert.equal(dump.includes('PLANTED_tilde_key'), false);
-  }
-  assert.ok(json.body.structured.remotes[0].reachability.detail.includes('[withheld]'));
-});
+}
 
 // Invariant: when one withheld value contains another, the longer is replaced
 // whole and leaves no fragment, whichever field holds the longer one.

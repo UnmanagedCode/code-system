@@ -1304,10 +1304,14 @@ against the `outputSchema` in `conductor.plugin.json`, which owns the field list
 - **`reachability.detail` is scrubbed**: every stored value of a withheld field
   is replaced by `[withheld]`. ssh prints `Identity file <path> not accessible`
   when the `-i` file is missing, and the probe copies that line into `detail`.
-  ssh echoes `~` and `~/…` **expanded**, so those expansions (and `~<current user>/…`)
-  are scrubbed too; another user's `~name/…` is not expanded and not scrubbed.
-  The scrub covers stored config values only: on a spawn failure `detail` echoes
-  the operator's `CODE_SYSTEM_SSH`/`CODE_SYSTEM_DOCKER` invocation, so a secret
-  must never be put in that override.
+  ssh expands a leading `~` with the **passwd** home (not `$HOME`) before echoing,
+  so for `~`, `~/rest` and `~<current user>/rest` both the passwd-home form and
+  the `$HOME` form (when different) are scrubbed. For `~/rest` and `~<name>/rest`
+  the bare suffix `/rest` is scrubbed as well, so another user's `~name/rest`
+  has its key tail withheld, though that user's home directory may still appear.
+  The scrub covers stored config values only: the operator's
+  `CODE_SYSTEM_SSH`/`CODE_SYSTEM_DOCKER` override is echoed in the spawn-failure
+  `detail` (`could not run '<argv>'`) and, when malformed, in the
+  `INTERNAL_ERROR` message — so a secret must never be put in that override.
 - **The ssh `fingerprint` is carried** (in `reachability` and `baseline`): it is
   a one-way hash, neither a credential nor the path.

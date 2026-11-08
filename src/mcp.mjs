@@ -156,20 +156,28 @@ const REDACTED = '[withheld]';
 // ssh echoes the `-i` key path in `-O check` stderr (`Identity file <path> not
 // accessible`) and the probe copies that line into `detail`, so every stored
 // value of a withheld field is replaced — longest first, no regex — together
-// with the forms ssh expands it to. Absolute, `%d/…`, `$HOME/…` and relative
-// paths are echoed verbatim; a leading `~` is the one expansion: `~` and `~/…`
-// become the home directory, and `~<name>/…` does too when <name> is the
-// current user. Another user's `~name` needs a passwd lookup that can throw, so
-// it is not expanded here and is not scrubbed in its expanded form.
+// with the forms ssh echoes it in. Absolute, `%d/…`, `$HOME/…` and relative
+// paths are echoed verbatim; a leading `~` is the one expansion, and OpenSSH
+// expands it with the PASSWD home (getpwuid), not `$HOME`:
+//   · `~` and `~/rest`, and `~<current user>/rest`, add the passwd home form
+//     (`os.userInfo().homedir`) and the `$HOME` form (`os.homedir()`) when
+//     they differ;
+//   · `~<name>/rest` and `~/rest` ALSO add the bare suffix `/rest`, so the
+//     key's tail is withheld even for another user's `~name` (whose home needs a
+//     passwd lookup that can throw) or any home-resolution mismatch. That user's
+//     home directory may still appear in `detail`.
 function expansionsOf(value) {
   const m = /^~([^/]*)(\/.*)?$/.exec(value);
   if (!m) return [];
-  let home;
+  const rest = m[2] ?? '';
+  const out = rest.length > 1 ? [rest] : [];
   try {
-    home = os.homedir();
-    if (m[1] !== '' && os.userInfo().username !== m[1]) return [];
-  } catch { return []; }
-  return home ? [home + (m[2] ?? '')] : [];
+    const info = os.userInfo();
+    if (m[1] === '' || info.username === m[1]) {
+      for (const home of new Set([info.homedir, os.homedir()])) if (home) out.push(home + rest);
+    }
+  } catch { /* no passwd entry: the suffix form above still applies */ }
+  return out;
 }
 
 function scrubber(record) {
