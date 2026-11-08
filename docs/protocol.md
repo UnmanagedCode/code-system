@@ -1311,8 +1311,8 @@ against the `outputSchema` in `conductor.plugin.json`, which owns the field list
   has its key tail withheld, though that user's home directory may still appear.
   Each candidate is also scrubbed in its first-line form (cut at the first LF
   and trimmed), because the probe keeps only the first line of ssh's stderr, and
-  a needle of `/` or empty is never used, so a home of `/` cannot shred the
-  detail.
+  a needle that is empty, whitespace-only, or `/` is never used, so a home of
+  `/` or a password of `" "` cannot shred the detail.
   The scrub covers stored config values only: the operator's
   `CODE_SYSTEM_SSH`/`CODE_SYSTEM_DOCKER` override is echoed in the spawn-failure
   `detail` (`could not run '<argv>'`) and, when malformed, in the

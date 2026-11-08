@@ -182,14 +182,14 @@ function expansionsOf(value) {
 }
 
 // `reachability` keeps only the first line of ssh's stderr (cut at LF, then
-// trimmed), so each candidate is also scrubbed in that truncated form. A needle
-// of '' or '/' would shred the whole detail (a home of `/`), so it is never added.
+// trimmed), so each candidate is also scrubbed in that trimmed first-line form.
+// A needle that is empty, whitespace-only or '/' would shred the whole detail
+// (a home of `/`, a password of ' '), so it is never added.
 function scrubNeedles(value) {
   const needles = new Set();
-  const add = (n) => { if (n !== '' && n !== '/') needles.add(n); };
+  const add = (n) => { if (n.trim() !== '' && n !== '/') needles.add(n); };
   for (const c of [value, ...expansionsOf(value)]) {
-    const line = c.split('\n')[0];
-    add(c); add(line); add(line.trim());
+    add(c); add(c.split('\n')[0].trim());
   }
   return needles;
 }

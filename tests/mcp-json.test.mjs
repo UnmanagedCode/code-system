@@ -438,6 +438,36 @@ for (const [name, stored, echoed, gone] of [
   });
 }
 
+// Invariant: the first-line form is the TRIMMED one (`first()` trims), so a
+// stored value with trailing spaces before a line break is still scrubbed.
+test('a value with trailing spaces before a line break is scrubbed', async (t) => {
+  const detail = await scrubDetail(t, '/keys/PLANTED_key   \nrest', '/keys/PLANTED_key   \nrest');
+  assert.equal(detail.includes('PLANTED_key'), false, detail);
+  assert.equal(markers(detail), 1, detail);
+});
+
+// Invariant: an empty first-line form is never a needle — a value that begins
+// with a line break does not shred the detail.
+test('a value beginning with a line break does not shred the detail', async (t) => {
+  const detail = await scrubDetail(t, '\n/keys/PLANTED_key', '\n/keys/PLANTED_key');
+  assert.ok(detail.includes("the control socket is '"), detail);
+  assert.ok(detail.includes('not accessible') || detail.includes('Identity file'), detail);
+  assert.ok(markers(detail) <= 1, detail);
+});
+
+// Invariant: a whitespace-only secret is never a needle — the detail keeps its spaces.
+test('a whitespace-only password does not shred the detail', async (t) => {
+  const stub = await stubSshCli(t, { checkExit: 255, checkStderr: 'Warning: Identity file /k not accessible\\n' });
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_SSH: JSON.stringify(stub.cli) });
+  await plant(store, remoteRecord('on', {
+    kind: 'ssh', enabled: true, config: { host: 'h', password: ' ' },
+  }));
+  const [r] = await remotesOf(call);
+  assert.ok(r.reachability.detail.includes('Identity file /k not accessible'), r.reachability.detail);
+  assert.ok(r.reachability.detail.includes(' — the control socket is '), r.reachability.detail);
+  assert.equal(markers(r.reachability.detail), 0);
+});
+
 // Invariant: a home of `/` never makes `/` a needle, so the detail is not shredded.
 test('a degenerate home of "/" does not shred the detail', async (t) => {
   const prior = process.env.HOME;
