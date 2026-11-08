@@ -1,12 +1,15 @@
-// PINS THE MCP SURFACE: the `list_remotes` rendering, byte for byte, and the
-// envelope contract around it.
+// PINS THE MCP SURFACE: the `list_remotes` TEXT rendering, byte for byte, and
+// the envelope contract around it (the json view is tests/mcp-json.test.mjs).
 //
-// The rendering is the whole product of this tool — a caller sees the text and
-// nothing else — so the tests below assert on exact lines rather than on
+// Every reply in this file is also checked by `checkReply` against the cc reply
+// contract and the manifest's outputSchema.
+//
+// The text rendering is what a text-format caller sees and nothing else — so the
+// tests below assert on exact lines rather than on
 // "contains". Two invariants are singled out because neither is visible to a
 // reviewer reading the renderer:
 //
-//  1. FIVE FIELDS AND NO MORE. A record carries a mirror root, a baseline
+//  1. FIVE FIELDS AND NO MORE — IN THE TEXT VIEW. A record carries a mirror root, a baseline
 //     verdict, a docker identity, a schema and two timestamps, and none of them
 //     belongs in a catalog listing. Asserted against PLANTED values, so a sixth
 //     field added later fails here whatever it is called.
@@ -22,6 +25,7 @@ import { remoteCards } from '../src/cards.mjs';
 import { renderRemotes } from '../src/mcp.mjs';
 import { SCHEMA } from '../src/store.mjs';
 import { stubDockerCli, withApi } from './helpers.mjs';
+import { checkReply } from './_mcpContract.mjs';
 
 // What `docker inspect`'s format string answers for a RUNNING container:
 // `{{.State.Running}} {{.Image}} {{.State.StartedAt}}`.
@@ -62,7 +66,15 @@ async function plantBroken(store, remoteId) {
   await fs.writeFile(path.join(dir, `${remoteId}.json`), '{ this is not json');
 }
 
-const listRemotes = (call) => call('POST', '/mcp', { tool: 'list_remotes', arguments: {} });
+// Sends `format` only when given (absent means text), and checks every reply
+// against the reply contract.
+async function listRemotes(call, format) {
+  const res = await call('POST', '/mcp', {
+    tool: 'list_remotes', arguments: {}, ...(format === undefined ? {} : { format }),
+  });
+  checkReply('list_remotes', format, res.status, res.body);
+  return res;
+}
 
 // ── The rendering ────────────────────────────────────────────────────
 
@@ -106,7 +118,7 @@ test('a docker remote names its container, an ssh remote its host', async (t) =>
 // planted as a string nothing else would produce, and the rendering must
 // contain none of them. A sixth field added later fails here whatever it is
 // named and wherever it is placed.
-test('the rendering leaks no other value the record carries', async (t) => {
+test('the text view leaks no other value the record carries', async (t) => {
   const stub = await stubDockerCli(t, { stdout: RUNNING });
   const { call, store } = await withApi(t, {}, { CODE_SYSTEM_DOCKER: JSON.stringify(stub.cli) });
   await plant(store, remoteRecord('loud', {
@@ -307,8 +319,10 @@ test('listing writes nothing to the store', async (t) => {
     return out;
   };
   const before = await snapshot();
-  await listRemotes(call);
-  await listRemotes(call);
+  for (const format of [undefined, 'text', 'json']) {
+    await listRemotes(call, format);
+    await listRemotes(call, format);
+  }
   assert.deepEqual(await snapshot(), before);
 });
 
@@ -324,6 +338,8 @@ test('the success body is {text} — never {result}, and no meta', async (t) => 
   const { body } = await listRemotes(call);
   assert.deepEqual(Object.keys(body), ['text']);
   assert.equal(typeof body.text, 'string');
+  const explicit = await listRemotes(call, 'text');
+  assert.deepEqual(Object.keys(explicit.body), ['text']);
 });
 
 // PINS THE STATUS CONTRACT: a malformed ENVELOPE is the only non-200. An
@@ -334,11 +350,12 @@ test('an unknown tool is a 200 error body; a missing tool is the only 400', asyn
 
   const unknown = await call('POST', '/mcp', { tool: 'bogus', arguments: {} });
   assert.equal(unknown.status, 200);
-  assert.deepEqual(unknown.body, { error: 'unknown tool: bogus' });
+  assert.deepEqual(unknown.body, { error: 'unknown tool: bogus', code: 'TOOL_UNKNOWN' });
 
   const missing = await call('POST', '/mcp', { arguments: {} });
   assert.equal(missing.status, 400);
   assert.match(missing.body.error, /tool/);
+  assert.equal(missing.body.code, 'BAD_ENVELOPE');
 
   const notAString = await call('POST', '/mcp', { tool: 42 });
   assert.equal(notAString.status, 400);
@@ -549,15 +566,20 @@ test('a record with no `enabled` key is disabled, and its target is not probed',
 // one step that can fail outright. Driven by planting a FILE where the remotes
 // DIRECTORY belongs, so `listRemotes`'s `readdir` raises a non-ENOENT error and
 // rethrows it — a real failure of the real code path, with no injected seam.
-test('a store that cannot be listed is a 200 error body, not a crash', async (t) => {
+test('a store that cannot be listed is a coded 200 refusal with errno in details, not a crash', async (t) => {
   const { call, store } = await withApi(t);
   await fs.writeFile(path.join(store.dir, 'remotes'), 'not a directory');
 
-  const res = await listRemotes(call);
-  assert.equal(res.status, 200, 'a tool-level failure is never a non-200');
-  assert.match(res.body.error, /not a directory/,
-    'the real readdir failure, surfaced — not a message this test arranged');
-  assert.equal('text' in res.body, false);
+  for (const format of ['text', 'json']) {
+    const res = await listRemotes(call, format);
+    assert.equal(res.status, 200, 'a tool-level failure is never a non-200');
+    assert.match(res.body.error, /not a directory/,
+      'the real readdir failure, surfaced — not a message this test arranged');
+    assert.equal(res.body.code, 'STORE_UNREADABLE');
+    assert.equal(res.body.details.errno, 'ENOTDIR');
+    assert.equal('text' in res.body, false);
+    assert.equal('structured' in res.body, false);
+  }
 });
 
 // PINS THAT A TOOL NAME IS LOOKED UP AS AN OWN PROPERTY. A plain object
@@ -568,9 +590,11 @@ test('a store that cannot be listed is a 200 error body, not a crash', async (t)
 test('an inherited Object.prototype member is an unknown tool, not a handler', async (t) => {
   const { call } = await withApi(t);
   for (const name of ['toString', 'constructor', 'hasOwnProperty', 'valueOf', '__proto__']) {
-    const res = await call('POST', '/mcp', { tool: name });
-    assert.equal(res.status, 200, name);
-    assert.deepEqual(res.body, { error: `unknown tool: ${name}` }, name);
+    for (const format of [undefined, 'text', 'json']) {
+      const res = await call('POST', '/mcp', { tool: name, ...(format ? { format } : {}) });
+      assert.equal(res.status, 200, name);
+      assert.deepEqual(res.body, { error: `unknown tool: ${name}`, code: 'TOOL_UNKNOWN' }, `${name} ${format}`);
+    }
   }
 });
 

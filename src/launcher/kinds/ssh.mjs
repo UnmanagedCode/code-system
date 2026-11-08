@@ -94,6 +94,9 @@ export const KIND_META = {
       advanced: true,
       label: 'Private key file',
       required: false,
+      // The path names a credential. REST serves it to the card UI; the MCP views withhold it
+      // (`withheldFieldsFor`).
+      credential: true,
       placeholder: '/home/me/.ssh/id_ed25519',
       hint: 'Optional. An absolute path to an unencrypted private key that is not group- or world-readable.'
         + ' It is offered first; an IdentityFile your ssh config lists for this host may still be offered after it.'

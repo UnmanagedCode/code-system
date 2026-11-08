@@ -16,8 +16,167 @@
     "tools": [
       {
         "name": "list_remotes",
-        "description": "List code-system's registered remotes as plain text, one line each: status, remoteId, provider kind, that kind's target (docker container, ssh host), label. Status folds the remote's two states into one word: `disabled` — the operator gate is off, so the remote refuses every command and its target is not probed; `connected` / `not connected` — the gate is on, and this is a fresh probe of the target; `not readable` — the stored record could not be read. For the remoteIds a project can use, see `enumerate_remotes`.",
-        "inputSchema": { "type": "object", "properties": {} }
+        "description": "code-system's registered remotes (docker containers, ssh hosts), in store order: each one's status, remoteId, provider kind, that kind's target and label, plus the rest of its stored record. Status folds a remote's two states into one word: `disabled` — the operator gate is off, so the remote refuses every command and its target is not probed; `connected` / `not connected` — the gate is on, and this is a fresh probe of the target; `not readable` — the stored record could not be read. An ssh password and private-key path are never included. For the remoteIds a project can use, see `enumerate_remotes`.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "outputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "remotes"
+          ],
+          "properties": {
+            "remotes": {
+              "type": "array",
+              "description": "Every stored record, in store order.",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "status",
+                      "remoteId",
+                      "kind",
+                      "label",
+                      "target",
+                      "enabled",
+                      "reachability",
+                      "config",
+                      "withheld",
+                      "mirror",
+                      "baseline",
+                      "createdAt",
+                      "updatedAt"
+                    ],
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "connected",
+                          "not connected",
+                          "disabled"
+                        ]
+                      },
+                      "remoteId": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "description": "As stored (not re-validated on read); the REST API writes docker or ssh. Null when absent."
+                      },
+                      "label": {
+                        "description": "As stored; a string when written by the REST API. Null when absent."
+                      },
+                      "target": {
+                        "type": [
+                          "object",
+                          "null"
+                        ],
+                        "additionalProperties": false,
+                        "required": [
+                          "field",
+                          "value"
+                        ],
+                        "description": "The kind's identifying config field and its stored value; null for a kind with none.",
+                        "properties": {
+                          "field": {
+                            "type": "string"
+                          },
+                          "value": {
+                            "description": "As stored; null when absent."
+                          }
+                        }
+                      },
+                      "enabled": {
+                        "type": "boolean",
+                        "description": "The operator gate; true only for a stored literal true."
+                      },
+                      "reachability": {
+                        "type": [
+                          "object",
+                          "null"
+                        ],
+                        "additionalProperties": false,
+                        "required": [
+                          "connected",
+                          "detail",
+                          "fingerprint"
+                        ],
+                        "description": "A fresh probe of the target; null when the gate is off, because no probe runs.",
+                        "properties": {
+                          "connected": {
+                            "type": "boolean"
+                          },
+                          "detail": {
+                            "type": "string"
+                          },
+                          "fingerprint": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        }
+                      },
+                      "config": {
+                        "type": "object",
+                        "additionalProperties": true,
+                        "description": "The kind's declared config fields that are neither secret nor credential, as stored."
+                      },
+                      "withheld": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Names of stored config keys not in config: secret or credential fields and keys the kind does not declare."
+                      },
+                      "mirror": {
+                        "description": "As stored: null (advertises nothing) or {root, exclude}."
+                      },
+                      "baseline": {
+                        "description": "The stored tooling verdict {state, fingerprint, missing, checkedAt}, not refreshed by this listing; null when absent."
+                      },
+                      "createdAt": {
+                        "description": "As stored (ISO-8601 when written by the REST API); null when absent."
+                      },
+                      "updatedAt": {
+                        "description": "As stored (ISO-8601 when written by the REST API); null when absent."
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "status",
+                      "remoteId",
+                      "reason",
+                      "message"
+                    ],
+                    "properties": {
+                      "status": {
+                        "const": "not readable"
+                      },
+                      "remoteId": {
+                        "type": "string",
+                        "description": "The record file's name stem."
+                      },
+                      "reason": {
+                        "type": "string",
+                        "description": "readRemote's refusal reason."
+                      },
+                      "message": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
       }
     ]
   }

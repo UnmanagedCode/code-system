@@ -36,8 +36,8 @@ follows the OS theme. It has no theme switch of its own.
 
 ## An agent can list the remotes
 
-The `list_remotes` MCP tool answers "what remotes exist, and can I use them" as
-plain text — one line per remote:
+The `list_remotes` MCP tool answers "what remotes exist, and can I use them" in
+either of two formats. **Text** is one line per remote:
 
 ```
 connected  app-ctr  docker  container=app  "App container"
@@ -47,8 +47,11 @@ not readable  bad-rec
 ```
 
 Each line carries the status, the `remoteId` to paste into a project's *Remote*
-field, the kind, what that kind points at, and the label. Nothing else — it is a
-catalog, not a card.
+field, the kind, what that kind points at, and the label. Nothing else in the
+text lines — they are a catalog, not a card. **Typed JSON** carries each remote's
+full record instead (mirror, baseline, timestamps, the probe's detail, the
+config fields the kind declares). An ssh **password and private-key path never
+appear in either format**; the JSON names what it withheld.
 
 **The status is one word for the two facts a card keeps apart** (see below), and
 the gate wins:

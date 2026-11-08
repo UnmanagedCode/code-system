@@ -16,7 +16,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  REGISTERED_KINDS, createTransport, identityFieldFor, kindDescriptors, mirrorsByDefault,
+  REGISTERED_KINDS, createTransport, exposedConfig, identityFieldFor, kindDescriptors, mirrorsByDefault,
+  withheldFieldsFor,
 } from '../src/launcher/kinds/index.mjs';
 import { stubDockerCli } from './helpers.mjs';
 
@@ -214,4 +215,46 @@ test('ssh declares its password secret, and the redaction helpers follow the des
   assert.deepEqual(redactConfig('ssh', { host: 'h', password: 'x' }),
     { config: { host: 'h' }, storedSecrets: ['password'] });
   assert.deepEqual(redactConfig('ssh', { host: 'h' }), { config: { host: 'h' }, storedSecrets: [] });
+});
+
+// ── The MCP withholding marker ───────────────────────────────────────
+
+// PINS ONE MARKER SET read by ONE helper: ssh withholds its password and key
+// path, docker nothing, and a prototype-named kind nothing (no throw).
+test('withheldFieldsFor reads the secret and credential flags', () => {
+  assert.deepEqual(withheldFieldsFor('ssh'), ['password', 'identityFile']);
+  assert.deepEqual(withheldFieldsFor('docker'), []);
+  assert.deepEqual(withheldFieldsFor('constructor'), []);
+  const ssh = kindDescriptors().find(d => d.kind === 'ssh');
+  assert.deepEqual(ssh.configFields.filter(f => f.credential === true).map(f => f.name), ['identityFile']);
+});
+
+// PINS THAT A FUTURE SECRET FIELD IS WITHHELD FROM MCP with no second flag.
+test('every secret field of every registered kind is withheld from MCP', () => {
+  for (const d of kindDescriptors()) {
+    for (const f of d.configFields.filter(x => x.secret === true)) {
+      assert.ok(withheldFieldsFor(d.kind).includes(f.name), `${d.kind}.${f.name}`);
+    }
+  }
+});
+
+// PINS THAT THE TEXT VIEW'S TARGET IS NEVER BLANKED by the marker.
+test('every registered kind exposes its identity field', () => {
+  for (const kind of REGISTERED_KINDS) {
+    assert.equal(withheldFieldsFor(kind).includes(identityFieldFor(kind)), false, kind);
+  }
+});
+
+// PINS THE ALLOWLIST PROJECTION: declared non-withheld keys pass verbatim;
+// secret, credential and undeclared keys are named in `withheld`, in record order.
+test('exposedConfig keeps declared fields and names everything else', () => {
+  assert.deepEqual(
+    exposedConfig('ssh', { host: 'h', password: 'p', token: 't', identityFile: '/k', port: 22 }),
+    { config: { host: 'h', port: 22 }, withheld: ['password', 'token', 'identityFile'] });
+  assert.deepEqual(exposedConfig('docker', { container: 'c', user: 'u' }),
+    { config: { container: 'c', user: 'u' }, withheld: [] });
+  assert.deepEqual(exposedConfig('ssh', 'str'), { config: {}, withheld: [] });
+  assert.deepEqual(exposedConfig('ssh', null), { config: {}, withheld: [] });
+  assert.deepEqual(exposedConfig('nope', { a: 1, b: 2 }), { config: {}, withheld: ['a', 'b'] });
+  assert.deepEqual(exposedConfig('constructor', { a: 1 }), { config: {}, withheld: ['a'] });
 });
