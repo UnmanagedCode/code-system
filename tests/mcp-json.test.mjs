@@ -370,6 +370,86 @@ for (const [name, stored, echoed, mustNotAppear] of [
   });
 }
 
+// Shared by the scrub tests below: one ssh remote whose stub echoes `echoed`.
+async function scrubDetail(t, stored, echoed) {
+  const stub = await stubSshCli(t, {
+    checkExit: 255, checkStderr: `Warning: Identity file ${echoed} not accessible: No such file.\\n`,
+  });
+  const { call, store } = await withApi(t, {}, { CODE_SYSTEM_SSH: JSON.stringify(stub.cli) });
+  await plant(store, remoteRecord('on', {
+    kind: 'ssh', enabled: true, config: { host: 'h', identityFile: stored },
+  }));
+  const [r] = await remotesOf(call);
+  return r.reachability.detail;
+}
+const markers = d => d.split('[withheld]').length - 1;
+
+// Invariant: the scrub removes the secret and ONLY the secret — the rest of the
+// detail survives, and one echoed secret is one marker.
+for (const [name, stored, echoed] of [
+  ['bare ~', '~', PASSWD_HOME],
+  ['an ordinary absolute path', '/keys/PLANTED_key', '/keys/PLANTED_key'],
+]) {
+  test(`non-secret detail survives the scrub: ${name}`, async (t) => {
+    const detail = await scrubDetail(t, stored, echoed);
+    assert.ok(detail.includes('not accessible'), detail);
+    assert.ok(detail.includes("the control socket is '"), detail);
+    assert.equal(markers(detail), 1, detail);
+  });
+}
+
+// Invariant: a home-resolution mismatch cannot expose the key's tail — the
+// `/rest` suffix is withheld whatever home ssh printed.
+test('a tilde path echoed under a third home still has its tail withheld', async (t) => {
+  const detail = await scrubDetail(t, '~/PLANTED_key', '/home/someoneelse/PLANTED_key');
+  assert.equal(detail.includes('PLANTED_key'), false, detail);
+  assert.equal(markers(detail), 1, detail);
+});
+
+// Invariant: the $HOME form (os.homedir) is scrubbed as well as the passwd one.
+test('a tilde path echoed under $HOME is scrubbed', async (t) => {
+  const detail = await scrubDetail(t, '~/PLANTED_key', `${os.homedir()}/PLANTED_key`);
+  assert.equal(detail.includes(os.homedir()), false, detail);
+  assert.equal(detail.includes('PLANTED_key'), false, detail);
+  assert.equal(markers(detail), 1, detail);
+});
+
+// Invariant: `~<current user>/…` hides the passwd home itself, not just the tail
+// (longest-first over the full set).
+test('a named-current-user tilde path hides the passwd home', async (t) => {
+  const detail = await scrubDetail(t, `~${USER}/PLANTED_key`, `${PASSWD_HOME}/PLANTED_key`);
+  assert.equal(detail.includes(PASSWD_HOME), false, detail);
+  assert.equal(detail.includes('PLANTED_key'), false, detail);
+  assert.equal(markers(detail), 1, detail);
+});
+
+// Invariant: a stored value holding a line terminator is still scrubbed — the
+// tilde expansion matches across it, and the first-line form (all the probe
+// keeps) is scrubbed for plain values too.
+for (const [name, stored, echoed, gone] of [
+  ['tilde + LF', '~/x\nevil', `${PASSWD_HOME}/x\nevil`, PASSWD_HOME],
+  ['tilde + CR', '~/x\revil', `${PASSWD_HOME}/x\revil`, PASSWD_HOME],
+  ['plain absolute + LF', '/keys/a\nb', '/keys/a\nb', '/keys/a'],
+]) {
+  test(`a withheld value with a line terminator is scrubbed: ${name}`, async (t) => {
+    const detail = await scrubDetail(t, stored, echoed);
+    assert.equal(detail.includes(gone), false, detail);
+    assert.ok(detail.includes('[withheld]'), detail);
+  });
+}
+
+// Invariant: a home of `/` never makes `/` a needle, so the detail is not shredded.
+test('a degenerate home of "/" does not shred the detail', async (t) => {
+  const prior = process.env.HOME;
+  process.env.HOME = '/';
+  t.after(() => { if (prior === undefined) delete process.env.HOME; else process.env.HOME = prior; });
+  const detail = await scrubDetail(t, '~', PASSWD_HOME);
+  assert.ok(detail.includes("the control socket is '"), detail);
+  assert.ok(detail.includes('not accessible'), detail);
+  assert.equal(markers(detail), 1, detail);
+  assert.ok(detail.includes('/'), 'slashes survive');
+});
+
 // Invariant: when one withheld value contains another, the longer is replaced
 // whole and leaves no fragment, whichever field holds the longer one.
 for (const [name, password, identityFile] of [

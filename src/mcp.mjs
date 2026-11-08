@@ -167,7 +167,8 @@ const REDACTED = '[withheld]';
 //     passwd lookup that can throw) or any home-resolution mismatch. That user's
 //     home directory may still appear in `detail`.
 function expansionsOf(value) {
-  const m = /^~([^/]*)(\/.*)?$/.exec(value);
+  // `[\s\S]`, not `.`: a stored value may hold a line terminator.
+  const m = /^~([^/]*)(\/[\s\S]*)?$/.exec(value);
   if (!m) return [];
   const rest = m[2] ?? '';
   const out = rest.length > 1 ? [rest] : [];
@@ -180,12 +181,27 @@ function expansionsOf(value) {
   return out;
 }
 
+// `reachability` keeps only the first line of ssh's stderr (cut at LF, then
+// trimmed), so each candidate is also scrubbed in that truncated form. A needle
+// of '' or '/' would shred the whole detail (a home of `/`), so it is never added.
+function scrubNeedles(value) {
+  const needles = new Set();
+  const add = (n) => { if (n !== '' && n !== '/') needles.add(n); };
+  for (const c of [value, ...expansionsOf(value)]) {
+    const line = c.split('\n')[0];
+    add(c); add(line); add(line.trim());
+  }
+  return needles;
+}
+
 function scrubber(record) {
   const config = record.config && typeof record.config === 'object' ? record.config : {};
-  const values = withheldFieldsFor(record.kind)
+  const values = [...new Set(withheldFieldsFor(record.kind)
     .map(name => (Object.hasOwn(config, name) ? config[name] : undefined))
     .filter(v => typeof v === 'string' && v.length > 0)
-    .flatMap(v => [v, ...expansionsOf(v)])
+    .flatMap(v => [...scrubNeedles(v)]))]
+    // The FULL set, longest first: a short `/rest` suffix applied before the
+    // full home form would leave the home's prefix behind.
     .sort((a, b) => b.length - a.length);
   return text => values.reduce((out, v) => out.split(v).join(REDACTED), text);
 }
