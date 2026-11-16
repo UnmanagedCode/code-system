@@ -151,3 +151,15 @@ test('invalidate() during an in-flight resolve starts no second probe', async ()
   await p;
   assert.equal(calls.length, 1);
 });
+
+// Invariant: a direct probe that TIMED OUT never escalates to sudo, even when its
+// stderr happens to carry the denial line; the answer is bare docker, unsettled.
+test('a timed-out direct probe with a denial line does not try sudo', async () => {
+  const h = harness({
+    docker: { code: 1, stdout: '', stderr: DENIED, error: null, timedOut: true },
+    'sudo -n docker': OK,
+  });
+  assert.deepEqual(await h.resolver.resolve(), { ok: true, argv: ['docker'], via: 'direct', settled: false });
+  assert.equal(h.calls.length, 1);
+  assert.match(h.calls[0], /^docker version /);
+});

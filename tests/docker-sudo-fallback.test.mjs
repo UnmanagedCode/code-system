@@ -16,7 +16,10 @@ const DOCKER_STUB = `#!/bin/sh
 echo "priv=$FAKE_DOCKER_PRIV $*" >> "$STUB_LOG"
 if [ "$1" = version ]; then
   : > "$STUB_DIR/probe-started"
-  while [ ! -f "$STUB_DIR/release" ]; do sleep 0.05; done
+  # Bounded (~10 s) as a backstop: this process is detached, so nothing else kills it.
+  i=0
+  while [ ! -f "$STUB_DIR/release" ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i+1)); done
+  : > "$STUB_DIR/probe-done"
 fi
 if [ "$FAKE_DOCKER_PRIV" != 1 ]; then
   echo "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock" >&2
@@ -44,8 +47,16 @@ async function until(pred, ms = 5_000) {
 async function setup(t) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cs-sudo-bin-'));
   const release = path.join(dir, 'release');
-  // Always release at the end, so no stub is left polling.
-  t.after(async () => { await fs.writeFile(release, ''); await fs.rm(dir, { recursive: true, force: true }); });
+  // Release, then WAIT for the stub to finish before removing its directory: the
+  // stub is detached (runDocker), so a removed `release` file would leave it
+  // looping forever. Bounded, because a timeout kill means it never writes the marker.
+  t.after(async () => {
+    await fs.writeFile(release, '');
+    if (await exists(path.join(dir, 'probe-started'))) {
+      await until(() => exists(path.join(dir, 'probe-done')), 3_000).catch(() => {});
+    }
+    await fs.rm(dir, { recursive: true, force: true });
+  });
   for (const [name, body] of [['docker', DOCKER_STUB], ['sudo', SUDO_STUB]]) {
     await fs.writeFile(path.join(dir, name), body, { mode: 0o755 });
   }
@@ -53,7 +64,9 @@ async function setup(t) {
   t.after(() => store.cleanup());
   await writeRecord(store.dir, record('app', { kind: 'docker', config: { container: 'app' }, enabled: true }));
   // `undefined` UNSETS CODE_SYSTEM_DOCKER (the Launcher helper pins it otherwise).
-  const l = new Launcher(['--kind', 'docker'], {
+  // `--no-pty`: the pty-helper probe (a real python3 spawn) would otherwise sit
+  // before stdin too, so only the readiness gate is between spawn and the hello.
+  const l = new Launcher(['--kind', 'docker', '--no-pty'], {
     CODE_SYSTEM_DOCKER: undefined,
     CODE_SYSTEM_STORE: store.dir,
     CODE_SYSTEM_CHANNEL: '0',
@@ -96,12 +109,14 @@ test('the launcher waits for the resolve before the hello, then execs through su
 });
 
 // Invariant: a probe that hangs past the readiness budget does NOT hold the
-// hello forever (cc's handshake deadline is 10 s) — the hello is answered while
-// the probe is still blocked.
-test('the hello is still answered when the probe outlasts the readiness budget', async (t) => {
-  const { l, release, marker } = await setup(t);
+// hello for the probe's own 5 s timeout (cc's handshake deadline is 10 s) — the
+// hello comes back at about the budget (1.5 s), measured from the probe starting.
+test('the hello is answered at the readiness budget when the probe hangs', async (t) => {
+  const { l, marker } = await setup(t);
   l.send({ type: 'hello', protocol: 1, client: 'code-conductor' });
   await until(() => exists(marker));
+  const started = Date.now();
   await l.waitFor(f => f.type === 'hello', { timeoutMs: 6_000 });
-  assert.equal(await exists(release), false, 'the probe was never released: the hello did not wait for it');
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 4_000, `hello took ${elapsed} ms after the probe started; the budget, not the probe timeout, bounds it`);
 });
