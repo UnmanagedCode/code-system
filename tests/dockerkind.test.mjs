@@ -13,8 +13,9 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { dockerOverrideArgv } from '../src/launcher/kinds/dockerCli.mjs';
 import {
-  ALLOWED_SUBCOMMANDS, DETACH_KEYS, DOCKER_ENV, assertAttachOnly, createDockerTransport, dockerCliArgv,
+  ALLOWED_SUBCOMMANDS, DETACH_KEYS, DOCKER_ENV, assertAttachOnly, createDockerTransport,
 } from '../src/launcher/kinds/docker.mjs';
 // MOVED to kinds/reapscript.mjs when card 2026-0004 landed: `ssh` needs the
 // identical relay, so the script is shared rather than copied.
@@ -216,15 +217,14 @@ test('spawnPlan: never detached, on either form and either env case', () => {
 // override refuses LOUDLY instead of silently falling back — a silent fallback
 // would fail every operation on a host like this one with a socket-permission
 // error that names nothing.
-test('the docker invocation is overridable, and the shipped default hardcodes no sudo', () => {
-  assert.deepEqual(dockerCliArgv({}), ['docker']);
-  assert.deepEqual(dockerCliArgv({ [DOCKER_ENV]: '   ' }), ['docker']);
-  assert.equal(dockerCliArgv({}).join(' ').includes('sudo'), false);
+test('the docker invocation is overridable, and an unset override means "decide it", not a hardcoded sudo', () => {
+  assert.equal(dockerOverrideArgv({}), null);
+  assert.equal(dockerOverrideArgv({ [DOCKER_ENV]: '   ' }), null);
 
-  assert.deepEqual(dockerCliArgv({ [DOCKER_ENV]: '["sudo","-n","docker"]' }), ['sudo', '-n', 'docker']);
+  assert.deepEqual(dockerOverrideArgv({ [DOCKER_ENV]: '["sudo","-n","docker"]' }), ['sudo', '-n', 'docker']);
 
   for (const bad of ['docker', '[]', '["a",1]', '["a",""]', '{', '{"a":1}', 'null']) {
-    assert.throws(() => dockerCliArgv({ [DOCKER_ENV]: bad }), /CODE_SYSTEM_DOCKER/,
+    assert.throws(() => dockerOverrideArgv({ [DOCKER_ENV]: bad }), /CODE_SYSTEM_DOCKER/,
       `${JSON.stringify(bad)} must refuse loudly, not fall back to bare docker`);
   }
 
@@ -239,7 +239,7 @@ test('the docker invocation is overridable, and the shipped default hardcodes no
 // every docker invocation in the module goes through the guard, so an edit that
 // reaches for one throws instead of shipping.
 test('attach-only is ENFORCED, not remembered', () => {
-  assert.deepEqual(ALLOWED_SUBCOMMANDS, ['exec', 'inspect']);
+  assert.deepEqual(ALLOWED_SUBCOMMANDS, ['exec', 'inspect', 'version']);
   for (const sub of ['start', 'stop', 'run', 'rm', 'create', 'kill']) {
     assert.throws(() => assertAttachOnly(sub), /ATTACH-ONLY/, sub);
   }
@@ -925,4 +925,101 @@ test('spawnPlan and channelPlan never ask for a tty', () => {
     assert.equal(t.spawnPlan({ container: 'app', user: 'u' }, req(over)).args.some(isTty), false, JSON.stringify(over));
   }
   assert.equal(t.channelPlan({ container: 'app' }, { remoteId: 'r1' }).args.some(isTty), false);
+});
+
+// ── the resolved invocation ─────────────────────────────────────────
+
+const SUDO_STUB = (via = 'sudo', over = {}) => {
+  const state = { via, invalidated: 0, ...over };
+  const argvFor = () => (state.via === 'sudo' ? ['sudo', '-n', 'docker'] : state.via === 'override' ? ['/o/docker'] : ['docker']);
+  return Object.assign(state, {
+    current: () => ({ argv: argvFor(), via: state.via }),
+    resolve: async () => state.resolved ?? { ok: true, argv: argvFor(), via: state.via, settled: true },
+    invalidate: () => { state.invalidated++; },
+    lastFailure: () => state.failure ?? null,
+  });
+};
+const DENIED_ERR = 'permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock\n';
+
+// Invariant: every plan builder reads the resolver's invocation PER CALL, so a
+// mode change reaches the next command (and moves the channel pool's argv key).
+test('plans follow the resolver at every call, not at construction', () => {
+  const resolver = SUDO_STUB('sudo');
+  const tr = createDockerTransport({ resolver });
+  const plans = () => [tr.spawnPlan(CONFIG, req()), tr.channelPlan(CONFIG, {}), tr.ptyPlan(CONFIG, PTY_REQ)];
+  for (const p of plans()) {
+    assert.equal(p.file, 'sudo');
+    assert.deepEqual(p.args.slice(0, 3), ['-n', 'docker', 'exec']);
+  }
+  resolver.via = 'direct';
+  for (const p of plans()) {
+    assert.equal(p.file, 'docker');
+    assert.equal(p.args[0], 'exec');
+  }
+});
+
+// Invariant: an explicit `cli` pins the invocation; the resolver is never consulted.
+test('an explicit cli never touches the resolver', async () => {
+  const touched = [];
+  const resolver = new Proxy({}, { get: (_, k) => () => { touched.push(k); return { argv: ['x'], via: 'direct' }; } });
+  const tr = createDockerTransport({ cli: ['/pinned/docker'], resolver });
+  assert.equal(tr.spawnPlan(CONFIG, req()).file, '/pinned/docker');
+  await tr.ready();
+  tr.classifyFailure(CONFIG, { code: 1, stdout: '', stderr: DENIED_ERR });
+  await tr.reachability(CONFIG);
+  assert.deepEqual(touched, []);
+});
+
+// Invariant: a socket denial in a resolved mode is EUNKNOWN naming both attempts
+// and the env var by name, and triggers exactly one re-resolve; daemon-down and
+// override mode do not invalidate.
+test('classifyFailure: a socket denial invalidates, daemon-down does not', () => {
+  const resolver = SUDO_STUB('direct', { failure: '`docker` was denied and `sudo -n docker` failed — set CODE_SYSTEM_DOCKER' });
+  const tr = createDockerTransport({ resolver });
+  const v = tr.classifyFailure(CONFIG, { code: 1, stdout: '', stderr: DENIED_ERR });
+  assert.equal(v.code, 'EUNKNOWN');
+  assert.match(v.message, /sudo -n docker/);
+  assert.match(v.message, /CODE_SYSTEM_DOCKER/);
+  assert.equal(resolver.invalidated, 1);
+
+  const down = tr.classifyFailure(CONFIG, { code: 1, stdout: '', stderr: 'Cannot connect to the Docker daemon at unix:///x. Is it running?\n' });
+  assert.equal(down.code, 'EUNKNOWN');
+  assert.equal(resolver.invalidated, 1);
+
+  const ov = SUDO_STUB('override');
+  const v2 = createDockerTransport({ resolver: ov }).classifyFailure(CONFIG, { code: 1, stdout: '', stderr: DENIED_ERR });
+  assert.match(v2.message, /\/o\/docker/, 'override mode keeps the argv-echoing message');
+});
+
+// Invariant: in sudo mode a `sudo:` refusal only re-resolves — it is forgeable by
+// a command, so it is never classified and the op reads as the command's own exit.
+test('classifyFailure: a sudo refusal in sudo mode invalidates but returns null', () => {
+  const resolver = SUDO_STUB('sudo');
+  const tr = createDockerTransport({ resolver });
+  assert.equal(tr.classifyFailure(CONFIG, { code: 1, stdout: '', stderr: 'sudo: a password is required\n' }), null);
+  assert.equal(resolver.invalidated, 1);
+
+  const direct = SUDO_STUB('direct');
+  assert.equal(createDockerTransport({ resolver: direct })
+    .classifyFailure(CONFIG, { code: 1, stdout: '', stderr: 'sudo: a password is required\n' }), null);
+  assert.equal(direct.invalidated, 0, 'outside sudo mode the line is just the command\'s output');
+});
+
+// Invariant: when the invocation cannot be resolved, reachability reports the
+// resolver's detail and runs nothing; in sudo mode a running container's detail
+// discloses the root-equivalent invocation.
+test('reachability: unresolved gives the resolver detail; sudo mode is disclosed', async (t) => {
+  const bad = SUDO_STUB('direct', { resolved: { ok: false, detail: 'neither docker nor sudo -n docker worked' } });
+  const r = await createDockerTransport({ resolver: bad }).reachability(CONFIG);
+  assert.deepEqual(r, { connected: false, detail: 'neither docker nor sudo -n docker worked', fingerprint: null });
+
+  const running = await stubCli(t, { stdout: 'true sha256:abc 2026-01-01T00:00:00Z\n' });
+  const resolver = SUDO_STUB('sudo');
+  const tr = createDockerTransport({ resolver });
+  // The stub resolver reports sudo, but the process under test is the fake.
+  resolver.current = () => ({ argv: running.cli, via: 'sudo' });
+  const ok = await tr.reachability(CONFIG);
+  assert.equal(ok.connected, true);
+  assert.match(ok.detail, /sudo -n docker/);
+  assert.match(ok.detail, /root-equivalent/);
 });

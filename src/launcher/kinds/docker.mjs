@@ -13,30 +13,14 @@ import { asObject, execEnv, operand, operatorError } from './config.mjs';
 // The kill relay's far-side script is SHARED with `ssh`: identical mechanism,
 // identical reason (a far-side child is not this process's OS descendant).
 import { REAP_TAG, TOKEN_VAR, reapScriptFor } from './reapscript.mjs';
+// WHICH docker INVOCATION to use is decided in dockerCli.mjs: the operator's
+// CODE_SYSTEM_DOCKER override, else bare `docker`, else `sudo -n docker` when
+// bare docker is denied the socket. This module only reads the answer.
+import {
+  DOCKER_ENV, createDockerCliResolver, dockerOverrideArgv, isSocketDenied, isSudoRefusal,
+} from './dockerCli.mjs';
 
-// THE OPERATOR SEAM for a host where the docker CLI needs a prefix (this one:
-// the socket is root-owned, so live tests want ["sudo","-n","docker"]).
-//
-// A WHOLE ARGV, JSON — not a path — because the thing that varies is the
-// invocation, not the binary.
-//
-// WHY AN ENV VAR AND NOT A STORE FIELD OR A LAUNCH FLAG:
-//  - A store field would be an HTTP-WRITABLE EXECUTABLE ARGV on cc's host: the
-//    backend REST surface writes remote records, so a card-UI field taking an
-//    argv is remote code execution on cc's machine by design. config.mjs exists
-//    to keep stored values from becoming options; it cannot make one safe as an
-//    executable.
-//  - A launch flag has to get its value from somewhere anyway, and changing it
-//    would force a re-registration: src/registration.mjs makes the launch argv a
-//    function of (install path, kind) ONLY, which is what holds cc's connection
-//    cache while remotes come and go.
-//  - An env var is operator-set rather than user-writable, is this codebase's
-//    established seam for exactly this shape (CODE_SYSTEM_STORE,
-//    CODE_SYSTEM_FAKE_TRANSPORT, CODE_SYSTEM_ALLOW_HOST_KIND), and cc spawns the
-//    launcher with the ORCHESTRATOR's environment — so the operator running the
-//    orchestrator is exactly who should own it. The backend reads the same
-//    function in-process, so one implementation serves both surfaces.
-export const DOCKER_ENV = 'CODE_SYSTEM_DOCKER';
+export { DOCKER_ENV };
 
 // WHAT THE CARD UI RENDERS FOR THIS KIND, and the one home for its human label
 // — src/registration.mjs reads it for the cc System row's label too, so the
@@ -78,9 +62,6 @@ export const KIND_META = {
   ],
 };
 
-// THE SHIPPED DEFAULT HARDCODES NO `sudo`. Pinned by tests/dockerkind.test.mjs.
-const DEFAULT_CLI = ['docker'];
-
 // cc's placeholder cwd — the one every derivation carries, and the one the
 // held-open channel runs at. Not a location (systems-protocol.md §7).
 const PLACEHOLDER_CWD = '/';
@@ -97,34 +78,14 @@ const PLACEHOLDER_CWD = '/';
 // form, where it is a 400 they can see rather than a failed operation later.
 const IDENTITY_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]*(:[A-Za-z0-9_][A-Za-z0-9._-]*)?$/;
 
-/**
- * @returns {string[]} the whole docker invocation, e.g. ['docker'] or ['sudo','-n','docker']
- * @throws on a malformed override — DELIBERATELY. In the launcher this surfaces
- *   through main.mjs's resolveTransport as exit 2 before any frame with our
- *   stderr quoted, which is how the `host` guard already refuses. Falling back
- *   to bare `docker` would instead fail every operation with a socket-permission
- *   error that names nothing.
- */
-export function dockerCliArgv(env = process.env) {
-  const raw = typeof env[DOCKER_ENV] === 'string' ? env[DOCKER_ENV].trim() : '';
-  if (raw === '') return [...DEFAULT_CLI];
-  const bad = (why) => operatorError(
-    `${DOCKER_ENV} ${why}. It must be a JSON array of non-empty strings — the WHOLE docker`
-    + ` invocation, e.g. ${DOCKER_ENV}='["sudo","-n","docker"]'. Got ${JSON.stringify(raw)}`);
-  let parsed;
-  try { parsed = JSON.parse(raw); }
-  catch { throw bad('is not valid JSON'); }
-  if (!Array.isArray(parsed) || parsed.length === 0) throw bad('is not a non-empty JSON array');
-  if (!parsed.every(v => typeof v === 'string' && v !== '')) throw bad('contains a non-string or empty entry');
-  return parsed;
-}
-
-// THE ONLY TWO SUBCOMMANDS THIS PROVIDER MAY EVER RUN. Attach-only is a locked
+// THE ONLY SUBCOMMANDS THIS PROVIDER MAY EVER RUN. `version` is a daemon query
+// that touches no container (the invocation resolver's probe); attach-only is
+// about container lifecycle. Attach-only is a locked
 // decision (.wiki/decisions/architecture-shape.md): connecting never starts or
 // stops a container. Enforced rather than remembered — every docker invocation
 // this module makes goes through `runDocker`, which asserts membership, so a
 // future edit reaching for `docker start` throws instead of shipping.
-export const ALLOWED_SUBCOMMANDS = ['exec', 'inspect'];
+export const ALLOWED_SUBCOMMANDS = ['exec', 'inspect', 'version'];
 
 // Throws for anything else. Not a defensive check against hostile input — the
 // argv is built right here — it is the attach-only decision made unforgettable.
@@ -187,6 +148,11 @@ function runDocker(cli, args, { timeoutMs }) {
   });
 }
 
+// ONE RESOLVER PER PROCESS, shared by every transport built in it, so the
+// concurrent card renders of the backend share one probe and each launcher
+// resolves once.
+export const sharedDockerCli = createDockerCliResolver({ run: runDocker, timeoutMs: INSPECT_TIMEOUT_MS });
+
 // A never-started `docker exec` puts its diagnostic on STDOUT with exit 127 or
 // 128 (measured), where a daemon-level refusal puts it on stderr with exit 1.
 // The longest stem SHARED by every measured never-started message. The
@@ -208,8 +174,25 @@ const first = (s) => String(s ?? '').split('\n')[0].trim();
 // next byte decides whether it began the sequence.
 export const DETACH_KEYS = 'ctrl-\\,ctrl-],ctrl-^,ctrl-_,ctrl-@,ctrl-y,ctrl-x,ctrl-v';
 
-export function createDockerTransport({ cli } = {}) {
-  const argv0 = cli ?? dockerCliArgv();
+// An explicit `cli` PINS the invocation and the resolver is never consulted
+// (tests, conformance). Otherwise the invocation is read from the resolver at
+// EVERY plan or run, never captured here, so a mode change reaches the next
+// command — and the channel pool, which keys on the plan argv, moves to a new
+// bucket by itself.
+export function createDockerTransport({ cli, resolver = sharedDockerCli } = {}) {
+  // Validated once, only so a malformed override still throws at construction.
+  if (!cli) dockerOverrideArgv(process.env);
+  const mode = () => (cli ? { argv: cli, via: 'pinned' } : resolver.current());
+  const argv0 = () => mode().argv;
+
+  // Our own docker call showed we cannot reach the daemon. Forget the resolved
+  // mode so the next command re-resolves. Only for a resolved (non-pinned,
+  // non-override) mode; the resolver itself ignores an override.
+  const noteAccessFailure = (stderr) => {
+    if (cli) return;
+    const via = mode().via;
+    if (isSocketDenied(stderr) || (via === 'sudo' && isSudoRefusal(stderr))) resolver.invalidate();
+  };
 
   return {
     kind: 'docker',
@@ -334,9 +317,10 @@ export function createDockerTransport({ cli } = {}) {
           ...command);
       }
 
+      const argv = argv0();
       return {
-        file: argv0[0],
-        args: [...argv0.slice(1), ...args],
+        file: argv[0],
+        args: [...argv.slice(1), ...args],
         // `cwd` UNSET: the frame's cwd is `-w` above, not the host client's
         // working directory (see SpawnPlan's typedef).
         env: undefined,
@@ -371,7 +355,8 @@ export function createDockerTransport({ cli } = {}) {
       if (user) args.push('-u', user);
       if (req.remoteId !== null) args.push('-e', `CC_REMOTE=${req.remoteId}`);
       args.push('-e', `${TOKEN_VAR}=${req.token}`, '--', container, ...req.command);
-      return { file: argv0[0], args: [...argv0.slice(1), ...args], env: undefined };
+      const argv = argv0();
+      return { file: argv[0], args: [...argv.slice(1), ...args], env: undefined };
     },
 
     // THE HELD-OPEN CHANNEL'S ARGV. PURE, exactly as `spawnPlan` is, and for
@@ -403,7 +388,8 @@ export function createDockerTransport({ cli } = {}) {
       if (user) args.push('-u', user);
       if (remoteId !== null) args.push('-e', `CC_REMOTE=${remoteId}`);
       args.push('--', container, '/bin/sh');
-      return { file: argv0[0], args: [...argv0.slice(1), ...args] };
+      const argv = argv0();
+      return { file: argv[0], args: [...argv.slice(1), ...args] };
     },
 
     // TIER 1 of the two-tier baseline probe: a daemon query, never a round trip
@@ -414,8 +400,15 @@ export function createDockerTransport({ cli } = {}) {
     // flag of `docker inspect`. Adding it here would refuse every card render.
     async reachability(config) {
       const container = String(config?.container ?? '');
+      // FIRST, resolve the invocation: when neither `docker` nor `sudo -n docker`
+      // can reach the socket there is nothing to inspect with, and the resolver's
+      // detail already says why.
+      if (!cli) {
+        const resolved = await resolver.resolve();
+        if (!resolved.ok) return { connected: false, detail: resolved.detail, fingerprint: null };
+      }
       const res = await runDocker(
-        argv0, ['inspect', '--type', 'container', '--format', INSPECT_FORMAT, '--', container],
+        argv0(), ['inspect', '--type', 'container', '--format', INSPECT_FORMAT, '--', container],
         { timeoutMs: INSPECT_TIMEOUT_MS });
 
       // `fingerprint` MUST be null on every non-running answer: baseline.mjs's
@@ -425,10 +418,11 @@ export function createDockerTransport({ cli } = {}) {
       const no = (detail) => ({ connected: false, detail, fingerprint: null });
 
       if (res.error || res.code === null) {
-        return no(`could not run '${argv0.join(' ')}': ${res.error?.message ?? 'no exit status'}`
+        return no(`could not run '${argv0().join(' ')}': ${res.error?.message ?? 'no exit status'}`
           + ` (override the docker invocation with ${DOCKER_ENV})`);
       }
       if (res.code !== 0) {
+        noteAccessFailure(res.stderr);
         return no(`docker could not inspect container '${container}': `
           + `${first(res.stderr) || `exit ${res.code}`} (${DOCKER_ENV} sets the docker invocation)`);
       }
@@ -445,7 +439,10 @@ export function createDockerTransport({ cli } = {}) {
       }
       return {
         connected: true,
-        detail: `container '${container}' running (${image}) since ${startedAt}`,
+        detail: `container '${container}' running (${image}) since ${startedAt}`
+          // Root-equivalence is the cost of the fallback, so it is shown where
+          // the operator looks (the card and `list_remotes`).
+          + (!cli && mode().via === 'sudo' ? ' — via `sudo -n docker` (root-equivalent on this host)' : ''),
         fingerprint: `docker:${image}:${startedAt}`,
       };
     },
@@ -461,6 +458,11 @@ export function createDockerTransport({ cli } = {}) {
     // `assertAttachOnly` refuses any subcommand outside ALLOWED_SUBCOMMANDS.
     // tests/kindmeta.test.mjs asserts ZERO docker invocations for both, which
     // fails for an added `inspect` as well as for a `start`.
+    // Resolves the docker invocation once before the launcher reads a frame
+    // (main.mjs), so the first exec already uses it. Never throws: an
+    // unresolvable invocation is reported by `reachability` and the exec itself.
+    async ready() { if (!cli) await resolver.resolve().catch(() => {}); },
+
     async connect() { return {}; },
     async disconnect() {},
 
@@ -479,7 +481,7 @@ export function createDockerTransport({ cli } = {}) {
       // own /proc/<pid>/environ.
       const user = String(config?.user ?? '');
       const res = await runDocker(
-        argv0,
+        argv0(),
         ['exec', ...(user ? ['-u', user] : []), '--', container, '/bin/sh', '-c', reapScriptFor(handle)],
         { timeoutMs: REAP_TIMEOUT_MS });
 
@@ -567,15 +569,34 @@ export function createDockerTransport({ cli } = {}) {
         }
         // OUR ACCESS FAILING IS NOT THE REMOTE BEING ABSENT, so never ENOREMOTE:
         // that would send the user to recreate a container that is fine.
-        if (stderr.startsWith('permission denied while trying to connect')
-          || stderr.startsWith('Cannot connect to the Docker daemon')) {
+        const denied = stderr.startsWith('permission denied while trying to connect');
+        if (denied || stderr.startsWith('Cannot connect to the Docker daemon')) {
+          const { via, argv } = mode();
+          if (denied) noteAccessFailure(stderr);
+          // In a resolved mode only the constant invocations are named; the
+          // override's argv is echoed only when the operator set it.
+          if (denied && (via === 'direct' || via === 'sudo')) {
+            return {
+              code: 'EUNKNOWN',
+              message: resolver.lastFailure()
+                ?? `the docker daemon socket refused access to '${argv.join(' ')}' (both \`docker\` and`
+                + ` \`sudo -n docker\` are tried automatically) — add this user to the docker group,`
+                + ` or set ${DOCKER_ENV} to a working docker invocation`,
+              stderr: first(stderr),
+            };
+          }
           return {
             code: 'EUNKNOWN',
-            message: `the docker daemon is not reachable as '${argv0.join(' ')}'`
+            message: `the docker daemon is not reachable as '${argv.join(' ')}'`
               + ` — set ${DOCKER_ENV} to a working docker invocation (e.g. ["sudo","-n","docker"])`,
             stderr: first(stderr),
           };
         }
+        // IN `sudo` MODE a sudo refusal means the sudoers grant is gone, so
+        // re-resolve — but NEVER classify it: a command can print this line
+        // itself (`sudo -n` inside the container), and the op must still read as
+        // the command's own exit.
+        noteAccessFailure(stderr);
       }
 
       // §5's "a command that never started is an `error` frame, not an `exit`

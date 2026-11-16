@@ -398,7 +398,7 @@ identity shape is what the store's front door enforces.
 
 | Variable | For |
 |---|---|
-| `CODE_SYSTEM_DOCKER` | a host where the docker CLI needs a prefix. It is the **whole invocation** as a JSON array: `CODE_SYSTEM_DOCKER='["sudo","-n","docker"]'`. Default: `["docker"]` — the shipped default never uses `sudo`. A malformed value makes the provider refuse to start and say so, rather than silently falling back |
+| `CODE_SYSTEM_DOCKER` | a host where the docker CLI needs a prefix. It is the **whole invocation** as a JSON array: `CODE_SYSTEM_DOCKER='["sudo","-n","docker"]'`. When unset, the provider tries bare `docker` and falls back to `sudo -n docker` **only** when `docker` is denied the socket (`permission denied while trying to connect…`); a daemon that is down, a missing binary or a timeout never use `sudo`. **`sudo -n docker` is root-equivalent on the host**: the card's status then reads `… — via \`sudo -n docker\` (root-equivalent on this host)`. A set value is used as-is, with no probe and no fallback, so `["docker"]` is the opt-out. A malformed value makes the provider refuse to start and say so, rather than silently falling back |
 | `CODE_SYSTEM_SSH` | a host where the ssh invocation must differ (a pinned config file, a wrapper). Also the **whole invocation** as a JSON array: `CODE_SYSTEM_SSH='["ssh","-F","/etc/code-system/ssh_config"]'`. Default: `["ssh"]` — your own `~/.ssh/config` and agent. Malformed values refuse the same way |
 | `CODE_SYSTEM_STORE` | where remote records live. Default `<home>/.code-system` |
 
