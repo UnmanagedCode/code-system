@@ -10,7 +10,7 @@ import { DEFAULT_MIRROR } from '../src/mirror.mjs';
 import { SCHEMA } from '../src/store.mjs';
 import { createTransport } from '../src/launcher/kinds/index.mjs';
 import { operatorError } from '../src/launcher/kinds/config.mjs';
-import { dockerCliArgv } from '../src/launcher/kinds/docker.mjs';
+import { dockerOverrideArgv } from '../src/launcher/kinds/dockerCli.mjs';
 import { sshCliArgv } from '../src/launcher/kinds/ssh.mjs';
 import { fakeConductor, record, stubDockerCli, stubSshCli, withApi, writeRecord } from './helpers.mjs';
 
@@ -1080,7 +1080,7 @@ test('an unexpected 500 sends Internal error and logs the cause', async (t) => {
 test('a malformed CLI override reaches the client verbatim, on every route that builds the transport', async (t) => {
   for (const [env, kind, config, argv] of [
     ['CODE_SYSTEM_SSH', 'ssh', { host: 'h' }, sshCliArgv],
-    ['CODE_SYSTEM_DOCKER', 'docker', { container: 'c' }, dockerCliArgv],
+    ['CODE_SYSTEM_DOCKER', 'docker', { container: 'c' }, dockerOverrideArgv],
   ]) {
     await t.test(env, async (t2) => {
       const logged = [];

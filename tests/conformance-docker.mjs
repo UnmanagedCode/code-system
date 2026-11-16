@@ -290,9 +290,9 @@ async function main() {
   await proveIdentity({ cli, scratchDir, container, log });
 
   // ── 3. the baseline probe, so a green run cannot be vacuous ──────
-  // THE RESOLVED cli, not `process.env`. `createDockerTransport` falls back to
-  // `dockerCliArgv()` — bare `docker` by default — so with CODE_SYSTEM_DOCKER
-  // unset this probe would hit the socket and abort a run whose battery (which
+  // THE RESOLVED cli, not `process.env`. `createDockerTransport` without a
+  // `cli` resolves its own invocation, so with CODE_SYSTEM_DOCKER
+  // unset this probe could hit the socket and abort a run whose battery (which
   // IS given the resolved argv, below) would have worked.
   const transport = createTransport('docker', { cli });
   const config = { container };

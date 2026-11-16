@@ -42,7 +42,11 @@ export class Launcher {
 
   constructor(args, env = {}) {
     this.#child = spawn(process.execPath, [LAUNCHER, ...args], {
-      env: { ...process.env, ...env },
+      // The docker CLI is pinned to a nonexistent binary by default: a docker
+      // launcher resolves its invocation before serving, and an unpinned one
+      // would probe whatever docker the machine running the suite has. A test
+      // that wants another passes CODE_SYSTEM_DOCKER (or `undefined` to unset).
+      env: { ...process.env, CODE_SYSTEM_DOCKER: '["/definitely-not-docker-xyz"]', ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.#child.stdout.on('data', (chunk) => {

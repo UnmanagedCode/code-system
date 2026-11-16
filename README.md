@@ -60,7 +60,8 @@ npm test                  # node suite + tsc + vitest; deterministic: no docker,
 CC_CHECKOUT=/path/to/code-conductor npm run conformance
 
 # On a host where the docker CLI needs a prefix — this also makes the live
-# docker tests run instead of skipping. The shipped default is bare `docker`.
+# docker tests run instead of skipping. (The provider itself tries bare `docker`,
+# then falls back to `sudo -n docker` on a socket denial.)
 CODE_SYSTEM_DOCKER='["sudo","-n","docker"]' npm test
 ```
 
@@ -100,6 +101,7 @@ See [`.wiki/decisions/architecture-shape.md`](.wiki/decisions/architecture-shape
 
 ## Known limitations
 
+- **Docker falls back to `sudo -n docker` by itself.** Only when plain `docker` is denied the daemon socket (never for a daemon that is down). `sudo -n docker` is **root-equivalent on this host**, and the card's status says so when it is in use. Opt out with `CODE_SYSTEM_DOCKER='["docker"]'`, which pins bare docker.
 - **A remote starts switched off.** The Connect/Disconnect toggle is an operator **gate**, not a report of transport state: while a remote is off, code-system refuses every operation against it itself and never contacts the target. Editing a remote's connection details switches it off again (a changed config may be a different target); editing only its label does not. See [`.wiki/gotchas/gate-versus-probe.md`](.wiki/gotchas/gate-versus-probe.md).
 
 - **Target tooling baseline.** Running the providers on cc's host does not make the target toolless: cc derives `readDir`/`stat`/etc. by sending commands with GNU-specific argv. Alpine/busybox targets break `readDir` and `realpath`, and silently lose sub-second `stat` precision; distroless/scratch targets have no shell at all. The plugin probes for this and refuses such a target by name rather than half-working. See [`.wiki/gotchas/tooling-baseline.md`](.wiki/gotchas/tooling-baseline.md).

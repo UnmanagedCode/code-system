@@ -14,7 +14,7 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DOCKER_ENV, dockerCliArgv } from '../src/launcher/kinds/docker.mjs';
+import { DIRECT_DOCKER, DOCKER_ENV, SUDO_DOCKER, dockerOverrideArgv } from '../src/launcher/kinds/dockerCli.mjs';
 
 const PROBE_TIMEOUT_MS = 5_000;
 
@@ -65,11 +65,16 @@ export function run(argv, { timeoutMs = 30_000, stdin = null } = {}) {
 // invocations are tried, a green live run does NOT tell you which one answered,
 // and is not evidence that bare `docker` reaches the daemon. `resolveDockerCli`
 // returns the resolved argv — name it and show it, or make no claim.
+//
+// THIS FALLBACK IS SEPARATE FROM, AND BROADER THAN, THE PROVIDER'S OWN
+// (src/launcher/kinds/dockerCli.mjs). It tries sudo after ANY non-answer, because
+// it gates the live suites and runs `docker run/rm`, which the provider never
+// does; and it hands an explicit `cli` to everything it drives. So the live
+// suites exercise the resolved argv but NOT the provider's own fallback.
 export function candidates(env) {
   const out = [];
-  try { out.push(dockerCliArgv(env)); } catch { /* a malformed override is simply not a candidate */ }
-  const sudo = ['sudo', '-n', 'docker'];
-  if (!out.some(c => c.join(' ') === sudo.join(' '))) out.push(sudo);
+  try { out.push([...(dockerOverrideArgv(env) ?? DIRECT_DOCKER)]); } catch { /* a malformed override is simply not a candidate */ }
+  if (!out.some(c => c.join(' ') === SUDO_DOCKER.join(' '))) out.push([...SUDO_DOCKER]);
   return out;
 }
 

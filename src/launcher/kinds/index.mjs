@@ -55,6 +55,11 @@ import { asObject } from './config.mjs';
  * @property {boolean} [ptyResizeRelay]  Whether a `resize` is also set on the far
  *                                   tty by an `stty` through `spawnPlan`, holding
  *                                   input until it lands.
+ * @property {() => Promise<void>} [ready]
+ *   OPTIONAL. Awaited ONCE by the launcher before any frame is read. A kind
+ *   resolves what it needs to build its command lines (docker: its CLI
+ *   invocation). MAY NOT THROW — report a problem through `reachability` and the
+ *   op's own failure instead.
  * @property {(config:object) => Promise<Reachability>} reachability
  * @property {(config:object, handle:ExecHandle) => Promise<void>} reap
  *   MAY THROW. A kind that cannot prove its relay reached the far side must say

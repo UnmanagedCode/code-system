@@ -783,7 +783,7 @@ surfaces.
 | `CONDUCTOR_URL` | `src/registration.mjs` → `register`, `src/api.mjs` → `projectsNaming` | cc's base URL. **Unset is a normal state, not a failure**: registration reports `skipped` and `projectsNaming` answers `[]`, because standalone-runnable is a plugin-compliance requirement |
 | `PORT` | `server.mjs` | the backend's listen port, conductor-allocated. Default `4310`, for the same standalone-runnable reason |
 | `PLUGIN_BACKEND` | `frontend/vite.config.ts` | `npm run dev` only: the backend the Vite dev server proxies `/api` to. Default `http://127.0.0.1:4310` |
-| `CODE_SYSTEM_DOCKER` | `kinds/docker.mjs` → `dockerCliArgv` | the **whole docker invocation** as a JSON array, e.g. `["sudo","-n","docker"]`. Default `["docker"]` — no `sudo` in the shipped default. Malformed → throws an `operatorError` naming the variable, its expected shape and the value → launcher exit 2 before any frame; the backend answers 500 with that message verbatim |
+| `CODE_SYSTEM_DOCKER` | `kinds/dockerCli.mjs` → `dockerOverrideArgv` / `createDockerCliResolver` | the **whole docker invocation** as a JSON array, e.g. `["sudo","-n","docker"]`. Unset → the resolver decides (bare `docker`, else `sudo -n docker` on a socket denial). Malformed → throws an `operatorError` naming the variable, its expected shape and the value → launcher exit 2 before any frame; the backend answers 500 with that message verbatim |
 | `CODE_SYSTEM_SSH` | `kinds/ssh.mjs` → `sshCliArgv` | the **whole ssh invocation** as a JSON array, e.g. `["ssh","-F","/path/ssh_config"]`. Default `["ssh"]` — the operator's own `~/.ssh/config` and agent. Malformed → throws an `operatorError` naming the variable, its expected shape and the value → launcher exit 2 before any frame; the backend answers 500 with that message verbatim |
 | `CODE_SYSTEM_ALLOW_HOST_KIND` | `kinds/host.mjs` | permits `--kind host` at all |
 | `CODE_SYSTEM_ALLOW_HOST_KIND_UNFENCED` | `kinds/host.mjs` | permits `--kind host` with no `--remote` fence. **No shipped path sets it** |
@@ -1394,6 +1394,8 @@ global.
   returns, so `npm test` stays green with no daemon and each skip prints a reason
   naming both invocations tried and `CODE_SYSTEM_DOCKER`.
 
+  **The fixture's fallback is separate from, and broader than, the provider's own** (`kinds/dockerCli.mjs`): it tries `sudo` after any non-answer and hands an explicit `cli` to everything it drives, so the live suites do not exercise the provider's fallback (`tests/docker-sudo-fallback.test.mjs` and `tests/dockercli.test.mjs` do, with stubs).
+
   **`candidates()` TRIES TWO INVOCATIONS: the `CODE_SYSTEM_DOCKER` one (default
   `["docker"]`), then `["sudo","-n","docker"]` as a fallback.** That fallback is
   deliberate — it is what lets the live suites run on a host whose docker socket
@@ -1588,3 +1590,15 @@ listed there must pass, a listed row that starts passing is red, and the run's
 total is pinned absolutely so a row vanishing from the suite is red too. A
 **fourth** guard reads a surface cc never shows: the launcher's own stderr, where
 an admission-drift alarm reds the arm.
+
+## The docker invocation resolver
+
+`src/launcher/kinds/dockerCli.mjs` (`createDockerCliResolver`) decides how the docker CLI is invoked; `kinds/docker.mjs` owns the process-wide instance `sharedDockerCli`, built over its bounded `runDocker`.
+
+- **One instance per process.** The backend has one, each launcher its own; both run the same code. Concurrent resolves share one in-flight probe.
+- **Order:** non-empty `CODE_SYSTEM_DOCKER` → used, no probe. Else `docker version` → exit 0 with a server version = `direct`. Else a socket denial → `sudo -n docker version` = `sudo`; both failing is `{ok:false, detail}` (not cached). Anything else is bare `docker`, unsettled.
+- **Cache key = the raw override string**, re-read on every `resolve()`/`current()`, so setting the override later takes effect at once and a cached `sudo` cannot outlive it. Failures and unsettled answers are never cached.
+- **Invalidation by observation:** `invalidate()` clears the settled mode and re-resolves in the background (no-op when a resolve is in flight or an override is set). `docker.mjs` calls it on a socket denial and, in `sudo` mode, on a `sudo:` refusal.
+- **`createDockerTransport({cli})` pins** the invocation (resolver never consulted); otherwise plans read `resolver.current()` per call, so the channel pool's argv key moves to a new bucket when the mode changes. Open channels keep their invocation until they retire.
+- **`Transport.ready()`** (optional) is awaited once by `main.mjs` `resolveTransport` before stdin is read, so the first exec already uses the resolved invocation. It is **bounded** (`READY_BUDGET_MS` in `kinds/docker.mjs`) because it runs before the hello and cc arms `DEFAULT_HANDSHAKE_TIMEOUT_MS` = 10 s (code-conductor `src/systems/providerConnection.ts`), which the pty-helper probe also draws on. When the budget expires the hello goes anyway; the memoised resolve keeps running and `reachability` and the first op pick it up. A direct-probe timeout never reaches the sudo probe, so the resolve itself is at most one probe timeout unless the direct probe is denied. `runDocker` reports `timedOut` on its result so a probe can tell a timeout from an exit 1.
+- **Tests:** `tests/dockercli.test.mjs` (resolver, scripted fake), `tests/dockerkind.test.mjs` (plans/classifier/reachability via a stub resolver), `tests/docker-sudo-fallback.test.mjs` (real launcher, stub `docker`/`sudo` on `PATH`). The `Launcher` test helper pins `CODE_SYSTEM_DOCKER` to a nonexistent binary unless a test passes its own.

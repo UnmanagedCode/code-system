@@ -132,7 +132,7 @@ async function resolveTransport(opts) {
     const unfenced = hostUnfencedRefusal(opts.remotes.size);
     if (unfenced) throw new UsageError(unfenced);
   }
-  return createTransport(opts.kind, {
+  const transport = createTransport(opts.kind, {
     processGroupSignal: opts.processGroupSignal,
     // DERIVED FROM THE FLAGS for a flag-backed kind — the shape cc's reference
     // provider uses. systems-protocol.md §10: each capability is advertised IFF
@@ -142,6 +142,9 @@ async function resolveTransport(opts) {
     remotes: opts.remotes.size > 0,
     remoteDescriptors: opts.mirrors.size > 0,
   });
+  // Before stdin is read, so the first exec already uses the resolved invocation.
+  await transport.ready?.();
+  return transport;
 }
 
 export async function runLauncher(argv, { stdin = process.stdin, stdout = process.stdout, stderr = process.stderr } = {}) {
