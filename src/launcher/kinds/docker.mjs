@@ -103,6 +103,9 @@ const INSPECT_TIMEOUT_MS = 5_000;
 // Inside session.mjs's REAP_DEADLINE_MS (1500), which is itself inside cc's
 // DEFAULT_SHUTDOWN_GRACE_MS (2000). Measured cost of the reap script: ~121 ms.
 const REAP_TIMEOUT_MS = 1_200;
+// How long `ready()` may hold the hello. Well under cc's 10 s handshake deadline
+// (see `ready`), leaving the rest to the pty probe and process start.
+const READY_BUDGET_MS = 1_500;
 
 // Image id + State.StartedAt, from ONE call the card render is already making.
 // A restarted container gets a new StartedAt, which is what makes the cached
@@ -126,7 +129,11 @@ function runDocker(cli, args, { timeoutMs }) {
     const out = [];
     const err = [];
     let settled = false;
+    // Reported on the result so a probe can tell a timeout from a command that
+    // exited 1 (a signal-killed child closes as `code ?? 1`).
+    let timedOut = false;
     const timer = setTimeout(() => {
+      timedOut = true;
       if (child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } }
     }, timeoutMs);
     timer.unref?.();
@@ -144,6 +151,7 @@ function runDocker(cli, args, { timeoutMs }) {
       stdout: Buffer.concat(out).toString('utf8'),
       stderr: Buffer.concat(err).toString('utf8'),
       error: null,
+      timedOut,
     }));
   });
 }
@@ -461,7 +469,20 @@ export function createDockerTransport({ cli, resolver = sharedDockerCli } = {}) 
     // Resolves the docker invocation once before the launcher reads a frame
     // (main.mjs), so the first exec already uses it. Never throws: an
     // unresolvable invocation is reported by `reachability` and the exec itself.
-    async ready() { if (!cli) await resolver.resolve().catch(() => {}); },
+    //
+    // BOUNDED, because this runs BEFORE the hello and cc's handshake deadline is
+    // DEFAULT_HANDSHAKE_TIMEOUT_MS = 10 s (code-conductor
+    // src/systems/providerConnection.ts), which the pty-helper probe
+    // (PROBE_TIMEOUT_MS, 10 s worst case, ptyhost.mjs) also draws on. So this
+    // takes at most READY_BUDGET_MS and then lets the hello go: the memoised
+    // resolve keeps running and `reachability` and the first op pick it up.
+    async ready() {
+      if (cli) return;
+      let timer;
+      const budget = new Promise((r) => { timer = setTimeout(r, READY_BUDGET_MS); });
+      await Promise.race([resolver.resolve().catch(() => {}), budget]);
+      clearTimeout(timer);
+    },
 
     async connect() { return {}; },
     async disconnect() {},
@@ -569,7 +590,7 @@ export function createDockerTransport({ cli, resolver = sharedDockerCli } = {}) 
         }
         // OUR ACCESS FAILING IS NOT THE REMOTE BEING ABSENT, so never ENOREMOTE:
         // that would send the user to recreate a container that is fine.
-        const denied = stderr.startsWith('permission denied while trying to connect');
+        const denied = isSocketDenied(stderr);
         if (denied || stderr.startsWith('Cannot connect to the Docker daemon')) {
           const { via, argv } = mode();
           if (denied) noteAccessFailure(stderr);

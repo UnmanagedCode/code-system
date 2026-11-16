@@ -65,7 +65,7 @@ export function isSudoRefusal(stderr) {
 /**
  * @param {object} o
  * @param {(cli:string[], args:string[], opts:{timeoutMs:number}) =>
- *   Promise<{code:number|null, stdout:string, stderr:string, error:Error|null}>} o.run
+ *   Promise<{code:number|null, stdout:string, stderr:string, error:Error|null, timedOut?:boolean}>} o.run
  * @param {Record<string,string|undefined>} [o.env]  re-read on EVERY call
  * @param {number} [o.timeoutMs]
  */
@@ -87,7 +87,7 @@ export function createDockerCliResolver({ run, env = process.env, timeoutMs = 5_
       settled = { key, via: 'direct', argv: [...DIRECT_DOCKER] };
       return { ok: true, argv: [...DIRECT_DOCKER], via: 'direct', settled: true };
     }
-    if (direct.code === null || direct.code === 0 || !isSocketDenied(direct.stderr)) {
+    if (direct.timedOut || direct.code === null || direct.code === 0 || !isSocketDenied(direct.stderr)) {
       // Not a denial: sudo would not help. Hand back bare docker UNSETTLED so the
       // caller meets the real error, and the next resolve probes again.
       return { ok: true, argv: [...DIRECT_DOCKER], via: 'direct', settled: false };
@@ -100,7 +100,7 @@ export function createDockerCliResolver({ run, env = process.env, timeoutMs = 5_
     }
     // NO bare errno token (.wiki/gotchas/refusal-message-errno-tokens.md).
     const why = sudo.error ? '`sudo` could not be run'
-      : sudo.code === null ? '`sudo -n docker` did not answer in time'
+      : sudo.timedOut || sudo.code === null ? '`sudo -n docker` did not answer in time'
         : `\`sudo -n docker\` failed: ${first(sudo.stderr) || `exit ${sudo.code}`}`;
     failure = `\`docker\` was denied access to the docker socket (${first(direct.stderr)}) and ${why}`
       + ` — add this user to the docker group, or set ${DOCKER_ENV} to a working docker invocation`;

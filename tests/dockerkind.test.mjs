@@ -974,13 +974,20 @@ test('an explicit cli never touches the resolver', async () => {
 // and the env var by name, and triggers exactly one re-resolve; daemon-down and
 // override mode do not invalidate.
 test('classifyFailure: a socket denial invalidates, daemon-down does not', () => {
-  const resolver = SUDO_STUB('direct', { failure: '`docker` was denied and `sudo -n docker` failed — set CODE_SYSTEM_DOCKER' });
+  const SENTINEL = 'sentinel-from-lastFailure-7f3a';
+  const resolver = SUDO_STUB('direct', { failure: `${SENTINEL}: \`docker\` was denied and \`sudo -n docker\` failed — set CODE_SYSTEM_DOCKER` });
   const tr = createDockerTransport({ resolver });
   const v = tr.classifyFailure(CONFIG, { code: 1, stdout: '', stderr: DENIED_ERR });
   assert.equal(v.code, 'EUNKNOWN');
-  assert.match(v.message, /sudo -n docker/);
+  assert.ok(v.message.includes(SENTINEL), 'the message comes from the resolver\'s lastFailure()');
   assert.match(v.message, /CODE_SYSTEM_DOCKER/);
   assert.equal(resolver.invalidated, 1);
+
+  // With nothing recorded the message still names both attempts, by constants.
+  const bare = createDockerTransport({ resolver: SUDO_STUB('direct') })
+    .classifyFailure(CONFIG, { code: 1, stdout: '', stderr: DENIED_ERR });
+  assert.match(bare.message, /sudo -n docker/);
+  assert.match(bare.message, /CODE_SYSTEM_DOCKER/);
 
   const down = tr.classifyFailure(CONFIG, { code: 1, stdout: '', stderr: 'Cannot connect to the Docker daemon at unix:///x. Is it running?\n' });
   assert.equal(down.code, 'EUNKNOWN');
@@ -998,6 +1005,9 @@ test('classifyFailure: a sudo refusal in sudo mode invalidates but returns null'
   const tr = createDockerTransport({ resolver });
   assert.equal(tr.classifyFailure(CONFIG, { code: 1, stdout: '', stderr: 'sudo: a password is required\n' }), null);
   assert.equal(resolver.invalidated, 1);
+  const sorry = "Sorry, user alice is not allowed to execute '/usr/bin/docker version' as root\n";
+  assert.equal(tr.classifyFailure(CONFIG, { code: 1, stdout: '', stderr: sorry }), null);
+  assert.equal(resolver.invalidated, 2, 'the `Sorry, user` wording is a sudo refusal too');
 
   const direct = SUDO_STUB('direct');
   assert.equal(createDockerTransport({ resolver: direct })
@@ -1005,21 +1015,52 @@ test('classifyFailure: a sudo refusal in sudo mode invalidates but returns null'
   assert.equal(direct.invalidated, 0, 'outside sudo mode the line is just the command\'s output');
 });
 
+const RUNNING = 'true sha256:abc 2026-01-01T00:00:00Z\n';
+// A stub resolver whose current() points at a real stub CLI, so reachability's
+// spawn path is the one under test.
+const resolverOver = (cli, via, over = {}) => Object.assign(SUDO_STUB(via, over), { current: () => ({ argv: cli, via }) });
+
 // Invariant: when the invocation cannot be resolved, reachability reports the
-// resolver's detail and runs nothing; in sudo mode a running container's detail
-// discloses the root-equivalent invocation.
-test('reachability: unresolved gives the resolver detail; sudo mode is disclosed', async (t) => {
-  const bad = SUDO_STUB('direct', { resolved: { ok: false, detail: 'neither docker nor sudo -n docker worked' } });
+// resolver's detail and spawns NOTHING (the stub CLI records no argv).
+test('reachability: an unresolved invocation gives the resolver detail and runs nothing', async (t) => {
+  const stub = await stubCli(t, { stdout: RUNNING });
+  const bad = resolverOver(stub.cli, 'direct', { resolved: { ok: false, detail: 'neither docker nor sudo -n docker worked' } });
   const r = await createDockerTransport({ resolver: bad }).reachability(CONFIG);
   assert.deepEqual(r, { connected: false, detail: 'neither docker nor sudo -n docker worked', fingerprint: null });
+  assert.deepEqual(await stub.argv(), []);
+});
 
-  const running = await stubCli(t, { stdout: 'true sha256:abc 2026-01-01T00:00:00Z\n' });
-  const resolver = SUDO_STUB('sudo');
-  const tr = createDockerTransport({ resolver });
-  // The stub resolver reports sudo, but the process under test is the fake.
-  resolver.current = () => ({ argv: running.cli, via: 'sudo' });
-  const ok = await tr.reachability(CONFIG);
-  assert.equal(ok.connected, true);
-  assert.match(ok.detail, /sudo -n docker/);
-  assert.match(ok.detail, /root-equivalent/);
+// Invariant: the root-equivalence note appears in sudo mode and ONLY there —
+// absent for a resolved direct invocation and for a pinned cli.
+test('reachability: the root-equivalent note is shown in sudo mode and absent otherwise', async (t) => {
+  const stub = await stubCli(t, { stdout: RUNNING });
+  const sudo = await createDockerTransport({ resolver: resolverOver(stub.cli, 'sudo') }).reachability(CONFIG);
+  assert.equal(sudo.connected, true);
+  assert.match(sudo.detail, /sudo -n docker/);
+  assert.match(sudo.detail, /root-equivalent/);
+
+  const direct = await createDockerTransport({ resolver: resolverOver(stub.cli, 'direct') }).reachability(CONFIG);
+  assert.equal(direct.connected, true);
+  assert.doesNotMatch(direct.detail, /root-equivalent/);
+
+  const pinned = await createDockerTransport({ cli: stub.cli }).reachability(CONFIG);
+  assert.equal(pinned.connected, true);
+  assert.doesNotMatch(pinned.detail, /root-equivalent/);
+});
+
+// Invariant: a non-zero inspect that shows a socket denial invalidates the
+// resolved invocation (reachability is the card render's own access check);
+// daemon-down does not.
+test('reachability: a socket denial invalidates, daemon-down does not', async (t) => {
+  const denied = await stubCli(t, { exitCode: 1, stderr: DENIED_ERR });
+  const rd = resolverOver(denied.cli, 'direct');
+  const r = await createDockerTransport({ resolver: rd }).reachability(CONFIG);
+  assert.equal(r.connected, false);
+  assert.equal(rd.invalidated, 1);
+
+  const down = await stubCli(t, { exitCode: 1, stderr: 'Cannot connect to the Docker daemon at unix:///x. Is it running?\n' });
+  const rn = resolverOver(down.cli, 'direct');
+  const r2 = await createDockerTransport({ resolver: rn }).reachability(CONFIG);
+  assert.equal(r2.connected, false);
+  assert.equal(rn.invalidated, 0);
 });

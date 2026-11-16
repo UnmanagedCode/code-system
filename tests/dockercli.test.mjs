@@ -78,6 +78,16 @@ test('both denied gives a named, uncached failure with no errno token', async ()
   const r2 = await spawnErr.resolver.resolve();
   assert.equal(r2.ok, false);
   assert.doesNotMatch(r2.detail, /ENOENT/);
+
+  // Invariant: a sudo probe that timed out (real shape: code 1, empty stderr,
+  // timedOut) is reported as not answering in time, not as `exit 1`.
+  const slow = harness({
+    docker: fail(DENIED),
+    'sudo -n docker': { code: 1, stdout: '', stderr: '', error: null, timedOut: true },
+  });
+  const r3 = await slow.resolver.resolve();
+  assert.equal(r3.ok, false);
+  assert.match(r3.detail, /did not answer in time/);
 });
 
 // Invariant: anything that is not a socket denial never escalates to sudo, and is
@@ -86,7 +96,8 @@ test('daemon down, a missing docker and a timeout never try sudo and are not cac
   const cases = {
     'daemon down': fail(DOWN),
     'docker missing': { code: null, stdout: '', stderr: '', error: new Error('spawn docker ENOENT') },
-    timeout: { code: null, stdout: '', stderr: '', error: null },
+    // What the real funnel produces: a signal-killed child closes as `code ?? 1`.
+    timeout: { code: 1, stdout: '', stderr: '', error: null, timedOut: true },
   };
   for (const [name, res] of Object.entries(cases)) {
     const h = harness({ docker: res, 'sudo -n docker': OK });
@@ -98,15 +109,17 @@ test('daemon down, a missing docker and a timeout never try sudo and are not cac
   }
 });
 
-// Invariant: an observed access failure forgets the settled mode and re-resolves
-// from scratch (here to direct once the grant changed).
-test('invalidate() re-resolves a cached sudo mode', async () => {
+// Invariant: invalidate() ITSELF starts the background re-resolve — no caller
+// resolves afterwards — and a changed grant is picked up (sudo → direct).
+test('invalidate() starts a background re-resolve of a cached sudo mode', async () => {
   let granted = false;
   const h = harness({ docker: () => (granted ? OK : fail(DENIED)), 'sudo -n docker': OK });
   assert.equal((await h.resolver.resolve()).via, 'sudo');
+  const before = h.calls.length;
   granted = true;
   h.resolver.invalidate();
-  assert.equal((await h.resolver.resolve()).via, 'direct');
+  await new Promise(setImmediate);
+  assert.equal(h.calls.length, before + 1, 'exactly one new probe ran');
   assert.equal(h.resolver.current().via, 'direct');
 });
 

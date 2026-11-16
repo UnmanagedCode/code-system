@@ -476,7 +476,7 @@ argv token (measured).
 | Element | Rule |
 |---|---|
 | `<docker-cli>` | `["docker"]`, or the whole argv named by **`CODE_SYSTEM_DOCKER`** (JSON array of non-empty strings). **Unset**, `kinds/dockerCli.mjs` resolves it: probe `docker version --format '{{.Server.Version}}'`; a socket denial (first stderr line starts `permission denied while trying to connect`) falls through to `sudo -n docker version …` and, if that answers, `sudo -n docker` is used. Daemon down / missing binary / timeout never reach `sudo` and are not cached. A **set** value is used verbatim with no probe (so `["docker"]` opts out). The result is cached per process, keyed on the raw override string; an observed access failure invalidates it. A malformed value throws at transport construction → launcher exit 2 before any frame |
-| subcommand | `exec` only. `reachability` uses `inspect`. **Nothing else, ever** — attach-only is enforced in code (`ALLOWED_SUBCOMMANDS`), never `start`/`stop`/`run`/`rm` |
+| subcommand | `exec` only. `reachability` uses `inspect`; the invocation resolver uses `version` as a daemon-only probe (no container). **Nothing else, ever** — attach-only is enforced in code (`ALLOWED_SUBCOMMANDS`), never `start`/`stop`/`run`/`rm` |
 | `-i` | iff the frame's `stdin` is `pipe`. This is how `writeFile`'s base64 payload reaches the container, and EOF propagates through it |
 | `-w <cwd>` | the frame's `cwd`, verbatim, **including `/`** — the plan leaves the host client's own `cwd` unset |
 | `-u <user>` | the remote's `config.user` (the card's **Run as**), verbatim. **Absent entirely when unset** — no flag, which is the container's default user. Emitted for BOTH env branches, and left of `env -i`. `reap` carries the same flag (it kills by uid ownership); `inspect` never does |
@@ -602,6 +602,8 @@ refusal is on **stderr** with exit 1, but a command that never started is on
 **stdout** with exit 127 or 128 — so a stderr-only classifier is blind to it, and
 `fileops`' header parse sees the text as file content.
 
+`reachability` for a running container in `sudo` mode appends ` — via \`sudo -n docker\` (root-equivalent on this host)` to its detail (the card and the `list_remotes` json view; the text view never shows `detail`). When neither `docker` nor `sudo -n docker` can reach the socket, `reachability` answers `connected:false` with the resolver's detail and runs no `inspect`.
+
 | Exit | Stream | Text | Verdict |
 |---|---|---|---|
 | 1 | stderr | `Error response from daemon: No such container: <name>` | `ENOREMOTE` |
@@ -609,8 +611,6 @@ refusal is on **stderr** with exit 1, but a command that never started is on
 | 1 | stderr | `Error response from daemon: unable to find user <u>` / `unable to find group <g>` (the configured **Run as** identity) | `EUNKNOWN` naming the container, the identity and the card's Run-as field — **never `ENOREMOTE`**: the container is fine |
 | 1 | stderr | `permission denied while trying to connect…` / `Cannot connect to the Docker daemon…` | `EUNKNOWN` naming `CODE_SYSTEM_DOCKER` — **never `ENOREMOTE`**: our access failing is not the remote being absent. A denial also **invalidates** the resolved invocation (re-resolved in the background); in a resolved (non-override) mode its message names both attempts (`docker`, `sudo -n docker`) and the variable by name only |
 | 1 | stderr | `sudo: …` / `Sorry, user …` while in `sudo` mode | **not classified** (`null`) — a command can print this itself (`sudo -n` in the container), so it only **invalidates** the resolved invocation and the op reads as the command's own exit |
-
-`reachability` for a running container in `sudo` mode appends ` — via \`sudo -n docker\` (root-equivalent on this host)` to its detail (card and `list_remotes`). When neither `docker` nor `sudo -n docker` can reach the socket, `reachability` answers `connected:false` with the resolver's detail and runs no `inspect`.
 | 127 | **stdout** | `OCI runtime exec failed: exec failed: unable to start container process: …` (missing binary, or a `-w` that does not exist) | `ENOENT` — §5's "a command that never started is an `error` frame, not an `exit` frame" |
 | **128** | **stdout** | `OCI runtime exec failed: exec failed: Cwd must be an absolute path` (a non-absolute `-w`) | `ENOENT`, same reason. Note the different exit code, and that this message lacks the `unable to start container process: ` segment the other two share |
 | anything else | — | — | **not a transport failure**: the command's own `exit` frame |
