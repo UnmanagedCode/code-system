@@ -32,6 +32,9 @@ export const NOT_READABLE = 'not readable';
 // it cannot be read as a `<field>=<value>` pair — there is no field to name, and
 // fabricating one would be worse than saying so.
 const NO_TARGET = '[unregistered kind]';
+// What it says for a kind that DECLARES it has no identifying field (`agent`:
+// the target is whichever machine dials in for the remote).
+const DIALS_IN = '[dials in]';
 
 // ONE WORD FOR A REMOTE'S TWO STATES, and the GATE WINS. A gate-off remote
 // refuses every command whatever its target is doing, so reporting a probe of
@@ -89,6 +92,7 @@ function targetOf(card) {
   let field;
   try { field = identityFieldFor(card.kind); }
   catch { return NO_TARGET; }
+  if (field === null) return DIALS_IN;
   return `${field}=${lineSafe(exposedConfig(card.kind, card.config).config[field])}`;
 }
 
@@ -221,7 +225,7 @@ function remoteJson({ entry, card }) {
   let target = null;
   try {
     const field = identityFieldFor(rec.kind);
-    target = { field, value: config[field] ?? null };
+    if (field !== null) target = { field, value: config[field] ?? null };
   } catch { /* a kind with no identifying field has no target */ }
   const reach = card.reachability;
   return {

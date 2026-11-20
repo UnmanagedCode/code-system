@@ -30,7 +30,7 @@ test('health answers, which is all the conductor asks of it', async (t) => {
   const { call } = await withApi(t);
   const res = await call('GET', '/health');
   assert.equal(res.status, 200);
-  assert.deepEqual(res.body.kinds, ['docker', 'ssh']);
+  assert.deepEqual(res.body.kinds, ['docker', 'ssh', 'agent']);
 });
 
 test('a remote is created, listed, edited and deleted', async (t) => {
@@ -424,7 +424,7 @@ test('GET /kinds serves one descriptor per registered kind, with its form', asyn
   const { call } = await withApi(t);
   const res = await call('GET', '/kinds');
   assert.equal(res.status, 200);
-  assert.deepEqual(res.body.kinds.map(k => k.kind), ['docker', 'ssh']);
+  assert.deepEqual(res.body.kinds.map(k => k.kind), ['docker', 'ssh', 'agent']);
   for (const k of res.body.kinds) {
     assert.ok(k.label, 'a human label');
     assert.ok(Array.isArray(k.configFields) && k.configFields.length > 0);
@@ -444,7 +444,7 @@ test('GET /kinds serves one descriptor per registered kind, with its form', asyn
   assert.equal(docker.mirrorByDefault, true);
   // GET /health keeps its PLAIN kind list: the conductor's liveness probe has
   // no use for descriptors.
-  assert.deepEqual((await call('GET', '/health')).body.kinds, ['docker', 'ssh']);
+  assert.deepEqual((await call('GET', '/health')).body.kinds, ['docker', 'ssh', 'agent']);
 });
 
 // PINS: an unexpected failure answers JSON, not express's HTML page. The

@@ -24,7 +24,7 @@ import { stubDockerCli } from './helpers.mjs';
 // A plausible value per descriptor field, so a form can be filled in from the
 // descriptor alone. Never option-shaped — a leading `-` is refused by design.
 const SAMPLE = {
-  container: 'app', host: 'box', port: 2222, user: 'me', password: 'pw with spaces ', identityFile: '/home/me/.ssh/id_ed25519',
+  container: 'app', host: 'box', port: 2222, secret: 'A'.repeat(43), user: 'me', password: 'pw with spaces ', identityFile: '/home/me/.ssh/id_ed25519',
 };
 // A field a kind refuses to accept together with another one: the "full" config
 // leaves the key out and a second pass swaps it in for its counterpart.
@@ -91,9 +91,13 @@ test('kindDescriptors throws for a kind with no KIND_META', () => {
 // remote points at, or point at a field an operator may leave blank — and both
 // fail only on a surface that renders the target, never in the kind's own
 // tests.
-test('every registered kind identifies its target with a required config field', () => {
+test('every registered kind identifies its target with a required config field, or declares it has none', () => {
   for (const d of kindDescriptors()) {
     const field = identityFieldFor(d.kind);
+    // `agent` DECLARES null: its target is whichever machine dials in, and its
+    // config names nothing about it. Declared, so this is a choice, not an
+    // omission — an omission still throws (below, and the next test).
+    if (d.kind === 'agent') { assert.equal(field, null); continue; }
     const entry = d.configFields.find(f => f.name === field);
     assert.ok(entry, `${d.kind}.identityField '${field}' names no entry in its own configFields`);
     assert.equal(entry.required, true,
@@ -108,8 +112,10 @@ test('every registered kind identifies its target with a required config field',
 // descriptor the form reads (always a boolean on the wire) and the predicate
 // POST /api/remotes reads. A kind with no flag — or no meta at all — is opted
 // out, never an error.
-test('docker and ssh mirror by default, and a kind with no meta does not', () => {
+test('docker, ssh and agent mirror by default, and a kind with no meta does not', () => {
   const byKind = Object.fromEntries(kindDescriptors().map(d => [d.kind, d]));
+  assert.equal(byKind.agent.mirrorByDefault, true);
+  assert.equal(mirrorsByDefault('agent'), true);
   assert.equal(byKind.docker.mirrorByDefault, true);
   assert.equal(byKind.ssh.mirrorByDefault, true);
   assert.equal(mirrorsByDefault('docker'), true);

@@ -36,6 +36,7 @@ function settleResult(transport, config, { code, stdout, stderr }, resolve, reje
         code: code ?? 1,
         stdout: stdout.subarray(0, CLASSIFY_HEAD_BYTES).toString('utf8'),
         stderr: stderr.slice(0, CLASSIFY_HEAD_BYTES),
+        stderrTail: stderr.slice(-CLASSIFY_HEAD_BYTES),
       })
     : null;
   if (verdict) {

@@ -54,7 +54,7 @@ export async function cardFor(entry, { baseline = true, reachability = 'always' 
     return { ...publicRecord(record), reachability: { connected: false, detail: unknownKindMessage(record.kind), fingerprint: null } };
   }
   let reach;
-  try { reach = await transport.reachability(record.config ?? {}); }
+  try { reach = await transport.reachability(record.config ?? {}, { remoteId: record.remoteId }); }
   catch (e) { reach = { connected: false, detail: e instanceof Error ? e.message : String(e), fingerprint: null }; }
 
   // The probe is one round trip INTO the target, so it is gated on the target

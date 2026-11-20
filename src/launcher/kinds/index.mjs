@@ -8,6 +8,7 @@
 // ADDING A KIND IS ONE FILE HERE PLUS ONE LINE BELOW. Nothing in
 // src/registration.mjs or src/store.mjs changes.
 
+import { KIND_META as AGENT_META, createAgentTransport } from './agent.mjs';
 import { KIND_META as DOCKER_META, createDockerTransport } from './docker.mjs';
 import { createHostTransport } from './host.mjs';
 import { KIND_META as SSH_META, createSshTransport } from './ssh.mjs';
@@ -15,7 +16,7 @@ import { asObject } from './config.mjs';
 
 /**
  * @typedef {object} Transport
- * @property {string}  kind          'docker' | 'ssh' | 'host'
+ * @property {string}  kind          'docker' | 'ssh' | 'agent' | 'host'
  * @property {boolean} processGroupSignal  Advertised verbatim. `true` is a PROMISE
  *                                   that a signal reaches the far side's whole
  *                                   group; systems-protocol.md §11, item 2 calls
@@ -60,7 +61,10 @@ import { asObject } from './config.mjs';
  *   resolves what it needs to build its command lines (docker: its CLI
  *   invocation). MAY NOT THROW — report a problem through `reachability` and the
  *   op's own failure instead.
- * @property {(config:object) => Promise<Reachability>} reachability
+ * @property {(config:object, ctx?:{remoteId:string}) => Promise<Reachability>} reachability
+ *   `ctx.remoteId` is the remote being probed. A kind whose config does not
+ *   name its target (`agent`: the target is whichever machine dialled in for
+ *   that remote) reads it; `docker` and `ssh` ignore it.
  * @property {(config:object, handle:ExecHandle) => Promise<void>} reap
  *   MAY THROW. A kind that cannot prove its relay reached the far side must say
  *   so rather than return quietly — "nothing was killed" and "the kill could not
@@ -90,7 +94,7 @@ import { asObject } from './config.mjs';
  *   does: "enabled" must never mean "enabled but we could not".
  *   `disconnect` throwing is a warning on an otherwise-successful disable —
  *   disabling is a safety action and must not be blockable.
- * @property {(config:object, res:{code:number, stdout:string, stderr:string})
+ * @property {(config:object, res:{code:number, stdout:string, stderr:string, stderrTail?:string})
  *            => {code:string, message:string, stderr?:string}|null} [classifyFailure]
  *   OPTIONAL. Reads THE TRANSPORT's own error vocabulary — a docker daemon
  *   response, an ssh refusal — and turns a non-zero exit into a named protocol
@@ -98,6 +102,11 @@ import { asObject } from './config.mjs';
  *   COMMAND's own, which is the common case. Only the kind knows its transport's
  *   vocabulary, and remotes.mjs cannot help: for a stopped container the store
  *   record exists, so the lookup succeeds and the failure appears only here.
+ *
+ *   `stdout`/`stderr` are bounded HEADS of each stream; `stderrTail` is the
+ *   bounded END of stderr, for a transport whose own diagnostic can arrive
+ *   after the command's output (`agent`: a session lost mid-command). It is
+ *   absent where no tail exists (a terminal that never started).
  */
 
 /**
@@ -141,6 +150,7 @@ import { asObject } from './config.mjs';
 
 const FACTORIES = {
   docker: createDockerTransport,
+  agent: createAgentTransport,
   ssh: createSshTransport,
   host: createHostTransport,
 };
@@ -148,7 +158,7 @@ const FACTORIES = {
 // The kinds that get a cc System row, in src/registration.mjs. `host` is
 // deliberately absent — see the guard in host.mjs and the note in
 // docs/architecture.md.
-export const REGISTERED_KINDS = ['docker', 'ssh'];
+export const REGISTERED_KINDS = ['docker', 'ssh', 'agent'];
 
 export const ALL_KINDS = Object.keys(FACTORIES);
 
@@ -157,6 +167,7 @@ export const ALL_KINDS = Object.keys(FACTORIES);
 const METAS = {
   docker: DOCKER_META,
   ssh: SSH_META,
+  agent: AGENT_META,
 };
 
 // EVERY LOOKUP BY KIND NAME IS AN OWN-PROPERTY LOOKUP. A kind comes off a
@@ -281,15 +292,21 @@ export function mirrorsByDefault(kind) {
  * container, ssh's host. A surface rendering "what does this remote point at"
  * reads it from the kind instead of branching on the kind name.
  *
- * THROWS for a kind with no KIND_META or no `identityField`, for the same
+ * THROWS for a kind with no KIND_META or no `identityField` key, for the same
  * reason `kindDescriptors` does: adding a kind is one file plus one line, and
  * this is what stops that line being added without an identifying field.
+ *
+ * ANSWERS null for a kind that DECLARES `identityField: null` — one whose
+ * config names nothing about its target (`agent`: whichever machine dials in).
+ * Declared, not omitted, so forgetting the key still throws.
  *
  * DELIBERATELY NOT part of `kindDescriptors()`'s return value — that is the
  * `GET /api/kinds` wire shape, which this does not change.
  */
 export function identityFieldFor(kind) {
-  const field = own(METAS, kind)?.identityField;
+  const meta = own(METAS, kind);
+  if (meta && Object.hasOwn(meta, 'identityField') && meta.identityField === null) return null;
+  const field = meta?.identityField;
   if (!field) {
     throw new Error(`kind '${kind}' has no KIND_META.identityField — every registered kind needs the name`
       + ' of the config field that identifies its target');

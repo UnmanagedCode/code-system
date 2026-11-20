@@ -30,13 +30,13 @@ const CAPABILITY_KEYS = ['processGroupSignal', 'pty', 'remoteDescriptors', 'remo
 const HOST_PTY = spawnSync(process.env.CODE_SYSTEM_PYTHON?.trim() || 'python3',
   ['-I', '-c', 'import pty,termios,fcntl,select,sys'], { stdio: 'ignore' }).status === 0;
 
-test('only docker and ssh are auto-registered — host is deliberately not', () => {
-  assert.deepEqual(REGISTERED_KINDS, ['docker', 'ssh']);
+test('only docker, ssh and agent are auto-registered — host is deliberately not', () => {
+  assert.deepEqual(REGISTERED_KINDS, ['docker', 'ssh', 'agent']);
   assert.equal(ALL_KINDS.includes('host'), true, 'the kind exists');
   assert.equal(REGISTERED_KINDS.includes('host'), false, 'but never gets a cc System row');
 });
 
-for (const kind of ['docker', 'ssh']) {
+for (const kind of ['docker', 'ssh', 'agent']) {
   test(`${kind} advertises processGroupSignal:false, remotes:true, remoteDescriptors:true and remoteListing:true, on the wire`, async (t) => {
     const store = await tempStore();
     t.after(() => store.cleanup());
