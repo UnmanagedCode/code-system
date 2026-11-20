@@ -8,6 +8,11 @@
 // that sends output past its credit ends its session (`bye credit`), a bridge
 // that sends input past its credit ends its stream. So what one remote can
 // make this process hold is bounded, whatever its agent does.
+//
+// And the AGENT'S SOCKET is a destination like any other: credit bounds what a
+// bridge may send, but an agent can return that credit (ack) for input it never
+// reads off its socket. So when a write to the agent's socket does not drain,
+// the bridge that sent it stops being read until it does (`whenDrained`).
 
 import { BRIDGE_TAGS, BYE, BadFrame, LineDecoder, PROTOCOL, decodeLine, encode } from './protocol.mjs';
 
@@ -42,9 +47,12 @@ export class AgentSession {
     this.#onEnd = onEnd;
     this.#lastRx = Date.now();
     socket.setKeepAlive(true);
+    // Frames are small and interactive (a keystroke, an ack): never held for Nagle.
+    socket.setNoDelay(true);
     socket.on('data', chunk => this.#onData(chunk));
     socket.on('error', () => {});
     socket.on('close', () => this.end('lost', 'the connection closed'));
+    socket.on('drain', () => { for (const fn of this.#drainWaiters.splice(0)) fn(); });
     this.#timer = setInterval(() => this.#keepalive(), tim.pingIntervalMs);
     this.#timer.unref?.();
   }
@@ -56,6 +64,7 @@ export class AgentSession {
   #lastRx;
   #timer;
   #nextS = 1;
+  #drainWaiters = [];
 
   #keepalive() {
     if (Date.now() - this.#lastRx > this.#tim.keepaliveTimeoutMs) {
@@ -65,9 +74,16 @@ export class AgentSession {
     this.send({ t: 'ping' });
   }
 
+  /** Answers false when the agent's socket is backed up (its `drain` follows). */
   send(frame) {
-    if (this.ended) return;
-    this.socket.write(encode(frame));
+    if (this.ended) return true;
+    return this.socket.write(encode(frame));
+  }
+
+  /** Run `fn` once the agent's socket has drained (or the session ended). */
+  whenDrained(fn) {
+    if (this.ended || !this.socket.writableNeedDrain) { fn(); return; }
+    this.#drainWaiters.push(fn);
   }
 
   /** Lines the listener already split off the socket after the handshake. */
@@ -145,20 +161,22 @@ export class AgentSession {
 
   /** A frame from a bridge (in/eof/ack/resize), for stream `s`. */
   /**
-   * A frame from a bridge (in/eof/ack/resize), for stream `s`. Answers false
-   * when the bridge overran its input credit; the caller ends that stream.
+   * A frame from a bridge (in/eof/ack/resize), for stream `s`. Answers
+   * 'over' when the bridge overran its input credit (the caller ends that
+   * stream), 'full' when the agent's socket is backed up (the caller stops
+   * reading that bridge until `whenDrained`), else 'ok'.
+   * @returns {'ok'|'over'|'full'}
    */
   fromBridge(s, frame) {
     const entry = this.streams.get(s);
-    if (!entry) return true;
+    if (!entry) return 'ok';
     if (frame.t === 'in') {
       entry.in += b64Bytes(frame.b64);
-      if (entry.in > PROTOCOL.windowBytes) return false;
+      if (entry.in > PROTOCOL.windowBytes) return 'over';
     } else if (frame.t === 'ack' && frame.fd !== 0) {
       entry.out = Math.max(0, entry.out - frame.n);
     }
-    this.send({ ...frame, s });
-    return true;
+    return this.send({ ...frame, s }) ? 'ok' : 'full';
   }
 
   /** The bridge went away: tell the agent, which closes stdin and kills nothing. */
@@ -186,6 +204,7 @@ export class AgentSession {
       ? `the secret of remote '${this.remoteId}' changed, so its agent was disconnected`
       : `the agent for remote '${this.remoteId}' disconnected while the command ran (${message})`
         + ' — the agent ends its commands when that happens';
+    for (const fn of this.#drainWaiters.splice(0)) fn();
     for (const { link } of this.streams.values()) link.lost(code === BYE.staleKey ? BRIDGE_TAGS.staleKey : BRIDGE_TAGS.lost, why);
     this.streams.clear();
     this.#onEnd(this);

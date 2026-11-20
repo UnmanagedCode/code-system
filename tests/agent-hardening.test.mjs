@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Launcher, pinTestEnv, writeRecord, record } from './helpers.mjs';
 import {
-  BRIDGE, BROKER, FAST, NEEDS_PYTHON, agentEnv, agentRecord, agentStore, connected, controlClient, fakeAgent,
+  BRIDGE, BROKER, FAST, NEEDS_PYTHON, PY, agentEnv, agentRecord, agentStore, connected, controlClient, fakeAgent,
   newSecret, startAgent, startBroker, status, waitFor,
 } from './agentFixture.mjs';
 import { LABELS, PROTOCOL, keyIdOf, mac, newNonce, newSessionId } from '../src/agent/protocol.mjs';
@@ -41,8 +41,7 @@ function useStore(t, dir) {
 
 // A1. PINS: the broker enforces output credit itself. An agent that sends far
 // past its window has its session ended by name (`bye credit`), the bridge side
-// is told why, no more than one window ever reaches the bridge, and the broker's
-// memory stays bounded.
+// is told why, and no more than one window ever reaches the bridge.
 test('an agent that ignores its output credit loses its session by name; the broker relays at most a window', async (t) => {
   const w = await world(t);
   const agent = await fakeAgent(t, { port: w.broker.port, remoteId: w.remoteId, secret: w.secret });
@@ -57,13 +56,11 @@ test('an agent that ignores its output credit loses its session by name; the bro
   const lost = await ctl.waitFor(f => f.t === 'lost', { what: 'lost' });
   assert.match(lost.message, /credit/);
   assert.ok(decoded(ctl.frames) <= PROTOCOL.windowBytes, `relayed ${decoded(ctl.frames)} bytes`);
-  const rssKb = Number(/VmRSS:\s+(\d+)/.exec(readFileSync(`/proc/${w.broker.pid}/status`, 'utf8'))[1]);
-  assert.ok(rssKb < 200 * 1024, `broker RSS ${rssKb} kB`);
   assert.ok((await status(w.broker.sock, w.remoteId)).connected === false, 'the session is gone');
 });
 
 // C7. PINS the AGENT's output credit: a reader that never acknowledges gets
-// exactly one window of a larger output, and then nothing more.
+// exactly one window of a larger output, and then nothing more (aligned reads).
 test('a stream that is never acknowledged receives exactly one window', { skip }, async (t) => {
   const w = await world(t);
   startAgent(t, { address: w.broker.address, remoteId: w.remoteId, secret: w.secret });
@@ -73,6 +70,86 @@ test('a stream that is never acknowledged receives exactly one window', { skip }
   await new Promise(r => setTimeout(r, 600));
   assert.equal(decoded(ctl.frames), PROTOCOL.windowBytes);
   assert.equal(ctl.frames.some(f => f.t === 'exit'), false);
+});
+
+// Item 7 (round 3). PINS the credit REMAINDER: a producer whose writes do not
+// align with the window (1000 bytes at a time, paced) is read only up to the
+// credit left — never a whole chunk past it — so the broker sees no overrun:
+// no `lost`, the session stays up, and exactly one window arrives.
+test('a non-aligned producer is read only up to the credit left', { skip }, async (t) => {
+  const w = await world(t);
+  startAgent(t, { address: w.broker.address, remoteId: w.remoteId, secret: w.secret });
+  const before = await connected(w.broker.sock, w.remoteId);
+  const producer = 'import sys,time\nfor i in range(1000):\n sys.stdout.buffer.write(b"x"*1000);sys.stdout.flush();time.sleep(0.002)';
+  assert.notEqual(PROTOCOL.windowBytes % 1000, 0, 'the writes really are not aligned with the window');
+  const ctl = await controlClient(t, w.broker.sock, openFrame(w.remoteId, w.secret, [PY.python, '-c', producer]));
+  await waitFor(() => decoded(ctl.frames) >= PROTOCOL.windowBytes || ctl.frames.some(f => f.t === 'lost'),
+    { what: 'one window', timeoutMs: 15000 });
+  await new Promise(r => setTimeout(r, 500));
+  assert.equal(ctl.frames.some(f => f.t === 'lost'), false, JSON.stringify(ctl.frames.find(f => f.t === 'lost')));
+  assert.equal(decoded(ctl.frames), PROTOCOL.windowBytes);
+  const after = await status(w.broker.sock, w.remoteId);
+  assert.equal(after.connected, true);
+  assert.equal(after.session, before.session);
+});
+
+// Item 1a (round 3). PINS the agent socket's backpressure: an authenticated
+// agent that returns input credit (acks) for input it never reads off its
+// socket cannot make the broker queue that input — the sending bridge stops
+// being read. Far less than the bridge offered leaves it, the stream is not
+// ended for it, and the broker's memory does not grow with what was offered.
+test('an agent that acks input it never reads pauses the sending bridge', async (t) => {
+  const w = await world(t);
+  const agent = await fakeAgent(t, { port: w.broker.port, remoteId: w.remoteId, secret: w.secret });
+  await connected(w.broker.sock, w.remoteId);
+  const ctl = await controlClient(t, w.broker.sock, openFrame(w.remoteId, w.secret, ['x'], { stdin: true }));
+  const open = await agent.waitFor(f => f.t === 'open', { what: 'the open' });
+  agent.send({ t: 'started', s: open.s, pid: 0 });
+  await ctl.waitFor(f => f.t === 'started', { what: 'started' });
+  agent.sock.pause();
+  // Alive by its own pings (the broker's keepalive counts any frame), while it
+  // reads nothing.
+  const pinger = setInterval(() => agent.send({ t: 'ping' }), 100);
+  t.after(() => clearInterval(pinger));
+  const rss = () => Number(/VmRSS:\s+(\d+)/.exec(readFileSync(`/proc/${w.broker.pid}/status`, 'utf8'))[1]);
+  const rssBefore = rss();
+  const frame = `${JSON.stringify({ t: 'in', b64: Buffer.alloc(PROTOCOL.chunkBytes, 0x63).toString('base64') })}\n`;
+  const OFFERED = 640 * PROTOCOL.chunkBytes;
+  let sent = 0;
+  while (sent < OFFERED) {
+    // The credit back for input the agent never read — sent AHEAD of each
+    // frame, so the broker has read it before the frame and the stream stays
+    // within its credit: what is under test is the agent SOCKET, not credit.
+    agent.send({ t: 'ack', s: open.s, fd: 0, n: Number.MAX_SAFE_INTEGER });
+    await new Promise(r => setTimeout(r, 2));
+    const flushed = await Promise.race([
+      new Promise(r => ctl.sock.write(frame, () => r(true))),
+      new Promise(r => setTimeout(() => r(false), 2000)),
+    ]);
+    if (!flushed) break;
+    sent += PROTOCOL.chunkBytes;
+  }
+  assert.equal(ctl.closed, false, 'the stream was paused, not ended (so not stopped by its credit)');
+  assert.ok(sent < OFFERED, `the bridge was stopped: ${sent} of ${OFFERED} bytes left it`);
+  assert.ok(rss() - rssBefore < 32 * 1024, `broker RSS grew ${rss() - rssBefore} kB for ${sent} bytes offered`);
+  assert.equal((await status(w.broker.sock, w.remoteId)).connected, true);
+});
+
+// Item 1b (round 3). PINS the broker's INPUT credit check: a bridge that sends
+// more than a window of input to a command that never reads it has its stream
+// ended — and only its stream: the agent's session stays up.
+test('a bridge overrunning its input credit loses its stream, not the session', { skip }, async (t) => {
+  const w = await world(t);
+  startAgent(t, { address: w.broker.address, remoteId: w.remoteId, secret: w.secret });
+  const before = await connected(w.broker.sock, w.remoteId);
+  const ctl = await controlClient(t, w.broker.sock, openFrame(w.remoteId, w.secret, ['sleep', '30'], { stdin: true }));
+  await ctl.waitFor(f => f.t === 'started', { what: 'started' });
+  const b64 = Buffer.alloc(PROTOCOL.chunkBytes, 0x64).toString('base64');
+  for (let i = 0; i < 8; i++) ctl.send({ t: 'in', b64 });
+  assert.equal(await ctl.waitClosed(5000), true, 'the stream was ended');
+  const after = await status(w.broker.sock, w.remoteId);
+  assert.equal(after.connected, true);
+  assert.equal(after.session, before.session);
 });
 
 // A real-handshake fake BROKER on a TCP port, for what a broker never sends.
@@ -96,6 +173,9 @@ async function fakeBroker(t, { remoteId, secret }) {
           st.send({ t: 'welcome', session, mac: mac(secret, [LABELS.broker, remoteId, nb, na, session]) });
         }
         if (f.t === 'info') conns.push(st);
+        // Answered, so the agent's keepalive never ends a session here: a
+        // redial can only come from what the test sends.
+        if (f.t === 'ping') st.send({ t: 'pong' });
       }
     });
   });
@@ -119,8 +199,12 @@ test('a bad open fails its stream or the session, never the agent', { skip }, as
   assert.deepEqual([failed.s, failed.errno], [1, 'EINVAL']);
   first.send({ t: 'ping' });
   await waitFor(() => first.frames.find(f => f.t === 'pong'), { what: 'the session still answers' });
+  const sentAt = Date.now();
   first.send({ t: 'open', s: 2, argv: [], cwd: '/', env: {}, stdin: false });
   await waitFor(() => fb.conns.length >= 2, { what: 'the agent to redial after the bad frame' });
+  assert.ok(Date.now() - sentAt < FAST.keepaliveTimeoutMs,
+    'the redial is the bad frame\'s doing, well within the keepalive');
+  assert.equal(first.frames.some(f => f.t === 'failed' && f.s === 2), false, 'an empty argv is refused as a frame, never started');
   assert.equal(agent.child.exitCode, null, 'the agent process is alive');
 });
 
@@ -184,24 +268,34 @@ test('a broker that loses the bind race to a live one leaves no error file', asy
 // A10. PINS: every authentication failure costs the same work — one HMAC —
 // whether the remote exists, is another kind, is not a valid id, or has a
 // different secret. The success path costs the same one.
-test('authenticate runs exactly one HMAC on every path', async (t) => {
+// Item 3 (round 3): and exactly one store read and one parse — of an in-memory
+// dummy record when nothing was read — so the work matches, not only the HMACs.
+test('authenticate runs exactly one store read, one parse and one HMAC on every path', async (t) => {
   const store = await pinTestEnv(t);
   const secret = newSecret();
   await writeRecord(store.dir, agentRecord('ag', secret));
   await writeRecord(store.dir, record('dk', { kind: 'docker', config: { container: 'c' } }));
   const { Broker } = await import('../src/agent/broker.mjs');
   const { verifyMac } = await import('../src/agent/protocol.mjs');
-  const b = new Broker({ listen: 'x', address: 'x', build: 'x', tim: FAST });
+  const { readRemoteText, parseRemote } = await import('../src/store.mjs');
+  const count = { read: 0, parse: 0 };
+  const b = new Broker({
+    listen: 'x', address: 'x', build: 'x', tim: FAST,
+    readImpl: (id) => { count.read += 1; return readRemoteText(id); },
+    parseImpl: (id, text) => { count.parse += 1; return parseRemote(id, text); },
+  });
   const nb = newNonce();
   const na = newNonce();
   const good = mac(secret, [LABELS.agent, 'ag', nb, na]);
   for (const [remoteId, m, ok] of [['ag', good, true], ['ag', 'ab', false], ['nobody', good, false],
     ['dk', good, false], ['NOT VALID!', good, false]]) {
     let calls = 0;
+    count.read = 0;
+    count.parse = 0;
     const verify = (...a) => { calls += 1; return verifyMac(...a); };
     const r = await b.authenticate({ remoteId, nb, na, mac: m }, verify);
     assert.equal(r.ok, ok, remoteId);
-    assert.equal(calls, 1, `${remoteId}: one HMAC`);
+    assert.deepEqual({ ...count, hmac: calls }, { read: 1, parse: 1, hmac: 1 }, remoteId);
   }
 });
 
@@ -256,7 +350,9 @@ function runBridge(sock, argv = ['true'], { stdio = ['ignore', 'pipe', 'pipe'] }
     { stdio });
   let stderr = '';
   child.stderr?.on('data', (b) => { stderr += b; });
-  const done = new Promise(r => child.on('close', code => r({ code, stderr })));
+  // BOUNDED: a bridge that hangs is a failed assertion, not a hung suite.
+  const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
+  const done = new Promise(r => child.on('close', (code) => { clearTimeout(timer); r({ code, stderr }); }));
   return { child, done };
 }
 

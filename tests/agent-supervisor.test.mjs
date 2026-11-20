@@ -9,9 +9,12 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { promises as fs, existsSync, readFileSync } from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { pinTestEnv, withApi, writeRecord } from './helpers.mjs';
-import { FAST, agentRecord, newSecret, removeRecord, waitFor } from './agentFixture.mjs';
+import {
+  FAST, agentRecord, agentStore, newSecret, removeRecord, startBroker, waitFor,
+} from './agentFixture.mjs';
 import { brokerPidDefect, ensureBroker, retire, stopBroker } from '../src/agent/supervisor.mjs';
 import { queryBroker } from '../src/agent/client.mjs';
 import { createAgentTransport } from '../src/launcher/kinds/agent.mjs';
@@ -248,4 +251,37 @@ test('GET /agent/broker reports a running listener, its dial default and unknown
   assert.equal(body.pid, r.pid);
   assert.equal(body.dialDefault, `127.0.0.1:${port}`);
   assert.deepEqual(body.refusals.map(x => [x.remoteId, x.reason]), [['who-is-this', 'unknown-remote']]);
+});
+
+// Item 6 (round 3). PINS the `--store` half of the guard: a REAL broker serving
+// another store is a live `node <BROKER_MAIN>` — and still not this store's, so
+// it is refused by name and `retire` sends it nothing. (It is cleaned up through
+// the child handle the fixture spawned.)
+test('a real broker of another store is refused and never signalled', async (t) => {
+  await pinTestEnv(t, ENV);
+  const other = await agentStore(t);
+  await writeRecord(other, agentRecord('o', newSecret()));
+  const b = await startBroker(t, other, { env: { CODE_SYSTEM_AGENT_TIMINGS: JSON.stringify({ ...FAST, brokerTickMs: 60000 }) } });
+  assert.match(brokerPidDefect(b.pid), /not this store's agent broker/);
+  assert.equal(brokerPidDefect(b.pid, { store: other }), null, 'the same pid IS the other store\'s broker');
+  const kill = recordingKill();
+  const r = await retire(b.sock, b.pid, { killImpl: kill, budgetMs: 50 });
+  assert.equal(r.gone, false);
+  assert.match(r.refused, /not this store's agent broker/);
+  assert.deepEqual(kill.calls, []);
+  assert.equal(gone(b.pid), false, 'and it is untouched');
+});
+
+// Item 4 (round 3). PINS that the guard tells three cases apart, each a refusal
+// naming its reason: a host with no /proc, a command line that cannot be read,
+// and a pid that is not running.
+test('brokerPidDefect names a missing /proc, an unreadable cmdline and a gone pid apart', async (t) => {
+  await pinTestEnv(t, ENV);
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cs-fakeproc-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  assert.match(brokerPidDefect(4242424, { procDir: dir }), /this host has no .*no broker can be proved/);
+  await fs.mkdir(path.join(dir, 'self'));
+  await fs.mkdir(path.join(dir, '4242424', 'cmdline'), { recursive: true });
+  assert.match(brokerPidDefect(4242424, { procDir: dir }), /command line is unreadable \(EISDIR\)/);
+  assert.match(brokerPidDefect(4242425, { procDir: dir }), /is not running/);
 });

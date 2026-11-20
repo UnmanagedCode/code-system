@@ -320,25 +320,27 @@ test('a lost link after 2500 bytes of stderr is ETRANSPORT through run.mjs', { s
   assert.equal(e.code, 'ETRANSPORT', String(e?.message));
 });
 
-// A2. PINS: the secret is nowhere a command the agent runs can read: not in its
-// parent's (the agent's) EXEC-TIME environment block, not in its command line,
-// and not on an open file descriptor.
+// A2 (+ round 3). PINS: the secret is nowhere a command the agent runs can
+// read. The agent is non-dumpable, so its environ and its fd table are REFUSED
+// to its own commands (where its Python has ctypes, as here); its command line,
+// which stays readable, carries no secret; and nothing readable does either.
 test('a command cannot find the secret in its parent agent\'s /proc entries', { skip }, async (t) => {
   const w = await agentWorld(t);
   const l = await launcher(t, w.store);
   exec(l, 's', w.remoteId, {
-    argv: ['/bin/sh', '-c', 'tr "\\0" "\\n" < /proc/$PPID/environ; echo ---; tr "\\0" " " < /proc/$PPID/cmdline; echo ---;'
-      + ' for f in /proc/$PPID/fd/*; do readlink "$f"; done'],
+    argv: ['/bin/sh', '-c', '{ tr "\\0" "\\n" < /proc/$PPID/environ; } 2>&1; echo ---; tr "\\0" " " < /proc/$PPID/cmdline; echo ---;'
+      + ' { ls /proc/$PPID/fd; } 2>&1; for f in /proc/$PPID/fd/*; do readlink "$f" 2>&1; done; true'],
   });
   const end = await settled(l, 's');
   assert.equal(end.code, 0, textOf(l, 's', 'stderr'));
   const out = textOf(l, 's');
   const [environ, cmdline, fds] = out.split('---\n');
-  assert.match(environ, /CODE_SYSTEM_STORE|PATH=/, 'the environ was really read');
-  assert.match(cmdline, /--connect/, 'and the cmdline');
+  assert.match(environ, /Permission denied/, `the agent's environ is refused to its commands: ${environ.slice(0, 200)}`);
+  assert.match(fds, /Permission denied/, `and so is its fd table: ${fds.slice(0, 200)}`);
+  assert.match(cmdline, /--connect/, 'its command line was really read');
   assert.equal(out.includes(w.secret), false);
-  assert.equal(environ.includes('CODE_SYSTEM_AGENT_SECRET'), false);
-  assert.equal(/memfd:/.test(fds), false, `no memfd left open: ${fds}`);
+  assert.equal(cmdline.includes('CODE_SYSTEM_AGENT_SECRET'), false);
+  assert.equal(/memfd:/.test(fds), false);
 });
 
 test('no agent connected is ENOREMOTE naming the remote', { skip }, async (t) => {

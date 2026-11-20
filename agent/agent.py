@@ -119,9 +119,10 @@ PROTOCOL = json.loads(PROTOCOL_JSON)
 _MODULE_CODE = sys._getframe().f_code
 
 SECRET_ENV = 'CODE_SYSTEM_AGENT_SECRET'
-# INTERNAL: the agent re-executes itself once at startup (see `reexec_without_secret`)
-# and finds the secret on this inherited fd instead of in its environment.
-INHERITED_FD_FLAG = '--inherited-fd'
+# INTERNAL: the agent re-executes itself once at startup (see
+# `reexec_without_secret`); the bootstrap hands the secret to the new process's
+# module namespace under this name, and `main` takes it out again.
+INHERITED_SECRET = '_inherited_secret'
 TIMINGS_ENV = 'CODE_SYSTEM_AGENT_TIMINGS'
 AGENT_VERSION = str(PROTOCOL['version'])
 TAG = 'code-system-agent'
@@ -347,17 +348,12 @@ def platform_refusal(plat=None, version=None):
 
 
 def parse_args(argv):
-    out = {'connect': None, 'remote': None, 'help': False, 'fd': None}
+    out = {'connect': None, 'remote': None, 'help': False}
     i = 0
     while i < len(argv):
         a = argv[i]
         if a in ('--help', '-h'):
             out['help'] = True
-        elif a == INHERITED_FD_FLAG:
-            if i + 1 >= len(argv) or not argv[i + 1].isdigit():
-                raise UsageError('%s is internal and needs a file descriptor' % a)
-            out['fd'] = int(argv[i + 1])
-            i += 1
         elif a == '--connect' or a == '--remote':
             if i + 1 >= len(argv):
                 raise UsageError('%s needs a value' % a)
@@ -1007,6 +1003,8 @@ def run_forever(address, remote_id, secret, tim, stop_flag, sleep=time.sleep):
         try:
             sock = socket.create_connection((host, port), timeout=tim['handshakeTimeoutMs'] / 1000.0)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            # Frames are small and interactive (a keystroke, an ack): no Nagle delay.
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             try:
                 session_id, leftover = handshake(sock, remote_id, secret, tim)
                 log('connected to %s:%d as %r (session %s)' % (host, port, remote_id, session_id))
@@ -1047,15 +1045,42 @@ def run_forever(address, remote_id, secret, tim, stop_flag, sleep=time.sleep):
             sleep(min(0.1, max(0.0, end - time.monotonic())))
 
 
-# The bootstrap the agent re-executes into: the code object from one inherited
-# memfd, the secret's fd number passed on to `main`. Python's -c argv is
+# The bootstrap the agent re-executes into. Python's -c argv is
 # ['-c', <code fd>, <secret fd>, <the agent's own arguments>...].
+#
+# ITS FIRST STATEMENT READS AND CLOSES THE SECRET'S FD, before it imports
+# anything but the two built-ins that needs: an inherited memfd is readable by
+# any same-user process through /proc/<pid>/fd for as long as it is open, so it
+# is open only for that one read. Then the process makes itself non-dumpable
+# (best-effort), so the secret it now holds in memory is not readable through
+# /proc/<pid>/mem by the commands it runs either.
 BOOT = (
-    'import marshal,os,sys\n'
+    'import os,sys\n'
+    's=int(sys.argv[2]);secret=os.pread(s,1<<16,0).decode();os.close(s)\n'
+    'try:\n'
+    ' import ctypes;ctypes.CDLL(None,use_errno=True).prctl(4,0,0,0,0)\n'
+    'except Exception:\n'
+    ' pass\n'
+    'import marshal\n'
     'c=int(sys.argv[1]);code=marshal.loads(os.pread(c,os.fstat(c).st_size,0));os.close(c)\n'
-    "sys.argv=['agent.py','%s',sys.argv[2]]+sys.argv[3:]\n"
-    "exec(code,{'__name__':'__main__','__builtins__':__builtins__})\n" % INHERITED_FD_FLAG
+    "sys.argv=['agent.py']+sys.argv[3:]\n"
+    "exec(code,{'__name__':'__main__','__builtins__':__builtins__,'%s':secret})\n" % INHERITED_SECRET
 )
+
+# prctl(2) option: PR_SET_DUMPABLE.
+PR_SET_DUMPABLE = 4
+
+
+def no_dump():
+    """Make this process non-dumpable, best-effort: /proc/<pid>/environ, /mem
+    and /fd then refuse other non-root processes, its own commands included.
+    Needs ctypes, which a minimal Python may lack; failing changes nothing else."""
+    try:
+        import ctypes
+        ctypes.CDLL(None, use_errno=True).prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def reexec_without_secret(argv, env, secret):
@@ -1084,16 +1109,13 @@ def reexec_without_secret(argv, env, secret):
     os.execve(sys.executable, [sys.executable, '-I', '-c', BOOT, str(code_fd), str(secret_fd)] + list(argv), clean)
 
 
-def read_inherited_secret(fd):
-    try:
-        data = os.pread(fd, 1 << 16, 0)
-    finally:
-        os.close(fd)
-    return data.decode('utf-8')
-
-
 def main(argv, env=None):
     env = os.environ if env is None else env
+    if env.get(SECRET_ENV):
+        # FIRST: until the re-exec below, the secret IS in this process's
+        # exec-time environment, which a non-dumpable process keeps from other
+        # same-user processes. The window before this line is a documented limit.
+        no_dump()
     refusal = platform_refusal()
     if refusal:
         log(refusal)
@@ -1107,8 +1129,9 @@ def main(argv, env=None):
     if opts['help']:
         sys.stdout.write(USAGE)
         return 0
-    if opts['fd'] is not None:
-        secret = read_inherited_secret(opts['fd'])
+    inherited = globals().pop(INHERITED_SECRET, None)
+    if inherited is not None:
+        secret = inherited
     else:
         secret = env.get(SECRET_ENV, '')
         if not secret:

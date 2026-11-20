@@ -15,7 +15,7 @@
 
 import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { readRemote, listRemotes, isValidRemoteId } from '../store.mjs';
+import { SCHEMA, isValidRemoteId, listRemotes, parseRemote, readRemoteText } from '../store.mjs';
 import { agentDir, agentErrorPath, agentSocketPath, socketPathDefect } from '../paths.mjs';
 import { lineSafe } from '../lineSafe.mjs';
 import { ensureAgentDir, queryBroker } from './client.mjs';
@@ -38,9 +38,21 @@ const log = (msg) => {
 const DUMMY_REMOTE_ID = '0-no-such-remote';
 // MAC'd against when no secret was found, so every refusal costs one HMAC.
 const DUMMY_SECRET = 'x'.repeat(43);
+// PARSED when no record was read, so every refusal costs one parse too.
+const DUMMY_RECORD_TEXT = JSON.stringify({
+  schema: SCHEMA, remoteId: DUMMY_REMOTE_ID, kind: 'agent', label: DUMMY_REMOTE_ID, config: { secret: DUMMY_SECRET },
+  enabled: false, mirror: null, baseline: { state: 'unknown', fingerprint: null, missing: [], checkedAt: null },
+  createdAt: '1970-01-01T00:00:00.000Z', updatedAt: '1970-01-01T00:00:00.000Z',
+});
 
 export class Broker {
-  constructor({ listen, address, build, tim }) {
+  /**
+   * `readImpl` / `parseImpl` are the store's read and parse halves — seams so a
+   * test can count that every handshake does exactly one of each.
+   */
+  constructor({ listen, address, build, tim, readImpl = readRemoteText, parseImpl = parseRemote }) {
+    this.readImpl = readImpl;
+    this.parseImpl = parseImpl;
     this.listen = listen;
     this.address = address;
     this.build = build;
@@ -57,14 +69,16 @@ export class Broker {
 
   /**
    * The secret to verify a handshake against, or why there is none. EVERY path
-   * does one store read — an id that cannot name a record reads a dummy one —
-   * and the caller MACs against a dummy secret when none is found, so the time
-   * a refusal takes does not say whether the remote exists.
+   * does exactly one store read (an id that cannot name a record reads a dummy
+   * one) and one parse (of an in-memory dummy record when nothing was read),
+   * and the caller MACs against a dummy secret when none is found — so the work
+   * a refusal costs does not say whether the remote exists.
    */
   async lookupSecret(remoteId) {
     const valid = isValidRemoteId(remoteId);
-    const r = await readRemote(valid ? remoteId : DUMMY_REMOTE_ID);
-    if (!valid || !r.ok) return { reason: 'unknown-remote' };
+    const read = await this.readImpl(valid ? remoteId : DUMMY_REMOTE_ID);
+    const r = read.ok ? this.parseImpl(remoteId, read.text) : this.parseImpl(DUMMY_REMOTE_ID, DUMMY_RECORD_TEXT);
+    if (!valid || !read.ok || !r.ok) return { reason: 'unknown-remote' };
     if (r.record.kind !== AGENT_KIND) return { reason: 'not-an-agent-remote' };
     const secret = r.record.config?.secret;
     if (typeof secret !== 'string' || secret === '') return { reason: 'no-secret' };

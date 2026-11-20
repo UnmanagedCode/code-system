@@ -249,7 +249,9 @@ export async function controlClient(t, sock, first) {
   const reader = lineReader(c);
   const send = f => c.write(`${JSON.stringify(f)}\n`);
   send(first);
-  return { ...reader, send, sock: c, frames: reader.frames };
+  // Object.assign, never a spread: a spread would copy `closed` ONCE and lose
+  // its getter, and a test would read a stale `false`.
+  return Object.assign(reader, { send, sock: c });
 }
 
 /**
@@ -263,6 +265,8 @@ export async function fakeAgent(t, { port, remoteId, secret }) {
   const c = net.createConnection({ host: '127.0.0.1', port });
   t.after(() => c.destroy());
   await new Promise((r, j) => { c.once('connect', r); c.once('error', j); });
+  // No Nagle: a test orders this peer's small frames against another socket's.
+  c.setNoDelay(true);
   const reader = lineReader(c);
   const send = f => c.write(`${JSON.stringify(f)}\n`);
   const na = newNonce();
@@ -271,5 +275,5 @@ export async function fakeAgent(t, { port, remoteId, secret }) {
   send({ t: 'auth', mac: mac(secret, [LABELS.agent, remoteId, ch.nonce, na]) });
   await reader.waitFor(f => f.t === 'welcome', { what: 'welcome' });
   send({ t: 'info', host: 'fake', python: '0', pid: 0, agentVersion: '1' });
-  return { ...reader, send, sock: c };
+  return Object.assign(reader, { send, sock: c });
 }

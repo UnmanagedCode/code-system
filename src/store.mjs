@@ -77,16 +77,34 @@ function depthExceeds(value, limit) {
 //
 // reasons: 'invalid-id' | 'absent' | 'unreadable' | 'malformed' | 'too-deep' | 'schema' | 'id-mismatch'
 export async function readRemote(id) {
+  const read = await readRemoteText(id);
+  return read.ok ? parseRemote(id, read.text) : read;
+}
+
+/**
+ * The STORE READ half of `readRemote`: the record file's text, or the refusal.
+ * Separate so a caller that must do the same work on every path (the agent
+ * broker's handshake) can count and match it.
+ * @returns {Promise<{ok:true, text:string}|{ok:false, reason:string, message:string}>}
+ */
+export async function readRemoteText(id) {
   if (!isValidRemoteId(id)) {
     return { ok: false, reason: 'invalid-id', message: `'${id}' is not a valid remote id (${REMOTE_ID_RE.source})` };
   }
-  let text;
   try {
-    text = await fs.readFile(recordPath(id), 'utf8');
+    return { ok: true, text: await fs.readFile(recordPath(id), 'utf8') };
   } catch (e) {
     if (e?.code === 'ENOENT') return { ok: false, reason: 'absent', message: `no remote '${id}' is configured` };
     return { ok: false, reason: 'unreadable', message: `remote '${id}' could not be read: ${e?.message ?? e}` };
   }
+}
+
+/**
+ * The PARSE half of `readRemote`: a record file's text, checked, for the record
+ * stored as `<id>.json`.
+ * @returns {{ok:true, record:object}|{ok:false, reason:string, message:string}}
+ */
+export function parseRemote(id, text) {
   let raw;
   try { raw = JSON.parse(text); }
   catch (e) {

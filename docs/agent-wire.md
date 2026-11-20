@@ -119,8 +119,12 @@ points** exchange it — agent and bridge — and the broker rewrites `s`; **the
 broker also enforces it**, counting what it relayed and has not seen
 acknowledged: an agent that sends output past its window loses its session
 (`bye credit`, and every bridge on it gets `lost` naming the credit), a bridge
-that sends input past its window loses its stream. So one remote cannot make
-the broker — which every remote shares — hold more than a window per stream.
+that sends input past its window loses its stream. **The agent's socket is a
+destination too**: an agent can return credit for input it never reads off its
+socket, so when a write to that socket does not drain, the bridge that sent it
+is not read again until it does. So one remote cannot make the broker — which
+every remote shares — hold more than a window per stream plus what the kernel
+buffers.
 The agent stops reading a pipe or pty master while out of credit; the bridge
 never sends past its credit (it holds the rest of a read, with stdin paused),
 and stops reading its socket while its own stdout/stderr is backed up. So a
@@ -173,15 +177,36 @@ exits on a refusal**, so it can be started before its card exists.
 **How the secret reaches the running agent.** Removing it from `os.environ`
 is not enough: `/proc/<pid>/environ` shows the environment a process was
 EXECUTED with, and every command the agent runs (same user) can read its
-parent's. So at startup the agent writes the secret, and its own code object
-(it may have come from stdin, with no file to re-run), into two `memfd`s —
-anonymous in-memory files — and `execve`s the same interpreter (`-I -c` and a
-small bootstrap) with a clean environment, the two fds inherited and only their
-NUMBERS in argv (`--inherited-fd <n>` is internal). The new process reads the
-secret and closes the fd before it connects; the code fd is closed as it
-loads. Neither its environment, its command line nor its open fds then hold
-the secret. Needs `os.memfd_create` (Linux 3.17); without it the agent refuses
-to start.
+parent's. So at startup the agent first makes itself non-dumpable
+(`prctl(PR_SET_DUMPABLE, 0)`, through `ctypes`, best-effort), then writes the
+secret, and its own code object (it may have come from stdin, with no file to
+re-run), into two `memfd`s — anonymous in-memory files — and `execve`s the same
+interpreter (`-I -c` and the bootstrap `BOOT`) with a clean environment, the two
+fds inherited and only their NUMBERS in argv. `BOOT`'s first statement, before
+it imports anything but `os` and `sys`, reads the secret and CLOSES its fd (an
+open memfd is readable through `/proc/<pid>/fd` by any same-user process); it
+then makes the new process non-dumpable too, loads the code and closes that fd,
+and hands the secret to the agent's namespace. From then on its environment,
+its command line and its fds hold no secret, and — non-dumpable — its
+`environ`, `fd` and `mem` are refused to other non-root processes, its own
+commands included. Needs `os.memfd_create` (Linux 3.17); without it the agent
+refuses to start.
+
+**Limits of that, accepted.** The secret is delivered in the environment, so
+from the agent's exec until its first statements run (`no_dump`, then the
+re-exec) it is in the exec-time environment of a still-dumpable process,
+readable by a same-user process that reads `/proc/<pid>/environ` in that window.
+And where the agent's Python lacks `ctypes`, nothing is made non-dumpable:
+the re-exec still keeps the secret out of the environment, argv and fds, but
+its memory stays readable to the same user.
+
+## Accepted limits
+
+- **An authenticated agent can load the broker's one event loop** with a high
+  rate of small valid frames (pings, acks), a CPU cost every remote shares. It
+  needs the remote's secret; credit and backpressure bound memory, not CPU.
+- **Pre-authentication slots** can be held by anyone who reaches the port (see
+  the README's Known limitations).
 
 ## Bridge ⇄ broker (the unix socket)
 

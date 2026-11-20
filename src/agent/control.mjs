@@ -100,8 +100,13 @@ function openStream(conn, f, broker, log) {
   return {
     fromBridge(frame) {
       if (finished) return;
-      if (!session.fromBridge(s, frame)) {
+      const r = session.fromBridge(s, frame);
+      if (r === 'over') {
         this.abort(`the bridge sent input past its credit of ${PROTOCOL.windowBytes} bytes`);
+      } else if (r === 'full') {
+        // The agent is not reading: neither is this bridge, until it does.
+        conn.pause();
+        session.whenDrained(() => { if (!conn.destroyed) conn.resume(); });
       }
     },
     abort(message) {

@@ -8,7 +8,7 @@
 // by cc's child would be bound to cc's lifetime decisions.
 
 import { spawn } from 'node:child_process';
-import { openSync, closeSync, readFileSync, statSync, truncateSync } from 'node:fs';
+import { openSync, closeSync, existsSync, readFileSync, statSync, truncateSync } from 'node:fs';
 import path from 'node:path';
 import { listRemotes } from '../store.mjs';
 import {
@@ -67,15 +67,16 @@ export function ensureBroker(o = {}) {
   return run;
 }
 
-const readProc = (pid, file) => readFileSync(`/proc/${pid}/${file}`, 'latin1');
+const PROC = '/proc';
+const readProc = (pid, file, procDir = PROC) => readFileSync(`${procDir}/${pid}/${file}`, 'latin1');
 
 // This process and every ancestor up to (and including) pid 1.
-function ancestry(self = process.pid) {
+function ancestry(self = process.pid, procDir = PROC) {
   const out = new Set([self]);
   let p = self;
   for (let i = 0; i < 64 && p > 1; i++) {
     try {
-      const st = readProc(p, 'stat');
+      const st = readProc(p, 'stat', procDir);
       p = Number(st.slice(st.lastIndexOf(')') + 2).split(' ')[1]);
     } catch { break; }
     out.add(p);
@@ -91,12 +92,20 @@ function ancestry(self = process.pid) {
  * process that is provably `node <BROKER_MAIN> … --store <this store>`, and is
  * neither pid 1 nor this process nor any of its ancestors, may be signalled.
  */
-export function brokerPidDefect(pid, { store = storeRoot(), self = process.pid } = {}) {
+export function brokerPidDefect(pid, { store = storeRoot(), self = process.pid, procDir = PROC } = {}) {
   if (!Number.isSafeInteger(pid) || pid <= 1) return `pid ${JSON.stringify(pid)} is not a process this plugin started`;
-  if (ancestry(self).has(pid)) return `pid ${pid} is this process or one of its ancestors`;
+  if (ancestry(self, procDir).has(pid)) return `pid ${pid} is this process or one of its ancestors`;
   let argv;
-  try { argv = readProc(pid, 'cmdline').split('\0'); }
-  catch { return `pid ${pid} is not running`; }
+  try { argv = readProc(pid, 'cmdline', procDir).split('\0'); }
+  catch (e) {
+    // THREE DIFFERENT ANSWERS, each refused: only a readable command line proves anything.
+    if (!existsSync(`${procDir}/self`)) {
+      return `pid ${pid}'s command line cannot be read: this host has no ${procDir}, so no broker can be proved`
+        + ' to be this store\'s, and none is ever signalled';
+    }
+    if (e.code === 'ENOENT') return `pid ${pid} is not running`;
+    return `pid ${pid}'s command line is unreadable (${e.code}), so it cannot be proved to be this store's broker`;
+  }
   const at = argv.indexOf('--store');
   if (!path.basename(argv[0] ?? '').startsWith('node') || argv[1] !== BROKER_MAIN
     || at < 0 || argv[at + 1] !== store) {
@@ -105,10 +114,11 @@ export function brokerPidDefect(pid, { store = storeRoot(), self = process.pid }
   return null;
 }
 
-// A zombie answers kill(pid, 0) but holds no port and no socket: gone.
+// A zombie answers kill(pid, 0) — a probe; signal 0 delivers nothing — but
+// holds no port and no socket: gone. Where /proc cannot say, it is alive.
 const isAlive = (pid) => {
   try { process.kill(pid, 0); } catch (e) { return e.code === 'EPERM'; }
-  try { return !/\) Z /.test(readProc(pid, 'stat')); } catch { return false; }
+  try { return !/\) Z /.test(readProc(pid, 'stat')); } catch (e) { return e.code !== 'ENOENT' || !existsSync(`${PROC}/self`); }
 };
 
 /**

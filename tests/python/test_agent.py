@@ -41,7 +41,7 @@ class StdlibOnly(unittest.TestCase):
 # Every module the agent may import: the standard library, named. Static, so it
 # runs on every interpreter (sys.stdlib_module_names exists only from 3.10).
 ALLOWED_IMPORTS = {
-    'base64', 'binascii', 'errno', 'fcntl', 'hashlib', 'hmac', 'json', 'marshal', 'os', 'platform',
+    'base64', 'binascii', 'ctypes', 'errno', 'fcntl', 'hashlib', 'hmac', 'json', 'marshal', 'os', 'platform',
     'random', 'selectors', 'signal', 'socket', 'struct', 'subprocess', 'sys', 'termios', 'time',
 }
 
@@ -196,6 +196,49 @@ class Startup(unittest.TestCase):
             with self.assertRaises(agent.UsageError):
                 agent.parse_address(bad)
         self.assertEqual(agent.parse_address('[::1]:7420'), ('::1', 7420))
+
+
+class Bootstrap(unittest.TestCase):
+    # PINS how the re-executed agent receives its secret: by the time the
+    # agent's own code runs, the secret is in its namespace, NO memfd is still
+    # open (a same-user scanner could read one through /proc/<pid>/fd), the
+    # process is non-dumpable where ctypes exists, and argv is the agent's own.
+    def test_boot_hands_over_the_secret_with_no_fd_left_open(self):
+        import json as _json
+        import marshal as _marshal
+        import subprocess as _sp
+        probe = (
+            "import json,os,sys\n"
+            "fds={f: os.readlink('/proc/self/fd/'+f) for f in os.listdir('/proc/self/fd')"
+            " if os.path.exists('/proc/self/fd/'+f)}\n"
+            "try:\n import ctypes; d=ctypes.CDLL(None).prctl(3,0,0,0,0)\n"
+            "except Exception:\n d=None\n"
+            "print(json.dumps({'secret': globals().get(%r), 'fds': list(fds.values()), 'dumpable': d,"
+            " 'argv': sys.argv}))\n" % agent.INHERITED_SECRET)
+        code_fd = os.memfd_create('code-system-agent-code', 0)
+        os.write(code_fd, _marshal.dumps(compile(probe, '<probe>', 'exec')))
+        secret_fd = os.memfd_create('code-system-agent-secret', 0)
+        os.write(secret_fd, b'the-secret')
+        try:
+            out = _sp.run([sys.executable, '-I', '-c', agent.BOOT, str(code_fd), str(secret_fd), '--x'],
+                          pass_fds=(code_fd, secret_fd), capture_output=True, check=True, timeout=20).stdout
+        finally:
+            os.close(code_fd)
+            os.close(secret_fd)
+        got = _json.loads(out)
+        self.assertEqual(got['secret'], 'the-secret')
+        self.assertEqual([f for f in got['fds'] if 'memfd:' in f], [], got['fds'])
+        self.assertEqual(got['argv'], ['agent.py', '--x'])
+        if got['dumpable'] is not None:
+            self.assertEqual(got['dumpable'], 0)
+
+    def test_boot_closes_the_secret_fd_before_any_other_import(self):
+        stmts = ast.parse(agent.BOOT).body
+        self.assertIsInstance(stmts[0], ast.Import)
+        self.assertEqual(sorted(a.name for a in stmts[0].names), ['os', 'sys'])
+        close_at = next(i for i, n in enumerate(stmts) if 'os.close(s)' in ast.get_source_segment(agent.BOOT, n))
+        first_other_import = next(i for i, n in enumerate(stmts[1:], 1) if isinstance(n, (ast.Import, ast.Try)))
+        self.assertLess(close_at, first_other_import)
 
 
 class GroupReuse(unittest.TestCase):
