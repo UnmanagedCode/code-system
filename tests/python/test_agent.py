@@ -38,6 +38,27 @@ class StdlibOnly(unittest.TestCase):
         self.assertEqual(sorted(n for n in names if n not in sys.stdlib_module_names), [])
 
 
+# Every module the agent may import: the standard library, named. Static, so it
+# runs on every interpreter (sys.stdlib_module_names exists only from 3.10).
+ALLOWED_IMPORTS = {
+    'base64', 'binascii', 'errno', 'fcntl', 'hashlib', 'hmac', 'json', 'marshal', 'os', 'platform',
+    'random', 'selectors', 'signal', 'socket', 'struct', 'subprocess', 'sys', 'termios', 'time',
+}
+
+
+class StdlibAllowlist(unittest.TestCase):
+    # PINS: every import is on a fixed standard-library allowlist, checked on
+    # every Python (3.9 included).
+    def test_imports_are_on_the_allowlist(self):
+        names = set()
+        for node in ast.walk(TREE):
+            if isinstance(node, ast.Import):
+                names.update(a.name.split('.')[0] for a in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                names.add((node.module or '').split('.')[0])
+        self.assertEqual(sorted(names - ALLOWED_IMPORTS), [])
+
+
 class PythonFloor(unittest.TestCase):
     # PINS the 3.9 floor STATICALLY: the file parses under the 3.9 grammar and
     # uses none of the later features ast's feature_version does not catch.
@@ -57,6 +78,19 @@ class PythonFloor(unittest.TestCase):
             if isinstance(node, ast.Name):
                 self.assertNotIn(node.id, ('ExceptionGroup', 'TaskGroup'))
         self.assertNotIn('except*', SOURCE)
+
+    def test_no_bitor_on_type_names(self):
+        # `int | str` is a 3.10 type union even OUTSIDE an annotation (an
+        # isinstance argument, a module-level alias); int flags stay allowed.
+        types = {'int', 'str', 'bytes', 'float', 'bool', 'list', 'dict', 'tuple', 'set', 'type', 'None'}
+
+        def is_type(n):
+            return (isinstance(n, ast.Name) and n.id in types) or (
+                isinstance(n, ast.Constant) and n.value is None)
+        for node in ast.walk(TREE):
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+                self.assertFalse(is_type(node.left) or is_type(node.right),
+                                 'a type union at line %d is 3.10+' % node.lineno)
 
 
 class ConstantTime(unittest.TestCase):
@@ -162,6 +196,24 @@ class Startup(unittest.TestCase):
             with self.assertRaises(agent.UsageError):
                 agent.parse_address(bad)
         self.assertEqual(agent.parse_address('[::1]:7420'), ('::1', 7420))
+
+
+class GroupReuse(unittest.TestCase):
+    # PINS: a process group is signalled only while it is still the one the
+    # agent started — never a reused id, never pid 0/1 or the agent's own group.
+    def test_group_is_ours(self):
+        alive_group = lambda pgid, sig: None  # noqa: E731
+
+        def gone(pgid, sig):
+            raise ProcessLookupError()
+        self.assertTrue(agent.group_is_ours(4242, 100, starttime=lambda p: 100, killpg=gone))
+        self.assertFalse(agent.group_is_ours(4242, 100, starttime=lambda p: 101, killpg=alive_group),
+                         'a live process with the id but another start time: reused')
+        self.assertTrue(agent.group_is_ours(4242, 100, starttime=lambda p: None, killpg=alive_group),
+                        'leader gone, members left: still ours')
+        self.assertFalse(agent.group_is_ours(4242, 100, starttime=lambda p: None, killpg=gone))
+        for pgid in (0, 1, os.getpgrp()):
+            self.assertFalse(agent.group_is_ours(pgid, 100, starttime=lambda p: 100, killpg=alive_group))
 
 
 class Framing(unittest.TestCase):

@@ -822,7 +822,7 @@ surfaces.
 |---|---|---|
 | `CODE_SYSTEM_STORE` | `src/paths.mjs` | store root; else `<homedir>/.code-system`. Test isolation. The agent broker's directory lives under it, so its socket path must stay within `SOCKET_PATH_MAX` |
 | `CODE_SYSTEM_AGENT_LISTEN` | `src/agent/protocol.mjs` → `desiredListen`, read by the supervisor and `brokerStatus` | the agent listener's `host:port`. Default `DEFAULT_LISTEN` (loopback). A malformed value is reported as the broker's error, and no broker starts |
-| `CODE_SYSTEM_AGENT_TIMINGS` | `src/agent/protocol.mjs` → `timings`, and `agent/agent.py` → `timings` | JSON overriding any `PROTOCOL.timings` key, for the broker, the bridge and the agent alike. Tests only |
+| `CODE_SYSTEM_AGENT_TIMINGS` | `src/agent/protocol.mjs` → `timings` (the broker), and `agent/agent.py` → `timings` | JSON overriding any `PROTOCOL.timings` key, for the broker and the agent alike (the bridge has no deadline). Tests only |
 | `CODE_SYSTEM_AGENT_SECRET` | `agent/agent.py` | the agent side only: the remote's secret, removed from the agent's environment before any command starts. Never read on cc's host |
 | `CONDUCTOR_URL` | `src/registration.mjs` → `register`, `src/api.mjs` → `projectsNaming` | cc's base URL. **Unset is a normal state, not a failure**: registration reports `skipped` and `projectsNaming` answers `[]`, because standalone-runnable is a plugin-compliance requirement |
 | `PORT` | `server.mjs` | the backend's listen port, conductor-allocated. Default `4310`, for the same standalone-runnable reason |
@@ -925,12 +925,12 @@ backend ──ensureBroker / status ──────────────�
 
 | Event | What happens |
 |---|---|
-| start | ONLY the backend starts it (`ensureBroker`, `src/agent/supervisor.mjs`): at startup, on a tick, and from the kind's `connect` — and only while the store holds an `agent` record. Spawned `detached` (its own process group: cc kills a plugin backend by process group) with its stdout/stderr appended to `<store>/agent/broker.log`. The launcher never starts one: its plans are pure |
+| start | ONLY the backend starts it (`ensureBroker`, `src/agent/supervisor.mjs`): at startup, on a tick, and from the kind's `connect` — and only while the store holds an `agent` record. Spawned `detached` (its own process group: cc kills a plugin backend by process group) as `node broker.mjs --listen <addr> --store <root>`, with its stdout/stderr appended to `<store>/agent/broker.log`. The launcher never starts one: its plans are pure |
 | adopt | a broker answering `ping` with the wanted `listen` and `build` is left alone — a restarted backend adopts it |
-| replace | a different `listen` or `build` (sha256 over `agent.py` and `src/agent/*.mjs`, `buildId`): `stop`, wait for the socket to die, start ours |
+| replace | a different `listen` or `build` (sha256 over `agent.py` and `src/agent/*.mjs`, `buildId`): `retire` it — `stop`, then SIGTERM, then SIGKILL, each waited out — and start ours ONLY once it is confirmed gone (a zombie counts as gone); one that will not go is reported, not doubled. **The pid comes from the broker's own `pong`, i.e. DATA, so nothing is signalled until `brokerPidDefect` proves it**: pid > 1, not this process or any ancestor, and `/proc/<pid>/cmdline` is `node <BROKER_MAIN> … --store <this store>` — re-proved before every signal. A pid that fails is neither stopped, signalled nor replaced, and the error names it |
 | bind | **TCP first, then the unix socket**: the port is the mutex, so whoever holds it may remove a stale socket file. No pid or lock file |
-| cannot start | writes `<store>/agent/broker-error.json` `{at, message}` and exits 1; read ONLY when the socket does not answer (card probe, bridge, `GET /api/agent/broker`, Connect's 502). The next successful start deletes it |
-| tick (`timings.brokerTickMs`) | re-reads the store: drops a session whose record is gone or whose secret changed (`bye stale-key`); **exits** once no `agent` record remains |
+| cannot start | writes `<store>/agent/broker-error.json` `{at, message}` and exits 1; read ONLY when the socket does not answer (card probe, bridge, `GET /api/agent/broker`, Connect's 502). The next successful start deletes it. A broker that loses the port to a LIVE broker answering on the same socket exits 0 and writes nothing, and the supervisor re-pings before it reports a failed start |
+| tick (`timings.brokerTickMs`) | re-reads the store: drops a session whose record is gone or whose secret changed (`bye stale-key`); **exits** once no `agent` record remains. A record that cannot be read right now may be an agent's: it keeps its session and the broker |
 | stop | `stop` on the socket, SIGTERM or SIGINT: `bye shutdown` to every agent, close, unlink the socket only if its inode is still ours, exit 0 |
 
 **Why `reachability` asks the socket rather than reading a file**: a status file

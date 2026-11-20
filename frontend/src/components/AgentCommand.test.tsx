@@ -54,7 +54,7 @@ describe('an agent remote', () => {
     expect(sent.config.secret).toMatch(SECRET_RE);
     await waitFor(() => expect(commands('host-a')).toHaveLength(2));
     for (const c of commands('host-a')) {
-      expect(c).toContain(`CODE_SYSTEM_AGENT_SECRET='${sent.config.secret}'`);
+      expect(c).toContain(`CODE_SYSTEM_AGENT_SECRET=${sent.config.secret} `);
       expect(c).toContain('--remote host-a');
       expect(c).toContain('--connect 127.0.0.1:7420');
     }
@@ -136,7 +136,7 @@ describe('an agent remote', () => {
     await user.click(card('host-a').getByRole('button', { name: 'Save' }));
     const sent = (lastBody(calls, 'PATCH', 'api/remotes/host-a') as { config: { secret: string } }).config.secret;
     expect(sent).toMatch(SECRET_RE);
-    await waitFor(() => expect(commands('host-a')[0]).toContain(`'${sent}'`));
+    await waitFor(() => expect(commands('host-a')[0]).toContain(`CODE_SYSTEM_AGENT_SECRET=${sent} `));
     await user.click(card('host-a').getByRole('button', { name: 'Dismiss' }));
     expect(commands('host-a')).toHaveLength(0);
   });

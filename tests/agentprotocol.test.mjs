@@ -76,6 +76,7 @@ const SHAPES = [
   [{ t: 'open', s: 1, argv: ['a'], cwd: '/', env: { A: 'b' }, stdin: false }, true],
   [{ t: 'open', s: 1, argv: ['a'], cwd: '/', env: { A: 'b' }, stdin: false, pty: { cols: 80, rows: 24 } }, true],
   [{ t: 'open', s: 1, argv: ['a'], cwd: '/', env: { A: 1 }, stdin: false }, false],
+  [{ t: 'open', s: 1, argv: [], cwd: '/', env: {}, stdin: false }, false],
   [{ t: 'open', s: 1, argv: ['a'], cwd: '/', env: {}, stdin: false, pty: { cols: 80 } }, false],
   [{ t: 'exit', s: 1, code: null, signal: 'SIGINT' }, true],
   [{ t: 'exit', s: 1, code: 0, signal: null }, true],
@@ -110,11 +111,26 @@ test('no protocol constant is restated in src/agent/* or the agent kind', () => 
     ...readdirSync(path.join(REPO, 'src', 'agent')).filter(n => n.endsWith('.mjs')).map(n => path.join(REPO, 'src', 'agent', n)),
     path.join(REPO, 'src', 'launcher', 'kinds', 'agent.mjs'),
   ];
-  // Every code with a separator: a bare word ('busy', 'timeout') is ordinary prose.
-  const strings = [...Object.values(PROTOCOL.labels), ...[...PROTOCOL.refusalCodes, ...PROTOCOL.byeCodes].filter(c => /[-_]/.test(c))]
-    .map(c => `'${c}'`);
-  const numbers = ['maxPreauthLineBytes', 'maxHttpHeaderBytes', 'maxFrameBytes', 'chunkBytes', 'windowBytes', 'ptyInputWindowBytes']
-    .map(k => PROTOCOL[k]);
+  // EVERY LEAF of the PROTOCOL block, so a constant added to it is covered with
+  // no edit here. Excluded, each for a stated reason:
+  //   - the shape tables' values (`hex`, `int|null`, …): a type vocabulary the
+  //     checker in protocol.mjs is what defines;
+  //   - numbers below 100: generic sizes and counts (a 32-byte secret, a
+  //     16-character slice) that would collide with any protocol value that small;
+  //   - 1000 and 10000: round millisecond values this code uses for its OWN local
+  //     timeouts (a ping's deadline, the supervisor's tick), not protocol timings.
+  const SHAPE_TABLES = new Set(['wire', 'control', 'toBridge']);
+  const ROUND_MS = new Set([1000, 10000]);
+  const leaves = [];
+  const walk = (v, top) => {
+    if (v && typeof v === 'object') { for (const [k, x] of Object.entries(v)) walk(x, top ?? k); return; }
+    if (!SHAPE_TABLES.has(top)) leaves.push(v);
+  };
+  walk(PROTOCOL, null);
+  const strings = [...new Set(leaves.filter(v => typeof v === 'string'))].map(c => `'${c}'`);
+  const numbers = [...new Set(leaves.filter(v => typeof v === 'number' && v >= 100 && !ROUND_MS.has(v)))];
+  assert.ok(numbers.includes(PROTOCOL.maxStreamsPerSession) && numbers.includes(PROTOCOL.timings.keepaliveTimeoutMs),
+    'the scan really covers counts and timings');
   for (const f of files) {
     const src = readFileSync(f, 'utf8');
     for (const s of strings) assert.equal(src.includes(s), false, `${path.basename(f)} restates '${s}'`);

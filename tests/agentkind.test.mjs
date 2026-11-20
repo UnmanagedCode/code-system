@@ -140,3 +140,23 @@ test('the stderr tail is read when the head lacks the marker', () => {
   // A terminal's head arrives with carriage returns.
   assert.deepEqual(readMarker(marker('not-connected', 'n').replace('\n', '\r\n')), { tag: 'not-connected', message: 'n' });
 });
+
+// C3. PINS the bridge's input order as a pure step: with the terminal resized
+// since the last size sent, the `resize` frame comes BEFORE the input that
+// follows it; with no change, no resize; outside a terminal, never one.
+test('inputFrames emits a changed size before the input, and only when it changed', async () => {
+  const { inputFrames } = await import('../src/agent/bridge.mjs');
+  const { PROTOCOL } = await import('../src/agent/protocol.mjs');
+  const sizes = [[80, 24], [100, 40]];
+  let i = 0;
+  const getWindowSize = () => sizes[Math.min(i++, sizes.length - 1)];
+  const chunk = Buffer.from('ab');
+  const a = inputFrames(chunk, { cols: 80, rows: 24 }, getWindowSize);
+  assert.deepEqual(a.frames.map(f => f.t), ['in'], 'no change, no resize');
+  const b = inputFrames(chunk, a.size, getWindowSize);
+  assert.deepEqual(b.frames, [{ t: 'resize', cols: 100, rows: 40 }, { t: 'in', b64: chunk.toString('base64') }]);
+  assert.deepEqual(b.size, { cols: 100, rows: 40 });
+  const c = inputFrames(Buffer.alloc(PROTOCOL.chunkBytes + 1), null, () => { throw new Error('not a terminal'); });
+  assert.deepEqual(c.frames.map(f => f.t), ['in', 'in'], 'split at chunkBytes, and no size read off a terminal');
+  assert.equal(c.size, null);
+});

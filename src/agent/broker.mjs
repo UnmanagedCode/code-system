@@ -80,9 +80,11 @@ export class Broker {
 
   recordRefusal({ remoteId, reason, peer }) {
     const at = new Date().toISOString();
-    // A peer chose the id: escaped before it is kept, shown or logged.
-    const id = lineSafe(String(remoteId).slice(0, 64));
-    log(`refused an agent for '${id}' from ${peer}: ${reason}`);
+    // A peer chose the id: escaped before it is kept or shown (`log` escapes
+    // every line it writes, so the log gets the raw id, escaped once).
+    const raw = String(remoteId).slice(0, 64);
+    const id = lineSafe(raw);
+    log(`refused an agent for '${raw}' from ${peer}: ${reason}`);
     if (reason === 'wrong-secret' || reason === 'no-secret') {
       this.lastRefusal.set(remoteId, { reason, peer, at });
       return;

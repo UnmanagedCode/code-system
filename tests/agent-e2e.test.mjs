@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { promises as fs, readFileSync, readdirSync } from 'node:fs';
+import { promises as fs, existsSync, readFileSync, readdirSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -117,7 +117,7 @@ test('stdin flows through a bridge to EOF, past one credit window', { skip }, as
   const payload = randomBytes(3 * 262144 + 17);
   const r = await new Promise((resolve) => {
     const c = execFile(process.execPath, [BRIDGE, '--socket', w.broker.sock, '--remote', w.remoteId, '--key',
-      keyIdOf(w.secret), '--cwd', '/', '--stdin', '--', 'sha256sum'], { env: agentEnv(w.store), encoding: 'utf8' },
+      keyIdOf(w.secret), '--cwd', '/', '--stdin', '--', 'sha256sum'], { env: agentEnv(w.store), encoding: 'utf8', timeout: 20_000 },
     (err, stdout, stderr) => resolve({ err, stdout, stderr }));
     c.stdin.end(payload);
   });
@@ -238,7 +238,10 @@ test('shutdown reaps open execs inside the reap deadline', { skip }, async (t) =
 
 // PINS decision 9: the agent's session dropping fails the in-flight op as
 // ETRANSPORT, id-addressed, AND the agent ends the command's process group.
-test('a cut agent link fails the in-flight exec ETRANSPORT and kills its far group', { skip }, async (t) => {
+// A broker and a real agent with an in-test TCP proxy between them, so a test
+// can CUT the agent's link mid-command. `ready` is a file a command touches
+// once its output is written; the cut waits for it (and for the frames to land).
+async function cutWorld(t) {
   const store = await agentStore(t);
   const secret = newSecret();
   await writeRecord(store, agentRecord('px', secret));
@@ -254,17 +257,88 @@ test('a cut agent link fails the in-flight exec ETRANSPORT and kills its far gro
   t.after(() => proxy.close());
   startAgent(t, { address: `127.0.0.1:${proxy.address().port}`, remoteId: 'px', secret });
   await connected(broker.sock, 'px');
-  const l = await launcher(t, store);
-  exec(l, 'cut', 'px', { argv: ['/bin/sh', '-c', 'echo $$; sleep 30 & sleep 30; wait'] });
-  const pid = await farPid(l, 'cut');
-  killLater(t, pid);
-  for (const c of conns) c.destroy();
+  const ready = path.join(store, 'ready');
+  const cut = async () => {
+    await waitFor(() => existsSync(ready), { what: 'the command to signal ready' });
+    await new Promise(r => setTimeout(r, 300));
+    for (const c of conns) c.destroy();
+  };
+  return { store, secret, broker, cut, ready };
+}
+
+// 2000+ bytes of stderr — past the 512-byte HEAD, so only the TAIL can carry
+// the bridge's marker — then optionally a last line with no newline.
+const NOISY = (ready, last) => `head -c 2500 /dev/zero | tr '\\0' x >&2; ${last}; touch ${ready}; exec sleep 30`;
+
+// C1. PINS decision 9 with a discriminating command: the cut kills the far
+// process GROUP — the background job AND the leader — not just the leader.
+test('a cut agent link fails the in-flight exec ETRANSPORT and kills its whole far group', { skip }, async (t) => {
+  const w = await cutWorld(t);
+  const l = await launcher(t, w.store);
+  exec(l, 'cut', 'px', { argv: ['/bin/sh', '-c', `sleep 30 & echo "$! $$"; touch ${w.ready}; exec sleep 30`] });
+  const line = await waitFor(() => /^(\d+) (\d+)\n/.exec(textOf(l, 'cut')), { what: 'the pids' });
+  const [bg, leader] = [Number(line[1]), Number(line[2])];
+  killLater(t, bg);
+  killLater(t, leader);
+  assert.equal(alive(bg) && alive(leader), true, 'both run before the cut');
+  await w.cut();
   const err = await settled(l, 'cut');
-  assert.equal(err.type, 'error');
-  assert.equal(err.id, 'cut');
-  assert.equal(err.code, 'ETRANSPORT');
+  assert.deepEqual([err.type, err.id, err.code], ['error', 'cut', 'ETRANSPORT']);
   assert.match(err.message, /disconnected/);
-  await waitFor(() => !alive(pid), { what: 'the agent to kill the dropped session\'s group' });
+  await waitFor(() => !alive(bg) && !alive(leader), { what: 'the background job and the leader to die' });
+});
+
+// A4 + C2 (exec path). PINS: a link lost after much stderr is still read as the
+// bridge's own outcome — through session.mjs's stderr TAIL — whether or not the
+// command's last stderr byte was a newline (the marker starts its own line).
+for (const [name, last] of [['no trailing newline', 'printf working >&2'], ['a trailing newline', 'echo working >&2']]) {
+  test(`a lost link after 2500 bytes of stderr ending in ${name} is ETRANSPORT on exec`, { skip }, async (t) => {
+    const w = await cutWorld(t);
+    const l = await launcher(t, w.store);
+    exec(l, 'n', 'px', { argv: ['/bin/sh', '-c', NOISY(w.ready, last)] });
+    await w.cut();
+    const err = await settled(l, 'n');
+    assert.deepEqual([err.type, err.code], ['error', 'ETRANSPORT'], JSON.stringify(err));
+    assert.ok(textOf(l, 'n', 'stderr').length > 2500);
+  });
+}
+
+// C2 (run.mjs path). PINS the same on the single funnel fileops and the
+// baseline probe run through: run.mjs passes the stderr tail to classifyFailure.
+test('a lost link after 2500 bytes of stderr is ETRANSPORT through run.mjs', { skip }, async (t) => {
+  const w = await cutWorld(t);
+  const prior = process.env.CODE_SYSTEM_STORE;
+  process.env.CODE_SYSTEM_STORE = w.store;
+  t.after(() => { if (prior === undefined) delete process.env.CODE_SYSTEM_STORE; else process.env.CODE_SYSTEM_STORE = prior; });
+  const { createAgentTransport } = await import('../src/launcher/kinds/agent.mjs');
+  const { makeRunner } = await import('../src/launcher/run.mjs');
+  const run = makeRunner(createAgentTransport(), { secret: w.secret }, 'px')({ script: NOISY(w.ready, 'printf working >&2') });
+  const outcome = run.then(() => null, e => e);
+  await w.cut();
+  const e = await outcome;
+  assert.ok(e, 'the run rejected');
+  assert.equal(e.code, 'ETRANSPORT', String(e?.message));
+});
+
+// A2. PINS: the secret is nowhere a command the agent runs can read: not in its
+// parent's (the agent's) EXEC-TIME environment block, not in its command line,
+// and not on an open file descriptor.
+test('a command cannot find the secret in its parent agent\'s /proc entries', { skip }, async (t) => {
+  const w = await agentWorld(t);
+  const l = await launcher(t, w.store);
+  exec(l, 's', w.remoteId, {
+    argv: ['/bin/sh', '-c', 'tr "\\0" "\\n" < /proc/$PPID/environ; echo ---; tr "\\0" " " < /proc/$PPID/cmdline; echo ---;'
+      + ' for f in /proc/$PPID/fd/*; do readlink "$f"; done'],
+  });
+  const end = await settled(l, 's');
+  assert.equal(end.code, 0, textOf(l, 's', 'stderr'));
+  const out = textOf(l, 's');
+  const [environ, cmdline, fds] = out.split('---\n');
+  assert.match(environ, /CODE_SYSTEM_STORE|PATH=/, 'the environ was really read');
+  assert.match(cmdline, /--connect/, 'and the cmdline');
+  assert.equal(out.includes(w.secret), false);
+  assert.equal(environ.includes('CODE_SYSTEM_AGENT_SECRET'), false);
+  assert.equal(/memfd:/.test(fds), false, `no memfd left open: ${fds}`);
 });
 
 test('no agent connected is ENOREMOTE naming the remote', { skip }, async (t) => {

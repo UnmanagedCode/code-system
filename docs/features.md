@@ -282,7 +282,15 @@ the new command appears on the card.
 ### How it behaves
 
 - **Commands run as the agent's user**, in its environment (its `PATH`, its
-  `HOME`), on its machine.
+  `HOME`), on its machine. **Not its secret**: the agent re-starts itself once
+  at startup with the secret out of its environment, so no command can read it
+  (not even from the agent's `/proc` entries) — see
+  [`agent-wire.md`](agent-wire.md#the-agent-refuses-to-start).
+- **A command whose background job keeps its output open stays open** until
+  that job ends, as with docker and ssh; each one counts toward the agent's
+  limit on concurrent commands (`maxStreamsPerSession` in `agent/agent.py`'s
+  `PROTOCOL` block), past which a new command is refused by name until one ends.
+  Redirect a background job's output (`job >/dev/null 2>&1 &`) to avoid it.
 - **If the agent's connection drops, the agent ends every command it was running
   for that connection**, including background jobs left by a command — the
   in-flight operation fails, and the next one waits for the agent to reconnect.

@@ -31,10 +31,11 @@ file (`extractProtocol`). Nothing restates a value it owns —
 | `refusalCodes`, `byeCodes` | the codes a `refused` / `bye` frame may carry |
 | `wire` | frame shapes on the TCP connection |
 | `control` | frame shapes a bridge or client sends on the unix socket |
+| `toBridge` | frame shapes the broker sends a bridge — the bridge checks them like every other side |
 
 **Test seam:** `CODE_SYSTEM_AGENT_TIMINGS` — a JSON object overriding any
-`timings` key (positive numbers only), read by the agent, the broker and the
-bridge. Tests only.
+`timings` key (positive numbers only), read by the agent and the broker (the
+bridge has no deadline of its own). Tests only.
 
 ## Framing
 
@@ -42,7 +43,7 @@ bridge. Tests only.
   canonical base64 in `b64`.
 - **Shapes are exact**: every key of `PROTOCOL.wire[t]` (a `?` suffix marks one
   optional), no other key, each of its type — `str`, `hex` (lower-case),
-  `int` (non-negative), `bool`, `strlist`, `strmap`, `b64` (canonical: it must
+  `int` (non-negative), `bool`, `strlist`, `argv` (a non-empty `strlist`), `strmap`, `b64` (canonical: it must
   re-encode to itself), `size` (`{cols, rows}`), `int|null`, `str|null`.
   `check_shape` (Python) and `checkShape` (node) implement the same rules.
 - An over-long line or a bad shape is `bad_frame`, and the connection closes.
@@ -72,6 +73,10 @@ bridge. Tests only.
   `wrong-secret` (or `no-secret`) per remote, shown on that card's probe;
   `unknown-remote` / `not-an-agent-remote` in a list of the last few, shown on
   the page's listener line (`GET /api/agent/broker` → `refusals`).
+- **…and the same work for each.** Every failure path does one store read (an
+  id that cannot name a record reads a dummy one) and one HMAC (against a dummy
+  secret when none was found — `Broker.authenticate`), so the time a refusal
+  takes does not say whether the remote exists.
 - `refused` codes: `auth_failed`, `version_mismatch` (names the fetch URL),
   `bad_frame`, `busy` (past `maxPendingHandshakes`), `timeout` (past
   `timings.handshakeTimeoutMs`).
@@ -97,22 +102,30 @@ session (`maxStreamsPerSession`).
 |---|---|---|
 | `open {s, argv, cwd, env, stdin, pty?}` | B→A | `Popen(argv, cwd, env={**agent env, **env}, start_new_session=True)`. `env` is an **overlay**; a frame env that replaces rides argv as `env -i --` (the kind composes it). `stdin: false` is `/dev/null`. `pty: {cols, rows}` opens a pty, makes it the controlling terminal (`TIOCSCTTY`) and sets its size |
 | `started {s, pid}` | A→B | the command runs; `pid` leads its own process group and session |
-| `failed {s, errno, message}` | A→B | it never started (`ENOENT`, `EACCES`, `ENOTDIR`, …), for the program or the cwd |
+| `failed {s, errno, message}` | A→B | it never started (`ENOENT`, `EACCES`, `ENOTDIR`, …), for the program or the cwd. ANY error starting one stream is this frame (`EINVAL` for one that is not an OS error, e.g. a NUL in argv) — never the end of the agent |
 | `out {s, fd, b64}` | A→B | stdout (`fd` 1) or stderr (2); a terminal has fd 1 only |
 | `in {s, b64}` / `eof {s}` | B→A | stdin bytes / stdin end (not used for a terminal) |
 | `ack {s, fd, n}` | both | credit returned for `n` bytes **written to their destination** (`fd` 0: stdin; 1/2: output) |
 | `resize {s, cols, rows}` | B→A | `TIOCSWINSZ` on the pty master; the kernel sends SIGWINCH |
-| `exit {s, code, signal}` | A→B | after the process is reaped AND its output drained; `signal` is a name (`SIGINT`) and then `code` is null |
+| `exit {s, code, signal}` | A→B | after the process is reaped AND its output drained; `signal` is a name (`SIGINT`) and then `code` is null. The direct child is reaped as soon as it exits (no zombie); a background job still holding the output keeps the stream open — and counting toward `maxStreamsPerSession`, so at most that many such commands per agent, past which an `open` is refused `too-many-streams` — until the output closes, as a `docker exec` or ssh client would stay |
 | `close {s}` | B→A | the bridge went away. Non-pty: close stdin, keep draining output, **kill nothing**. Pty: close the master (a hang-up) |
 | `ping` / `pong` | both | every `timings.pingIntervalMs`; a peer silent for `timings.keepaliveTimeoutMs` is dead. Plus `SO_KEEPALIVE` |
-| `bye {code, message}` | both | `replaced`, `stale-key`, `shutdown`, `keepalive` |
+| `bye {code, message}` | both | `replaced`, `stale-key`, `shutdown`, `keepalive`, `credit` |
 
 ### Credit
 
 At most `windowBytes` unacknowledged per stream per direction. The **end
-points** exchange it — agent and bridge — and the broker only rewrites `s`.
-The agent stops reading a pipe or pty master while out of credit, so a launcher
-that stops reading stops the far process, and every buffer between is bounded.
+points** exchange it — agent and bridge — and the broker rewrites `s`; **the
+broker also enforces it**, counting what it relayed and has not seen
+acknowledged: an agent that sends output past its window loses its session
+(`bye credit`, and every bridge on it gets `lost` naming the credit), a bridge
+that sends input past its window loses its stream. So one remote cannot make
+the broker — which every remote shares — hold more than a window per stream.
+The agent stops reading a pipe or pty master while out of credit; the bridge
+never sends past its credit (it holds the rest of a read, with stdin paused),
+and stops reading its socket while its own stdout/stderr is backed up. So a
+launcher that stops reading stops the far process, and every buffer between is
+bounded.
 
 ### When a session ends
 
@@ -121,12 +134,17 @@ that stops reading stops the far process, and every buffer between is bounded.
 | a newer session for the same remote authenticates | `bye replaced` to the old one; the card's replacement count goes up | the old agent ends its commands and redials |
 | the record's secret changed, or the record is gone (broker tick, `timings.brokerTickMs`) | `bye stale-key` | ends its commands; its next `auth` is `wrong-secret` |
 | TCP loss, keepalive timeout | — | ends its commands, redials |
-| the broker stops (`stop`, SIGTERM/SIGINT, no agent record left) | `bye shutdown` | ends its commands, redials |
+| the broker stops (`stop`, SIGTERM/SIGINT, no agent record left — an UNREADABLE record counts as one that may be, and keeps its session too) | `bye shutdown` | ends its commands, redials |
+| the agent sent output past its credit | `bye credit` | ends its commands, redials |
 | the agent gets SIGTERM/SIGINT | — | ends its commands, sends `bye shutdown`, exits 0 |
 
 **"Ends its commands"**: every process group the session started gets SIGKILL
 (a terminal's gets SIGHUP first) — including groups whose leader already
-exited, which is where a detached command's background jobs live. A job that
+exited, which is where a detached command's background jobs live. Each group
+is signalled only after checking, immediately before, that it is still the
+one started: a live process with the group's id must have the leader's
+recorded start time, and an id of 0, 1 or the agent's own group is never
+signalled. A job that
 called `setsid` has left its group and survives. **An agent killed with
 SIGKILL ends nothing**: its commands keep running.
 
@@ -139,7 +157,8 @@ Exponential backoff with jitter: the ceiling doubles from
 `timings.backoffBaseMs` up to `timings.backoffCapMs`; a delay is drawn from
 `[min(base, ceiling), ceiling]`. It resets to base only after a session that
 lived at least `timings.backoffStableMs`. A refusal (`auth_failed`,
-`version_mismatch`, an unproven broker) jumps to the cap. **The agent never
+`version_mismatch`, an unproven broker) waits **at least** `timings.backoffCapMs`
+(jittered up to a quarter more), once; the schedule then resumes. **The agent never
 exits on a refusal**, so it can be started before its card exists.
 
 ### The agent refuses to start
@@ -151,8 +170,18 @@ exits on a refusal**, so it can be started before its card exists.
 | `--secret…` / `--key…` on the command line (argv is world-readable) | 2 |
 | `--connect` not `host:port` (`[v6]:port` allowed), `--remote` missing | 2 |
 
-The secret is removed from the agent's own environment before any command
-starts, so no command inherits it.
+**How the secret reaches the running agent.** Removing it from `os.environ`
+is not enough: `/proc/<pid>/environ` shows the environment a process was
+EXECUTED with, and every command the agent runs (same user) can read its
+parent's. So at startup the agent writes the secret, and its own code object
+(it may have come from stdin, with no file to re-run), into two `memfd`s —
+anonymous in-memory files — and `execve`s the same interpreter (`-I -c` and a
+small bootstrap) with a clean environment, the two fds inherited and only their
+NUMBERS in argv (`--inherited-fd <n>` is internal). The new process reads the
+secret and closes the fd before it connects; the code fd is closed as it
+loads. Neither its environment, its command line nor its open fds then hold
+the secret. Needs `os.memfd_create` (Linux 3.17); without it the agent refuses
+to start.
 
 ## Bridge ⇄ broker (the unix socket)
 
@@ -163,11 +192,12 @@ Same codec, `maxFrameBytes` cap. The first frame chooses the mode:
 
 | First frame | Answer |
 |---|---|
-| `open {remoteId, keyId, argv, cwd, env, stdin, pty?}` | the connection becomes ONE stream: `started`/`failed`/`out`/`ack`/`exit` arrive without `s`; the bridge sends `in`/`eof`/`ack`/`resize`. Or `refused {tag, message}` and close |
+| `open {remoteId, keyId, argv, cwd, env, stdin, pty?}` | the connection becomes ONE stream: `started`/`failed`/`out`/`ack`/`exit` arrive without `s` (or `lost {tag, message}`); the bridge sends `in`/`eof`/`ack`/`resize`. Or `refused {tag, message}` and close |
 | `status {remoteId}` | `{t:'status', remoteId, connected, session?, keyId?, peer?, since?, host?, agentPid?, python?, lastRefusal, replacements}` — never the secret |
 | `ping` | `{t:'pong', pid, listen, address, build}` |
 | `stop` | `{t:'stopping'}`, then the broker shuts down |
-| `refusals` | `{t:'refusals', items:[{remoteId, reason, peer, at}]}` |
+| `refusals` | `{t:'refusals', items:[{remoteId, reason, peer, at}]}` — `remoteId` is whatever an unauthenticated peer sent, escaped with `lineSafe` (`src/lineSafe.mjs`) before it is kept, and the broker's log escapes every line the same way |
+| anything malformed | `refused {tag: 'bad-frame', message}` and close |
 
 `keyId` is `keyIdOf(secret)` — a prefix of `sha256(labels.keyId + "\n" + secret)`.
 The bridge carries the key id derived from the **current** config; a session

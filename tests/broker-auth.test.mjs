@@ -214,7 +214,7 @@ test('no byte on the wire, either direction, contains the secret', { skip: NEEDS
   });
   await new Promise(r => proxy.listen(0, '127.0.0.1', r));
   t.after(() => proxy.close());
-  startAgent(t, { address: `127.0.0.1:${proxy.address().port}`, remoteId: 'box', secret });
+  const agent = startAgent(t, { address: `127.0.0.1:${proxy.address().port}`, remoteId: 'box', secret });
   await connected(broker.sock, 'box');
 
   const { execFile } = await import('node:child_process');
@@ -230,6 +230,11 @@ test('no byte on the wire, either direction, contains the secret', { skip: NEEDS
   const all = Buffer.concat([...toBroker, ...toAgent]);
   assert.ok(all.length > 0);
   assert.equal(all.includes(Buffer.from(secret)), false);
+  // C11: nor is it ever logged, by either side of a whole real session.
+  assert.match(broker.log(), /connected from/, 'the broker log was captured');
+  assert.match(agent.stderr(), /connected to/, 'and the agent\'s');
+  assert.equal(broker.log().includes(secret), false, 'the broker log never carries the secret');
+  assert.equal(agent.stderr().includes(secret), false, 'nor does the agent\'s stderr');
 });
 
 // PINS: the agent authenticates the BROKER too. A listener that cannot produce

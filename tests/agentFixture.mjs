@@ -199,3 +199,77 @@ export async function writeAgentRecord(store, remoteId, secret, over = {}) {
 export async function removeRecord(store, remoteId) {
   await fs.rm(path.join(store, 'remotes', `${remoteId}.json`), { force: true });
 }
+
+// ── raw peers, for what the real agent and bridge never do ─────────────
+
+/** Read NDJSON lines off a socket into `frames`, with a waiter. */
+function lineReader(sock) {
+  const frames = [];
+  const waiters = [];
+  let buf = '';
+  let closed = false;
+  sock.on('data', (b) => {
+    buf += b.toString('utf8');
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      frames.push(JSON.parse(buf.slice(0, i)));
+      buf = buf.slice(i + 1);
+    }
+    for (const w of waiters.splice(0)) w();
+  });
+  sock.on('close', () => { closed = true; for (const w of waiters.splice(0)) w(); });
+  sock.on('error', () => {});
+  return {
+    frames,
+    get closed() { return closed; },
+    async waitFor(pred, { timeoutMs = 8000, what = 'a frame' } = {}) {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const hit = frames.find(pred);
+        if (hit) return hit;
+        if (closed) throw new Error(`closed before ${what}; saw ${JSON.stringify(frames).slice(0, 400)}`);
+        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}; saw ${JSON.stringify(frames).slice(0, 400)}`);
+        await new Promise(r => { waiters.push(r); setTimeout(r, 50); });
+      }
+    },
+    async waitClosed(timeoutMs = 8000) {
+      const deadline = Date.now() + timeoutMs;
+      while (!closed && Date.now() < deadline) await new Promise(r => { waiters.push(r); setTimeout(r, 50); });
+      return closed;
+    },
+  };
+}
+
+/** A raw client on the broker's unix socket that sends `first` and reads. */
+export async function controlClient(t, sock, first) {
+  const net = await import('node:net');
+  const c = net.createConnection(sock);
+  t.after(() => c.destroy());
+  await new Promise((r, j) => { c.once('connect', r); c.once('error', j); });
+  const reader = lineReader(c);
+  const send = f => c.write(`${JSON.stringify(f)}\n`);
+  send(first);
+  return { ...reader, send, sock: c, frames: reader.frames };
+}
+
+/**
+ * A FAKE AGENT that completes a real handshake (it knows the secret) and then
+ * does only what the test tells it: answer `open` with `started`, and send
+ * whatever frames the test sends through it.
+ */
+export async function fakeAgent(t, { port, remoteId, secret }) {
+  const net = await import('node:net');
+  const { LABELS, mac, newNonce } = await import('../src/agent/protocol.mjs');
+  const c = net.createConnection({ host: '127.0.0.1', port });
+  t.after(() => c.destroy());
+  await new Promise((r, j) => { c.once('connect', r); c.once('error', j); });
+  const reader = lineReader(c);
+  const send = f => c.write(`${JSON.stringify(f)}\n`);
+  const na = newNonce();
+  send({ t: 'hello', v: 1, remoteId, nonce: na });
+  const ch = await reader.waitFor(f => f.t === 'challenge', { what: 'challenge' });
+  send({ t: 'auth', mac: mac(secret, [LABELS.agent, remoteId, ch.nonce, na]) });
+  await reader.waitFor(f => f.t === 'welcome', { what: 'welcome' });
+  send({ t: 'info', host: 'fake', python: '0', pid: 0, agentVersion: '1' });
+  return { ...reader, send, sock: c };
+}

@@ -457,8 +457,15 @@ test('fillGenerated fills empty generated fields; generatedSent reads back what 
 test('agentCommands quotes every variable part and keeps the secret out of argv', () => {
   const c = agentCommands({ dial: '127.0.0.1:7420', remoteId: 'box', secret: 'Se_cr-et' });
   assert.equal(c.curl,
-    "curl -fsS http://127.0.0.1:7420/agent.py | CODE_SYSTEM_AGENT_SECRET='Se_cr-et' python3 - --connect 127.0.0.1:7420 --remote box");
-  assert.match(c.checkout, /^CODE_SYSTEM_AGENT_SECRET='Se_cr-et' make -C \S+ agent ARGS='--connect 127\.0\.0\.1:7420 --remote box'$/);
+    'curl -fsS http://127.0.0.1:7420/agent.py | CODE_SYSTEM_AGENT_SECRET=Se_cr-et python3 - --connect 127.0.0.1:7420 --remote box');
+  assert.match(c.checkout, /^CODE_SYSTEM_AGENT_SECRET=Se_cr-et make -C \S+ agent ARGS='--connect 127\.0\.0\.1:7420 --remote box'$/);
+  // A12: the secret is a quoted shell word like the rest — one with a quote and
+  // a space reaches the environment exactly as given.
+  for (const secret of ["it's a secret", 'plain', '$(touch /tmp/never)']) {
+    const assignment = agentCommands({ dial: 'h:1', remoteId: 'box', secret }).curl.split(' | ')[1].split(' python3 ')[0];
+    const got = execFileSync('/bin/sh', ['-c', `${assignment} /usr/bin/printenv CODE_SYSTEM_AGENT_SECRET`], { encoding: 'utf8' });
+    assert.equal(got, `${secret}\n`);
+  }
   const evil = agentCommands({ dial: "x'; rm -rf / #", remoteId: 'box', secret: 's' });
   // The shell parses the dial back to exactly what was typed.
   const words = execFileSync('/bin/sh', ['-c', `printf '%s\\n' ${evil.curl.split(' | ')[1].split(' --connect ')[1].split(' --remote')[0]}`], { encoding: 'utf8' });
