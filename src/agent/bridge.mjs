@@ -51,11 +51,14 @@ function parseArgs(argv) {
 
 let finishing = false;
 
+// The marker is the LAST thing written and carries NO trailing newline: for a
+// command that never started it is the whole of stderr, and cc requires the
+// streamed stderr and the error message to be the same text.
 function finish(code, marker = null) {
   if (finishing) return;
   finishing = true;
   const out = () => {
-    if (marker) process.stderr.write(`${MARKER_PREFIX}${marker}\n`, () => process.exit(code));
+    if (marker) process.stderr.write(`${MARKER_PREFIX}${marker}`, () => process.exit(code));
     else process.exit(code);
   };
   // Every `out` already relayed must reach the launcher before the exit does.
@@ -87,7 +90,11 @@ async function main() {
   const decoder = new LineDecoder(PROTOCOL.maxFrameBytes);
   let started = false;
   let ended = false;
-  let credit = PROTOCOL.windowBytes;
+  // A TERMINAL keeps one chunk in flight, not a window: cc credits terminal
+  // input as it reaches the host pty, so input this transport has absorbed
+  // reads to cc as input the program took. A full window here would absorb cc's
+  // whole input window before the program reads a byte.
+  let credit = o.pty ? PROTOCOL.ptyInputWindowBytes : PROTOCOL.windowBytes;
   const send = (f) => { if (!conn.destroyed) conn.write(encode(f)); };
 
   // A resize always goes out BEFORE the input that follows it: the launcher

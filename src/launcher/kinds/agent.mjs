@@ -228,7 +228,10 @@ export function createAgentTransport() {
         const sp = m.message.indexOf(' ');
         const errno = sp > 0 ? m.message.slice(0, sp) : m.message;
         if (!ERRNO_RE.test(errno)) return null;
-        return { code: errno, message: sp > 0 ? m.message.slice(sp + 1) : errno };
+        // The message IS the line the bridge wrote — the whole of stderr for a
+        // command that never started — so the streamed stderr and the error
+        // agree, as cc requires of a spawn error.
+        return { code: errno, message: `${MARKER_PREFIX}${m.tag} ${m.message}` };
       }
       if (code !== BRIDGE_EXIT_OWN) return null;
       switch (m.tag) {

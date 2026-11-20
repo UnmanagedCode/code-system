@@ -359,3 +359,24 @@ test('a parse that disagrees with the reporter tally is reported, not trusted', 
   // And a summary that stopped being printed at all is its own alarm.
   assert.equal(checkTally(parseSpecReport('✔ one (1ms)')).length, 3);
 });
+
+// ── the agent bound run's manifest (tests/agentConformanceExpectations.mjs) ──
+
+// PINS the agent manifest against the run it was measured from: the battery
+// report of `npm run conformance:agent` (channel on; the off arm's outcome set
+// was identical), captured result lines only. The same checker validates it,
+// and every non-passing row of that run is an entry, with nothing extra.
+test('the agent manifest validates and matches the captured agent bound run exactly', async () => {
+  const { EXPECTED_AGENT, EXPECTED_AGENT_TOTAL } = await import('./agentConformanceExpectations.mjs');
+  assert.equal(validateExpectations(EXPECTED_AGENT), EXPECTED_AGENT);
+  const report = parseSpecReport(await fs.readFile(path.join(HERE, 'fixtures', 'agentSpecReport.txt'), 'utf8'));
+  assert.deepEqual(checkTally(report), []);
+  assert.deepEqual(checkTotal(report.tally, EXPECTED_AGENT_TOTAL), []);
+  assert.deepEqual(compareOutcomes(report.tests, EXPECTED_AGENT), []);
+  // Measured differences from docker's run, each the agent kind's own doing.
+  for (const name of [
+    '[all capabilities] the program\'s exit code, or the signal that ended it, is the end',
+    '[all capabilities] exec NEVER rejects — a command that cannot start is a spawnError, not a throw',
+    'input credit is granted for bytes written to the terminal, not bytes received, and every byte\'s credit returns',
+  ]) assert.equal(report.tests.get(name)?.outcome, 'pass', name);
+});

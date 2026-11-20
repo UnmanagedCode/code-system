@@ -114,7 +114,8 @@ test('classifyFailure maps every bridge tag to its code, admin messages errno-fr
     assert.equal(FS_TOKEN.test(v.message), false, `${tag}: no errno token`);
   }
   const ns = k.classifyFailure(CONFIG, { code: 127, stderr: marker('never-started', "ENOENT [Errno 2] No such file or directory: 'x'") });
-  assert.deepEqual(ns, { code: 'ENOENT', message: "[Errno 2] No such file or directory: 'x'" });
+  assert.deepEqual(ns, { code: 'ENOENT', message: "code-system-agent: never-started ENOENT [Errno 2] No such file or directory: 'x'" },
+    'the message is the exact line streamed as stderr, so the two diagnostics agree');
 });
 
 // PINS: the marker counts only with ITS exit status and only as the LAST line;

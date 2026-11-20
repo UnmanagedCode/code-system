@@ -85,6 +85,8 @@ test('a missing program is an id-addressed ENOENT error, not an exit', { skip },
   const err = await settled(l, 'nx');
   assert.equal(err.type, 'error');
   assert.equal(err.code, 'ENOENT');
+  // cc reads a spawn error's diagnostics from the stream AND the message; they must agree.
+  assert.equal(textOf(l, 'nx', 'stderr'), err.message);
   exec(l, 'nd', w.remoteId, { argv: ['true'], cwd: '/definitely/not/a/dir' });
   assert.equal((await settled(l, 'nd')).code, 'ENOENT');
 });

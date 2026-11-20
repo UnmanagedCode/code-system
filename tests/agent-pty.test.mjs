@@ -64,6 +64,25 @@ test('inputAck credits exactly the bytes sent', { skip }, async (t) => {
   await waitFor(() => credited(l, 't1') === 8, { what: `8 bytes credited (got ${credited(l, 't1')})` });
 });
 
+// PINS that terminal input credit stays honest: while the program reads
+// nothing, the transport absorbs well under cc's input window (a terminal's
+// bridge keeps one chunk in flight), and every byte's credit returns once it
+// reads.
+test('input credit is not granted for a whole window the program has not read', { skip }, async (t) => {
+  const { l, cwd } = await rig(t);
+  const { PTY_INPUT_WINDOW_BYTES: W, CHUNK_BYTES } = await import('../src/launcher/protocol.mjs');
+  open(l, 't1', cwd, ['/bin/sh', '-c', `stty raw -echo; echo READY; while [ ! -e GO ]; do sleep 0.01; done; head -c ${W} >/dev/null; echo DONE`]);
+  await until(l, 't1', /READY/);
+  for (let at = 0; at < W; at += CHUNK_BYTES) {
+    l.send({ type: 'input', id: 't1', dataB64: Buffer.alloc(Math.min(CHUNK_BYTES, W - at), 0x61).toString('base64') });
+  }
+  await new Promise(r => setTimeout(r, 500));
+  assert.ok(credited(l, 't1') < W, `credited ${credited(l, 't1')} of ${W} while the program read nothing`);
+  await fs.writeFile(path.join(cwd, 'GO'), '');
+  await until(l, 't1', /DONE/);
+  await waitFor(() => credited(l, 't1') === W, { what: `all ${W} bytes credited (got ${credited(l, 't1')})` });
+});
+
 // PINS the in-order resize: no input is ever read by a program that sees a
 // size OLDER than the last resize sent before that input. Sizes are a state,
 // not a queue — the host terminal holds only its latest size, as any terminal

@@ -9,6 +9,7 @@
     "test": "node --test \"tests/*.test.mjs\" && npm run typecheck && npm run test:web",
     "conformance": "node tests/conformance.mjs",
     "conformance:docker": "node tests/conformance-docker.mjs",
+    "conformance:agent": "node tests/conformance-agent.mjs",
     "prepare": "vite build --config frontend/vite.config.ts",
     "dev": "vite --config frontend/vite.config.ts",
     "typecheck": "tsc -p frontend",

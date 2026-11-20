@@ -113,7 +113,7 @@ test('no protocol constant is restated in src/agent/* or the agent kind', () => 
   // Every code with a separator: a bare word ('busy', 'timeout') is ordinary prose.
   const strings = [...Object.values(PROTOCOL.labels), ...[...PROTOCOL.refusalCodes, ...PROTOCOL.byeCodes].filter(c => /[-_]/.test(c))]
     .map(c => `'${c}'`);
-  const numbers = ['maxPreauthLineBytes', 'maxHttpHeaderBytes', 'maxFrameBytes', 'chunkBytes', 'windowBytes']
+  const numbers = ['maxPreauthLineBytes', 'maxHttpHeaderBytes', 'maxFrameBytes', 'chunkBytes', 'windowBytes', 'ptyInputWindowBytes']
     .map(k => PROTOCOL[k]);
   for (const f of files) {
     const src = readFileSync(f, 'utf8');

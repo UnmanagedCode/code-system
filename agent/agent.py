@@ -53,6 +53,7 @@ PROTOCOL_JSON = r'''
   "maxFrameBytes": 131072,
   "chunkBytes": 65536,
   "windowBytes": 262144,
+  "ptyInputWindowBytes": 65536,
   "maxPendingHandshakes": 32,
   "maxStreamsPerSession": 256,
   "timings": {
