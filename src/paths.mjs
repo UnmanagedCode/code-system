@@ -35,3 +35,50 @@ export function quarantineDir() {
 // The launcher entry point, absolute. This is what goes in the cc System row's
 // `launch` argv, so it must not depend on the orchestrator's cwd.
 export const LAUNCHER_MAIN = path.join(HERE, 'launcher', 'main.mjs');
+
+// ── the agent kind's on-disk names ─────────────────────────────────────
+//
+// The broker (src/agent/broker.mjs) is a detached process that outlives the
+// backend and every launcher, so its rendezvous is a path every one of them
+// computes the same way: under the store, beside the remotes.
+
+const REPO = path.dirname(HERE);
+
+// The single-file Python agent the broker serves at `GET /agent.py`, and whose
+// PROTOCOL block src/agent/protocol.mjs reads.
+export const AGENT_PY = path.join(REPO, 'agent', 'agent.py');
+export const BROKER_MAIN = path.join(HERE, 'agent', 'broker.mjs');
+export const BRIDGE_MAIN = path.join(HERE, 'agent', 'bridge.mjs');
+// The directory whose *.mjs files, with AGENT_PY, make up the broker's build id.
+export const AGENT_SRC_DIR = path.join(HERE, 'agent');
+
+// 0700, refused rather than repaired when its owner or mode is wrong.
+export function agentDir() {
+  return path.join(storeRoot(), 'agent');
+}
+
+export function agentSocketPath(dir = agentDir()) {
+  return path.join(dir, 'broker.sock');
+}
+
+// Written by a broker that could not start (`{at, message}`), read only when the
+// socket does not answer, deleted by the next broker that starts.
+export function agentErrorPath(dir = agentDir()) {
+  return path.join(dir, 'broker-error.json');
+}
+
+// The broker's stdout and stderr.
+export function agentLogPath(dir = agentDir()) {
+  return path.join(dir, 'broker.log');
+}
+
+// A unix socket path has a hard length limit (sun_path: 108 bytes on Linux,
+// 104 on macOS); past it bind/connect fail with a message that names nothing.
+export const SOCKET_PATH_MAX = 100;
+
+/** Why `p` cannot be the broker's socket, or null. */
+export function socketPathDefect(p = agentSocketPath()) {
+  if (Buffer.byteLength(p) <= SOCKET_PATH_MAX) return null;
+  return `the agent listener's socket path ${JSON.stringify(p)} is longer than ${SOCKET_PATH_MAX} bytes,`
+    + ' which a unix socket cannot bind — point CODE_SYSTEM_STORE at a shorter directory';
+}

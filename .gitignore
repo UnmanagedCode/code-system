@@ -3,3 +3,4 @@ dist/
 *.log
 .conformance-tmp/
 package-lock.json
+__pycache__/
