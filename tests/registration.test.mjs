@@ -168,9 +168,17 @@ test('an unrecognised status is `error`, carrying the status and body', async (t
   assert.match(state.rows[0].message, /restarting/);
 });
 
-test('no CONDUCTOR_URL is `skipped`, not a failure — the plugin stays standalone-runnable', async () => {
+// Drives the REAL env fallback (`register()` with no conductorUrl reads
+// process.env.CONDUCTOR_URL) with the variable set by the test itself, and a
+// fetch that fails the test if called at all — so a session whose environment
+// points CONDUCTOR_URL at a live cc can never have its System rows rewritten.
+test('no CONDUCTOR_URL is `skipped`, not a failure — the plugin stays standalone-runnable', async (t) => {
+  const prior = process.env.CONDUCTOR_URL;
+  t.after(() => { if (prior === undefined) delete process.env.CONDUCTOR_URL; else process.env.CONDUCTOR_URL = prior; });
+  const fetchImpl = async (url) => { throw new Error(`register() fetched ${url} with no CONDUCTOR_URL`); };
   for (const url of [undefined, '', '   ']) {
-    const state = await register({ conductorUrl: url });
+    if (url === undefined) delete process.env.CONDUCTOR_URL; else process.env.CONDUCTOR_URL = url;
+    const state = await register({ fetchImpl });
     assert.equal(state.state, 'skipped');
     assert.match(state.detail, /CONDUCTOR_URL/);
     assert.deepEqual(state.rows, []);

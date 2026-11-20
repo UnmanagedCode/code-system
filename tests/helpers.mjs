@@ -171,10 +171,18 @@ export async function pinTestEnv(t, env = {}) {
     // ssh's ControlPath lives under TMPDIR, and `connect` creates that
     // directory. Per-test so two runs cannot share a socket path.
     TMPDIR: store.dir,
+    // UNSET, never inherited: `runRegistration` (POST /registration/retry) and
+    // DELETE's `projectsNaming` default to it, and a session that runs the
+    // suite inside a live cc has it pointed at that cc — whose System rows a
+    // registration would rewrite to this checkout. `undefined` deletes.
+    CONDUCTOR_URL: undefined,
     ...env,
   };
   const prior = {};
-  for (const [k, v] of Object.entries(set)) { prior[k] = process.env[k]; process.env[k] = v; }
+  for (const [k, v] of Object.entries(set)) {
+    prior[k] = process.env[k];
+    if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  }
   t.after(async () => {
     for (const [k, v] of Object.entries(prior)) {
       if (v === undefined) delete process.env[k]; else process.env[k] = v;
