@@ -80,10 +80,20 @@ export function agentEnv(store, extra = {}) {
 const live = new Set();
 process.on('exit', () => { for (const c of live) { try { process.kill(-c.pid, 'SIGKILL'); } catch { /* gone */ } } });
 
-function track(t, child) {
+// `graceful`: SIGTERM first — an agent ends every command of its session on
+// SIGTERM, while a SIGKILLed agent strands them (the documented hole) — then
+// SIGKILL whatever is left.
+function track(t, child, { graceful = false } = {}) {
   live.add(child);
-  child.on('exit', () => live.delete(child));
-  t.after(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } });
+  let exited = false;
+  child.on('exit', () => { exited = true; live.delete(child); });
+  t.after(async () => {
+    if (graceful && !exited) {
+      try { child.kill('SIGTERM'); } catch { /* gone */ }
+      for (let i = 0; i < 40 && !exited; i++) await new Promise(r => setTimeout(r, 25));
+    }
+    try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ }
+  });
   return child;
 }
 
@@ -121,7 +131,7 @@ export function startAgent(t, { address, remoteId, secret, env = {}, args = [] }
     env: { ...process.env, CODE_SYSTEM_AGENT_SECRET: secret, CODE_SYSTEM_AGENT_TIMINGS: JSON.stringify(FAST), ...env },
     stdio: ['ignore', 'ignore', 'pipe'],
     detached: true,
-  }));
+  }), { graceful: true });
   child.stderr.on('data', b => { stderr += b; });
   return { child, pid: child.pid, stderr: () => stderr };
 }

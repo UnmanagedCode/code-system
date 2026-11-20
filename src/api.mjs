@@ -2,6 +2,7 @@
 // card — the gate and the probe both — for this surface and for the MCP one.
 
 import express from 'express';
+import { brokerStatus } from './agent/supervisor.mjs';
 import { unknownBaseline } from './baseline.mjs';
 import { cardFor, publicRecord, remoteCards } from './cards.mjs';
 import {
@@ -61,6 +62,14 @@ export function createApi(deps = {}) {
   r.get('/health', (_req, res) => res.json({ ok: true, kinds: REGISTERED_KINDS }));
 
   r.get('/registration', (_req, res) => res.json(registrationState()));
+
+  // THE AGENT LISTENER, for the page's status line: where it listens, whether
+  // it runs (or why not), and the agents it refused for a remote id no card
+  // has. Never a secret.
+  r.get('/agent/broker', async (_req, res, next) => {
+    try { res.json(await brokerStatus()); }
+    catch (e) { next(e); }
+  });
 
   // THE ONLY RETRY, and it is user-driven. No timer, no backoff loop, no
   // restart-on-failure.

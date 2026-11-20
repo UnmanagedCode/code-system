@@ -82,7 +82,9 @@ async function ensureOnce({ spawnImpl = spawn, listen = desiredListen() } = {}) 
   if (pong) {
     // A broker on another address or older code: stop it and start ours.
     try { await queryBroker(sock, { t: 'stop' }, { timeoutMs: 1000 }); } catch { /* it may already be going */ }
-    for (let waited = 0; waited < START_BUDGET_MS && (await ping(sock)) !== null; waited += POLL_MS) await sleep(POLL_MS);
+    for (let waited = 0; waited < START_BUDGET_MS && (await ping(sock).catch(() => null)) !== null; waited += POLL_MS) {
+      await sleep(POLL_MS);
+    }
   }
 
   const child = startDetached(spawnImpl, listen);

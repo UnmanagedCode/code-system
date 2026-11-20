@@ -1,6 +1,7 @@
 // Wiring only: migrate → build the app → listen on loopback → register.
 // Feature logic lives in its own module; the HTTP app is src/http.mjs.
 
+import { initAgentBroker } from './src/agent/supervisor.mjs';
 import { createApp } from './src/http.mjs';
 import { migrate } from './src/migrate.mjs';
 import { runRegistration } from './src/registration.mjs';
@@ -22,6 +23,9 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   // AFTER listen and never blocking startup: a conductor that cannot be reached
   // must not stop the plugin from serving its own UI.
   void runRegistration({ log: msg => console.log(msg) });
+  // The agent kind's listener: started detached, only while an agent remote
+  // exists, and adopted rather than restarted when one already runs.
+  initAgentBroker({ log: msg => console.log(msg) });
 });
 
 for (const sig of ['SIGTERM', 'SIGINT']) {

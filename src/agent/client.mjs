@@ -41,7 +41,10 @@ export function queryBroker(socketPath, frame, { timeoutMs = 2000 } = {}) {
       }
     });
     sock.on('error', (e) => {
-      if (['ENOENT', 'ECONNREFUSED', 'ENOTSOCK'].includes(e.code)) done(new BrokerDown('the agent listener is not running'));
+      // A reset or a broken pipe is a broker that died (or is stopping) mid-answer.
+      if (['ENOENT', 'ECONNREFUSED', 'ENOTSOCK', 'ECONNRESET', 'EPIPE'].includes(e.code)) {
+        done(new BrokerDown('the agent listener is not running'));
+      }
       else done(e);
     });
     sock.on('close', () => done(new BrokerDown('the agent listener closed the connection without answering')));
