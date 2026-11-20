@@ -12,8 +12,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { kindDescriptors } from '../src/launcher/kinds/index.mjs';
 import {
+  agentCommands, brokerLine, fillGenerated, generatedSent,
   GATE_COPY, STRIPE_COUNT, baselineNotice, gateCopy, own, cardAlert, configPayload, createDraft, editDraft, fieldLabel, gateStatus,
   mirrorDraft, mirrorPayload, mirrorSummary, probeStatus, advancedOpenOnEdit, advancedSummary, registrationView,
   remotePath, routeFromSearch, searchForRoute, stripeClass, submitRequest, switchKind,
@@ -428,4 +430,47 @@ test('a prototype-named kind gets the defaults, never an inherited member', () =
   assert.equal(gateCopy('ssh'), GATE_COPY.ssh, 'an own entry is still found');
   assert.equal(gateCopy('docker'), null);
   assert.equal(own({ a: 1 }, 'a'), 1);
+});
+
+// ── the agent kind ──────────────────────────────────────────────────
+
+const AGENT_DESC = kindDescriptors().find(d => d.kind === 'agent');
+
+// PINS: Create fills ONLY an empty generated field, through the injected
+// generator, and the secret it sent is what the page reveals.
+test('fillGenerated fills empty generated fields; generatedSent reads back what was sent', () => {
+  let n = 0;
+  const gen = () => `gen${++n}`;
+  const filled = fillGenerated({ config: {} }, AGENT_DESC, gen);
+  assert.deepEqual(filled.config, { secret: 'gen1' });
+  assert.deepEqual(fillGenerated({ config: { secret: 'kept' } }, AGENT_DESC, gen).config, { secret: 'kept' });
+  assert.deepEqual(fillGenerated({ config: {} }, kindDescriptors().find(d => d.kind === 'docker'), gen).config, {},
+    'a kind with no generated field is untouched');
+  assert.equal(generatedSent({ config: { secret: 'abc' } }, AGENT_DESC), 'abc');
+  assert.equal(generatedSent({ config: {} }, AGENT_DESC), null, 'an edit that kept the secret reveals nothing');
+  const req = submitRequest('create', { remoteId: 'a', kind: 'agent', label: '', config: { secret: 'S' }, mirror: null }, AGENT_DESC);
+  assert.equal(generatedSent(req.body, AGENT_DESC), 'S', 'a generated secret survives configPayload untrimmed');
+});
+
+// PINS the start commands: the secret rides the environment, single-quoted,
+// never argv; an operator-typed dial address cannot break out of its word.
+test('agentCommands quotes every variable part and keeps the secret out of argv', () => {
+  const c = agentCommands({ dial: '127.0.0.1:7420', remoteId: 'box', secret: 'Se_cr-et' });
+  assert.equal(c.curl,
+    "curl -fsS http://127.0.0.1:7420/agent.py | CODE_SYSTEM_AGENT_SECRET='Se_cr-et' python3 - --connect 127.0.0.1:7420 --remote box");
+  assert.match(c.checkout, /^CODE_SYSTEM_AGENT_SECRET='Se_cr-et' make -C \S+ agent ARGS='--connect 127\.0\.0\.1:7420 --remote box'$/);
+  const evil = agentCommands({ dial: "x'; rm -rf / #", remoteId: 'box', secret: 's' });
+  // The shell parses the dial back to exactly what was typed.
+  const words = execFileSync('/bin/sh', ['-c', `printf '%s\\n' ${evil.curl.split(' | ')[1].split(' --connect ')[1].split(' --remote')[0]}`], { encoding: 'utf8' });
+  assert.equal(words, "x'; rm -rf / #\n");
+});
+
+test('brokerLine says where the listener runs, or why not, with refusals', () => {
+  assert.equal(brokerLine(null), null);
+  assert.deepEqual(brokerLine({ listen: '0.0.0.0:7420', running: true, address: '0.0.0.0:7420', refusals: [] }),
+    { level: 'ok', text: 'Agent listener on 0.0.0.0:7420', refusals: [] });
+  const down = brokerLine({ listen: 'h:1', running: false, error: 'port in use', refusals: [{ remoteId: 'g', reason: 'unknown-remote', peer: 'p:1', at: 'T' }] });
+  assert.equal(down.level, 'err');
+  assert.match(down.text, /port in use/);
+  assert.deepEqual(down.refusals, ["T p:1 'g': unknown-remote"]);
 });

@@ -10,12 +10,15 @@ import { DeleteDialog } from '@/components/DeleteDialog';
 import { RegistrationPanel, type Notice } from '@/components/RegistrationPanel';
 import { BrokenCard, RemoteCard, type CardAction } from '@/components/RemoteCard';
 import { RemoteForm } from '@/components/RemoteForm';
+import { AgentCommand } from '@/components/AgentCommand';
+import { newSecret } from '@/lib/agentSecret';
 import { api, json } from '@/lib/api';
 import {
-  NEW_KEY, REG_KEY, createDraft, editDraft, remotePath, routeFromSearch, searchForRoute, submitRequest,
+  NEW_KEY, REG_KEY, createDraft, editDraft, fillGenerated, generatedSent, remotePath, routeFromSearch, searchForRoute,
+  submitRequest,
 } from '@/lib/cardState.mjs';
 import { useRemotes } from '@/lib/useRemotes';
-import type { Draft, FormMode, WorkingRemote } from '@/lib/types';
+import type { Draft, FormMode, Revealed, WorkingRemote } from '@/lib/types';
 
 type Route = ReturnType<typeof routeFromSearch>;
 type Busy = ReadonlyMap<string, CardAction | 'retry'>;
@@ -39,6 +42,9 @@ export function App() {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState<Busy>(new Map());
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  // A secret this page generated and the backend accepted, for the one card that shows its command.
+  // In memory only: the API never returns it, so a reload loses it by design.
+  const [revealed, setRevealed] = useState<Revealed | null>(null);
   const addTitleId = useId();
 
   // `history.replaceState`, never pushState and never the hash: cc's bridge demotes pushState anyway,
@@ -97,11 +103,15 @@ export function App() {
   const submitForm = async (mode: FormMode) => {
     if (!draft) return;
     const key = mode === 'create' ? NEW_KEY : draft.remoteId;
-    const req = submitRequest(mode, draft, descriptorFor(draft.kind));
+    const descriptor = descriptorFor(draft.kind);
+    const filled = mode === 'create' ? fillGenerated(draft, descriptor, newSecret) : draft;
+    const req = submitRequest(mode, filled, descriptor);
     setFormError(null);
     markBusy(key, 'submit');
     try {
       await api(req.path, json(req.method, req.body));
+      const secret = generatedSent(req.body, descriptor);
+      if (secret) setRevealed({ remoteId: mode === 'create' ? String(req.body.remoteId) : draft.remoteId, secret });
       go({ view: 'list' }, null);
     } catch (e) {
       setFormError(message(e));
@@ -143,6 +153,7 @@ export function App() {
           registration={data.registration}
           retrying={busy.has(REG_KEY)}
           onRetry={() => void runAction(REG_KEY, 'retry', async () => { await api('api/registration/retry', json('POST')); })}
+          broker={data.broker}
         />
 
         <div className="flex items-center gap-2">
@@ -211,6 +222,14 @@ export function App() {
                         onEdit={() => go({ view: 'edit', remoteId: id }, editDraft(r, descriptorFor(r.kind), data.mirrorDefaults))}
                         onDelete={onDelete}
                       >
+                        {revealed?.remoteId === id && data.broker && (
+                          <AgentCommand
+                            remoteId={id}
+                            secret={revealed.secret}
+                            dialDefault={data.broker.dialDefault}
+                            onDismiss={() => setRevealed(null)}
+                          />
+                        )}
                         {editingThis && form('edit')}
                       </RemoteCard>
                     )}

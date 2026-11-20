@@ -48,6 +48,9 @@ export function gateStatus(remote) {
 // tests/cardstate.test.mjs asserts every entry present names a kind the
 // backend actually serves, so a removed kind cannot leave dead text behind.
 export const GATE_COPY = {
+  agent:
+    'The agent dials in by itself, whether or not this remote is enabled. Enabling lets commands'
+    + ' reach it; disabling refuses them and leaves the agent connected.',
   ssh:
     'Enabling also opens one authenticated SSH connection for commands to share. Disabling closes'
     + ' it and stops commands — the gate is what stops them, not the connection.',
@@ -65,6 +68,7 @@ export function gateCopy(kind) {
 // ControlPath, for docker the image and start time, and those are what an
 // operator acts on.
 const PROBE_WORDS = {
+  agent: { ok: 'agent connected', down: 'no agent connected' },
   docker: { ok: 'running', down: 'container not running' },
   ssh: { ok: 'shared connection up', down: 'shared connection down' },
 };
@@ -88,6 +92,9 @@ export function probeStatus(remote) {
 // probe says no. Each says what is actually lost — and for docker, what
 // code-system will not do about it.
 const DISAGREEMENT = {
+  agent:
+    'No agent is connected, so commands are refused. Start the agent on the target machine — the'
+    + ' command is shown when a secret is generated (Edit → Generate new secret).',
   docker:
     'The container is not running. code-system is attach-only and never starts one:'
     + ' start it yourself and it will show here on the next refresh.',
@@ -452,6 +459,76 @@ export function submitRequest(mode, draft, descriptor) {
     path: remotePath(draft.remoteId),
     body: { label: draft.label, config, ...(mirror !== undefined ? { mirror } : {}) },
   };
+}
+
+// ── generated secrets (the agent kind) ───────────────────────────────
+
+/**
+ * Fill every EMPTY generated field (`generated: true`) with `gen()`. The page
+ * calls it on Create, so a new agent remote always carries a secret; `gen` is
+ * a parameter so this stays pure (lib/agentSecret.ts is the real one).
+ * @template {{config:Record<string,unknown>}} D
+ * @param {D} draft
+ * @param {{configFields?:{name:string, generated?:boolean}[]}|null|undefined} descriptor
+ * @param {() => string} gen
+ * @returns {D}
+ */
+export function fillGenerated(draft, descriptor, gen) {
+  const config = { ...draft.config };
+  for (const f of descriptor?.configFields ?? []) {
+    if (f.generated === true && !config[f.name]) config[f.name] = gen();
+  }
+  return { ...draft, config };
+}
+
+/**
+ * The generated secret a request body carries, or null — what the page shows
+ * ONCE, after the backend accepted it. The API never returns it again.
+ * @param {{config?:Record<string,unknown>}} body
+ * @param {{configFields?:{name:string, generated?:boolean}[]}|null|undefined} descriptor
+ * @returns {string|null}
+ */
+export function generatedSent(body, descriptor) {
+  for (const f of descriptor?.configFields ?? []) {
+    const v = body?.config?.[f.name];
+    if (f.generated === true && typeof v === 'string' && v) return v;
+  }
+  return null;
+}
+
+// A shell word: bare when it cannot be misread, single-quoted otherwise.
+const shq = (s) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, `'\\''`)}'`);
+
+/**
+ * The two ways to start an agent, as copyable commands. The secret is single-
+ * quoted and travels in the environment, never in the agent's argv. `dial` is
+ * the address the TARGET machine reaches the listener on — operator-editable,
+ * so it is quoted like everything else.
+ * @param {{dial:string, remoteId:string, secret:string}} o
+ * @returns {{curl:string, checkout:string}}
+ */
+export function agentCommands({ dial, remoteId, secret }) {
+  const env = `CODE_SYSTEM_AGENT_SECRET='${secret}'`;
+  const args = `--connect ${shq(dial)} --remote ${shq(remoteId)}`;
+  return {
+    curl: `curl -fsS ${shq(`http://${dial}/agent.py`)} | ${env} python3 - ${args}`,
+    checkout: `${env} make -C path/to/code-system agent ARGS=${shq(args)}`,
+  };
+}
+
+/**
+ * The page's listener line, when an agent remote exists: where it listens and
+ * whether it runs (or the reason it does not, verbatim), plus agents refused
+ * for a remote id no card has.
+ * @param {{listen:string, running:boolean, address?:string, error?:string,
+ *          refusals?:{remoteId:string, reason:string, peer:string, at:string}[]}|null|undefined} b
+ * @returns {null|{level:'ok'|'err', text:string, refusals:string[]}}
+ */
+export function brokerLine(b) {
+  if (!b || typeof b.listen !== 'string') return null;
+  const refusals = (b.refusals ?? []).map(r => `${r.at} ${r.peer} '${r.remoteId}': ${r.reason}`);
+  if (b.running) return { level: 'ok', text: `Agent listener on ${b.address ?? b.listen}`, refusals };
+  return { level: 'err', text: `Agent listener not running (${b.listen}): ${b.error ?? 'unknown reason'}`, refusals };
 }
 
 // ── registration ─────────────────────────────────────────────────────

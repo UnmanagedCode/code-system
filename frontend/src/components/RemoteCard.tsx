@@ -1,5 +1,5 @@
 import { useId, type ReactNode } from 'react';
-import { BoxIcon, LoaderCircleIcon, TerminalIcon } from 'lucide-react';
+import { BoxIcon, LoaderCircleIcon, RadioTowerIcon, TerminalIcon } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -12,7 +12,7 @@ import { DANGER_BUTTON, DOT, GATE_ON_BUTTON, TONE } from '@/lib/tone';
 import { cn } from '@/lib/utils';
 import type { BrokenRemote, KindDescriptor, WorkingRemote } from '@/lib/types';
 
-const KIND_ICON: Record<string, typeof BoxIcon> = { docker: BoxIcon, ssh: TerminalIcon };
+const KIND_ICON: Record<string, typeof BoxIcon> = { docker: BoxIcon, ssh: TerminalIcon, agent: RadioTowerIcon };
 const BASELINE_BADGE: Record<string, 'success' | 'destructive'> = { ok: 'success', unsupported: 'destructive' };
 
 /** What a card's action is busy with, so that one button shows the spinner. */
