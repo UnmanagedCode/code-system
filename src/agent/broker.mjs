@@ -16,7 +16,9 @@
 import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { SCHEMA, isValidRemoteId, listRemotes, parseRemote, readRemoteText } from '../store.mjs';
-import { agentDir, agentErrorPath, agentSocketPath, socketPathDefect } from '../paths.mjs';
+import {
+  agentDir, agentErrorPath, agentHandshakeDummyPath, agentHandshakeMissPath, agentSocketPath, socketPathDefect,
+} from '../paths.mjs';
 import { lineSafe } from '../lineSafe.mjs';
 import { ensureAgentDir, queryBroker } from './client.mjs';
 import { createControlServer } from './control.mjs';
@@ -38,20 +40,43 @@ const log = (msg) => {
 const DUMMY_REMOTE_ID = '0-no-such-remote';
 // MAC'd against when no secret was found, so every refusal costs one HMAC.
 const DUMMY_SECRET = 'x'.repeat(43);
-// PARSED when no record was read, so every refusal costs one parse too.
-const DUMMY_RECORD_TEXT = JSON.stringify({
+// READ AND PARSED when no record was read, so a refusal for a remote that does
+// not exist costs a successful read and a parse of a record-sized file, as one
+// that exists does: a failing open is ~30 µs cheaper than a successful one,
+// and that difference alone told the two apart. Written the way the store
+// writes a record (indented JSON), so it is about a record's size.
+const DUMMY_RECORD_TEXT = `${JSON.stringify({
   schema: SCHEMA, remoteId: DUMMY_REMOTE_ID, kind: 'agent', label: DUMMY_REMOTE_ID, config: { secret: DUMMY_SECRET },
-  enabled: false, mirror: null, baseline: { state: 'unknown', fingerprint: null, missing: [], checkedAt: null },
+  enabled: false, mirror: { root: '/', exclude: ['/proc', '/sys', '/dev'] },
+  baseline: { state: 'unknown', fingerprint: null, missing: [], checkedAt: null },
   createdAt: '1970-01-01T00:00:00.000Z', updatedAt: '1970-01-01T00:00:00.000Z',
-});
+}, null, 2)}\n`;
+
+/**
+ * Write the handshake dummy, and make sure its never-existing twin does not
+ * exist (at broker startup; tests call it for an in-process Broker).
+ */
+export async function writeHandshakeDummy(dir = agentDir()) {
+  await fs.writeFile(agentHandshakeDummyPath(dir), DUMMY_RECORD_TEXT, { mode: 0o600 });
+  await fs.rm(agentHandshakeMissPath(dir), { force: true });
+}
+
+/** Read the handshake dummy ('dummy', which exists) or its twin ('miss', which never does). */
+const readHandshakeFile = which => fs.readFile(which === 'dummy' ? agentHandshakeDummyPath() : agentHandshakeMissPath(), 'utf8')
+  .then(text => ({ ok: true, text }), () => ({ ok: false }));
 
 export class Broker {
   /**
-   * `readImpl` / `parseImpl` are the store's read and parse halves — seams so a
-   * test can count that every handshake does exactly one of each.
+   * `readImpl` / `parseImpl` are the store's read and parse halves, and
+   * `readHandshakeImpl` reads the handshake dummy or its never-existing twin —
+   * seams so a test can count that every handshake does exactly one successful
+   * read, one failing read and one parse.
    */
-  constructor({ listen, address, build, tim, readImpl = readRemoteText, parseImpl = parseRemote }) {
+  constructor({
+    listen, address, build, tim, readImpl = readRemoteText, parseImpl = parseRemote, readHandshakeImpl = readHandshakeFile,
+  }) {
     this.readImpl = readImpl;
+    this.readHandshakeImpl = readHandshakeImpl;
     this.parseImpl = parseImpl;
     this.listen = listen;
     this.address = address;
@@ -69,15 +94,25 @@ export class Broker {
 
   /**
    * The secret to verify a handshake against, or why there is none. EVERY path
-   * does exactly one store read (an id that cannot name a record reads a dummy
-   * one) and one parse (of an in-memory dummy record when nothing was read),
-   * and the caller MACs against a dummy secret when none is found — so the work
-   * a refusal costs does not say whether the remote exists.
+   * does exactly ONE SUCCESSFUL READ, ONE FAILING READ and ONE PARSE, so the
+   * work — and the wall-clock time — a refusal costs does not say whether the
+   * remote exists:
+   *   existing  the record (read, parsed), then the never-existing twin (fails);
+   *   absent    the record (fails), then the dummy (read, parsed);
+   *   invalid   the twin (fails), then the dummy (read, parsed).
+   * The caller then MACs against a dummy secret when none was found.
    */
   async lookupSecret(remoteId) {
     const valid = isValidRemoteId(remoteId);
-    const read = await this.readImpl(valid ? remoteId : DUMMY_REMOTE_ID);
-    const r = read.ok ? this.parseImpl(remoteId, read.text) : this.parseImpl(DUMMY_REMOTE_ID, DUMMY_RECORD_TEXT);
+    const read = valid ? await this.readImpl(remoteId) : await this.readHandshakeImpl('miss');
+    let r;
+    if (valid && read.ok) {
+      await this.readHandshakeImpl('miss');
+      r = this.parseImpl(remoteId, read.text);
+    } else {
+      const dummy = await this.readHandshakeImpl('dummy');
+      r = this.parseImpl(DUMMY_REMOTE_ID, dummy.ok ? dummy.text : DUMMY_RECORD_TEXT);
+    }
     if (!valid || !read.ok || !r.ok) return { reason: 'unknown-remote' };
     if (r.record.kind !== AGENT_KIND) return { reason: 'not-an-agent-remote' };
     const secret = r.record.config?.secret;
@@ -271,6 +306,7 @@ export async function runBroker(argv) {
   }
   await fs.chmod(sockPath, 0o600).catch(() => {});
   const ino = (await fs.stat(sockPath)).ino;
+  await writeHandshakeDummy(dir);
   await fs.rm(agentErrorPath(dir), { force: true });
   log(`listening on ${broker.address} (asked for ${opts.listen}), control ${sockPath}, build ${broker.build}`);
 

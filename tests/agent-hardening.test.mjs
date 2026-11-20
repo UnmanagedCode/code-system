@@ -131,8 +131,20 @@ test('an agent that acks input it never reads pauses the sending bridge', async 
   }
   assert.equal(ctl.closed, false, 'the stream was paused, not ended (so not stopped by its credit)');
   assert.ok(sent < OFFERED, `the bridge was stopped: ${sent} of ${OFFERED} bytes left it`);
+  assert.ok(sent >= PROTOCOL.windowBytes, `but not before a window had passed: ${sent}`);
   assert.ok(rss() - rssBefore < 32 * 1024, `broker RSS grew ${rss() - rssBefore} kB for ${sent} bytes offered`);
   assert.equal((await status(w.broker.sock, w.remoteId)).connected, true);
+
+  // Round 4, item 3. PINS that the pause is LIFTED when the agent's socket
+  // drains: once the agent reads again, a uniquely marked frame queued behind
+  // the stall reaches it. Without the resume, input would deadlock for good.
+  const mark = Buffer.from(`MARK-${newNonce()}`).toString('base64');
+  ctl.send({ t: 'in', b64: mark });
+  agent.send({ t: 'ack', s: open.s, fd: 0, n: Number.MAX_SAFE_INTEGER });
+  agent.sock.resume();
+  const got = await agent.waitFor(f => f.t === 'in' && f.b64 === mark, { what: 'the marked frame', timeoutMs: 8000 });
+  assert.equal(got.s, open.s);
+  assert.equal(agent.frames.filter(f => f.t === 'in' && f.b64 === mark).length, 1, 'exactly once');
 });
 
 // Item 1b (round 3). PINS the broker's INPUT credit check: a bridge that sends
@@ -268,20 +280,30 @@ test('a broker that loses the bind race to a live one leaves no error file', asy
 // A10. PINS: every authentication failure costs the same work — one HMAC —
 // whether the remote exists, is another kind, is not a valid id, or has a
 // different secret. The success path costs the same one.
-// Item 3 (round 3): and exactly one store read and one parse — of an in-memory
-// dummy record when nothing was read — so the work matches, not only the HMACs.
-test('authenticate runs exactly one store read, one parse and one HMAC on every path', async (t) => {
+// Item 3 (rounds 3-4). PINS that the WORK matches on every handshake path —
+// valid, wrong secret, unknown, another kind, an invalid id: exactly one
+// SUCCESSFUL read (the record, or the record-sized handshake dummy), exactly one
+// FAILING read (the twin that never exists, or the missing record), one parse
+// and one HMAC. Counted through the broker's read/parse seams, over real files.
+test('authenticate does one good read, one failing read, one parse and one HMAC on every path', async (t) => {
   const store = await pinTestEnv(t);
   const secret = newSecret();
   await writeRecord(store.dir, agentRecord('ag', secret));
   await writeRecord(store.dir, record('dk', { kind: 'docker', config: { container: 'c' } }));
-  const { Broker } = await import('../src/agent/broker.mjs');
+  const { Broker, writeHandshakeDummy } = await import('../src/agent/broker.mjs');
   const { verifyMac } = await import('../src/agent/protocol.mjs');
   const { readRemoteText, parseRemote } = await import('../src/store.mjs');
-  const count = { read: 0, parse: 0 };
+  const { promises: fsp } = await import('node:fs');
+  const agentDir = path.join(store.dir, 'agent');
+  await fsp.mkdir(agentDir, { mode: 0o700 });
+  await writeHandshakeDummy(agentDir);
+  const count = { ok: 0, fail: 0, parse: 0 };
+  const tally = r => { count[r.ok ? 'ok' : 'fail'] += 1; return r; };
+  const real = new Broker({ listen: 'x', address: 'x', build: 'x', tim: FAST });
   const b = new Broker({
     listen: 'x', address: 'x', build: 'x', tim: FAST,
-    readImpl: (id) => { count.read += 1; return readRemoteText(id); },
+    readImpl: async id => tally(await readRemoteText(id)),
+    readHandshakeImpl: async which => tally(await real.readHandshakeImpl(which)),
     parseImpl: (id, text) => { count.parse += 1; return parseRemote(id, text); },
   });
   const nb = newNonce();
@@ -290,12 +312,45 @@ test('authenticate runs exactly one store read, one parse and one HMAC on every 
   for (const [remoteId, m, ok] of [['ag', good, true], ['ag', 'ab', false], ['nobody', good, false],
     ['dk', good, false], ['NOT VALID!', good, false]]) {
     let calls = 0;
-    count.read = 0;
-    count.parse = 0;
+    Object.assign(count, { ok: 0, fail: 0, parse: 0 });
     const verify = (...a) => { calls += 1; return verifyMac(...a); };
     const r = await b.authenticate({ remoteId, nb, na, mac: m }, verify);
     assert.equal(r.ok, ok, remoteId);
-    assert.deepEqual({ ...count, hmac: calls }, { read: 1, parse: 1, hmac: 1 }, remoteId);
+    assert.deepEqual({ ...count, hmac: calls }, { ok: 1, fail: 1, parse: 1, hmac: 1 }, remoteId);
+  }
+});
+
+// Item 1 (round 4). PINS the wall-clock result: over interleaved samples, the
+// median handshake check for an absent and for an invalid remote id is within
+// a coarse band of the median for one that exists. The band is far wider than
+// the measured spread (all within 3%) and far narrower than the gap it guards
+// against (a missing file's failing open alone is ~0.5-0.8x a present one's
+// successful read): interleaving makes system load hit every class alike.
+test('authenticate takes about as long for an absent or invalid remote as for an existing one', async (t) => {
+  const store = await pinTestEnv(t);
+  await writeRecord(store.dir, agentRecord('ag', newSecret()));
+  const { Broker, writeHandshakeDummy } = await import('../src/agent/broker.mjs');
+  const { promises: fsp } = await import('node:fs');
+  const agentDir = path.join(store.dir, 'agent');
+  await fsp.mkdir(agentDir, { mode: 0o700 });
+  await writeHandshakeDummy(agentDir);
+  const b = new Broker({ listen: 'x', address: 'x', build: 'x', tim: FAST });
+  const nb = newNonce();
+  const na = newNonce();
+  const classes = { existing: 'ag', absent: 'nobody', invalid: 'NOT VALID!' };
+  const samples = { existing: [], absent: [], invalid: [] };
+  for (let i = 0; i < 1500; i++) {
+    for (const [k, remoteId] of Object.entries(classes)) {
+      const at = process.hrtime.bigint();
+      await b.authenticate({ remoteId, nb, na, mac: 'ab' });
+      samples[k].push(Number(process.hrtime.bigint() - at));
+    }
+  }
+  const median = v => v.sort((x, y) => x - y)[v.length >> 1];
+  const base = median(samples.existing);
+  for (const k of ['absent', 'invalid']) {
+    const ratio = median(samples[k]) / base;
+    assert.ok(ratio > 0.85 && ratio < 1.18, `${k}/existing median ratio ${ratio.toFixed(2)}`);
   }
 });
 
@@ -451,4 +506,23 @@ test('between ticks, a rotated secret is refused per open and not reachable', { 
   assert.equal(now.connected, false);
   assert.match(now.detail, /previous secret/);
   assert.equal((await k.reachability({ secret: w.secret }, { remoteId: w.remoteId })).connected, true);
+});
+
+// Round 4, item 6. PINS the broker's end of no-Nagle: every agent session's
+// socket has TCP_NODELAY set (frames are small and interactive).
+test('an agent session disables Nagle on its socket', async () => {
+  const { EventEmitter } = await import('node:events');
+  const { AgentSession } = await import('../src/agent/session.mjs');
+  const { LineDecoder } = await import('../src/agent/protocol.mjs');
+  const calls = [];
+  const sock = Object.assign(new EventEmitter(), {
+    setKeepAlive: () => {}, setNoDelay: v => calls.push(v), write: () => true, end: () => {}, destroy: () => {},
+    writableNeedDrain: false,
+  });
+  const s = new AgentSession({
+    socket: sock, decoder: new LineDecoder(1), remoteId: 'r', sessionId: 'ab', keyId: 'cd', peer: 'p',
+    tim: FAST, log: () => {}, onEnd: () => {},
+  });
+  s.end('shutdown', 'test over');
+  assert.deepEqual(calls, [true]);
 });

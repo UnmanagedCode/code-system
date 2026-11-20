@@ -15,7 +15,7 @@ import { pinTestEnv, withApi, writeRecord } from './helpers.mjs';
 import {
   FAST, agentRecord, agentStore, newSecret, removeRecord, startBroker, waitFor,
 } from './agentFixture.mjs';
-import { brokerPidDefect, ensureBroker, retire, stopBroker } from '../src/agent/supervisor.mjs';
+import { brokerPidDefect, ensureBroker, isAlive, retire, stopBroker } from '../src/agent/supervisor.mjs';
 import { queryBroker } from '../src/agent/client.mjs';
 import { createAgentTransport } from '../src/launcher/kinds/agent.mjs';
 
@@ -284,4 +284,27 @@ test('brokerPidDefect names a missing /proc, an unreadable cmdline and a gone pi
   await fs.mkdir(path.join(dir, '4242424', 'cmdline'), { recursive: true });
   assert.match(brokerPidDefect(4242424, { procDir: dir }), /command line is unreadable \(EISDIR\)/);
   assert.match(brokerPidDefect(4242425, { procDir: dir }), /is not running/);
+});
+
+// Round 4, item 4. PINS isAlive's "can't tell" branch: with the probe saying
+// the pid exists, a missing stat entry is GONE only where /proc exists; with no
+// /proc at all, or an entry that cannot be read, it is ALIVE — so the
+// supervisor never takes "can't tell" for "gone" and starts a second broker.
+// The probe is injected: nothing is sent to the fabricated pids.
+test('isAlive reads "cannot tell" as alive, and only a confirmed absence as gone', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cs-fakeproc-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const probe = () => {};
+  assert.equal(isAlive(4242424, { procDir: dir, probe }), true, 'no /proc: cannot tell, so alive');
+  await fs.mkdir(path.join(dir, 'self'));
+  assert.equal(isAlive(4242424, { procDir: dir, probe }), false, '/proc present, no entry: gone');
+  await fs.mkdir(path.join(dir, '4242425'));
+  await fs.writeFile(path.join(dir, '4242425', 'stat'), '4242425 (node) S 1 1 1');
+  await fs.chmod(path.join(dir, '4242425', 'stat'), 0);
+  // Root reads a mode-0 file anyway, so the EACCES case needs an ordinary user.
+  if (process.getuid() !== 0) assert.equal(isAlive(4242425, { procDir: dir, probe }), true, 'unreadable entry (EACCES): alive');
+  await fs.chmod(path.join(dir, '4242425', 'stat'), 0o600);
+  await fs.writeFile(path.join(dir, '4242425', 'stat'), '4242425 (node) Z 1 1 1');
+  assert.equal(isAlive(4242425, { procDir: dir, probe }), false, 'a zombie: gone');
+  assert.equal(isAlive(4242425, { procDir: dir, probe: () => { throw Object.assign(new Error('x'), { code: 'ESRCH' }); } }), false);
 });

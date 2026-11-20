@@ -114,12 +114,18 @@ export function brokerPidDefect(pid, { store = storeRoot(), self = process.pid, 
   return null;
 }
 
-// A zombie answers kill(pid, 0) — a probe; signal 0 delivers nothing — but
-// holds no port and no socket: gone. Where /proc cannot say, it is alive.
-const isAlive = (pid) => {
-  try { process.kill(pid, 0); } catch (e) { return e.code === 'EPERM'; }
-  try { return !/\) Z /.test(readProc(pid, 'stat')); } catch (e) { return e.code !== 'ENOENT' || !existsSync(`${PROC}/self`); }
-};
+/**
+ * Whether `pid` is still running. A zombie answers kill(pid, 0) — a probe;
+ * signal 0 delivers nothing — but holds no port and no socket: gone. Where
+ * /proc cannot say (no /proc on this host, an unreadable entry), it is ALIVE:
+ * "can't tell" must never read as "gone", which would start a second broker.
+ * `procDir` and `probe` are seams for tests.
+ */
+export function isAlive(pid, { procDir = PROC, probe = p => process.kill(p, 0) } = {}) {
+  try { probe(pid); } catch (e) { return e.code === 'EPERM'; }
+  try { return !/\) Z /.test(readProc(pid, 'stat', procDir)); }
+  catch (e) { return e.code !== 'ENOENT' || !existsSync(`${procDir}/self`); }
+}
 
 /**
  * Stop the broker at `pid`: `stop` on the socket, then SIGTERM, then SIGKILL,

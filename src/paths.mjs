@@ -67,6 +67,20 @@ export function agentErrorPath(dir = agentDir()) {
   return path.join(dir, 'broker-error.json');
 }
 
+// A record-sized file that EXISTS, which the broker reads in place of a record
+// that does not, so an absent remote's handshake costs a successful read too
+// (src/agent/broker.mjs `lookupSecret`). Outside `remotes/`, so nothing lists it.
+export function agentHandshakeDummyPath(dir = agentDir()) {
+  return path.join(dir, 'handshake-dummy.json');
+}
+
+// And one that NEVER exists (the broker removes it at startup), read where no
+// record was missing, so every handshake also pays exactly one failing open.
+// In the broker's own directory, so no remote id can make it exist.
+export function agentHandshakeMissPath(dir = agentDir()) {
+  return path.join(dir, 'handshake-absent.json');
+}
+
 // The broker's stdout and stderr.
 export function agentLogPath(dir = agentDir()) {
   return path.join(dir, 'broker.log');

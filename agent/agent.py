@@ -1109,8 +1109,10 @@ def reexec_without_secret(argv, env, secret):
     os.execve(sys.executable, [sys.executable, '-I', '-c', BOOT, str(code_fd), str(secret_fd)] + list(argv), clean)
 
 
-def main(argv, env=None):
+def main(argv, env=None, reexec=None):
+    """`reexec` is a seam for tests; it defaults to `reexec_without_secret`."""
     env = os.environ if env is None else env
+    reexec = reexec_without_secret if reexec is None else reexec
     if env.get(SECRET_ENV):
         # FIRST: until the re-exec below, the secret IS in this process's
         # exec-time environment, which a non-dumpable process keeps from other
@@ -1139,7 +1141,7 @@ def main(argv, env=None):
                 % SECRET_ENV)
             return 2
         try:
-            reexec_without_secret(argv, env, secret)
+            reexec(argv, env, secret)
         except (UsageError, OSError) as e:
             log('cannot start without the secret in the environment: %s' % e)
             return 2

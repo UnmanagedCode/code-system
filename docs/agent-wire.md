@@ -73,10 +73,16 @@ bridge has no deadline of its own). Tests only.
   `wrong-secret` (or `no-secret`) per remote, shown on that card's probe;
   `unknown-remote` / `not-an-agent-remote` in a list of the last few, shown on
   the page's listener line (`GET /api/agent/broker` → `refusals`).
-- **…and the same work for each.** Every failure path does one store read (an
-  id that cannot name a record reads a dummy one) and one HMAC (against a dummy
-  secret when none was found — `Broker.authenticate`), so the time a refusal
-  takes does not say whether the remote exists.
+- **…and the same work, and time, for each.** Every handshake check does
+  exactly one successful read, one failing read, one parse and one HMAC
+  (`Broker.lookupSecret` / `authenticate`): an existing remote reads its record
+  and fails to read `<store>/agent/handshake-absent.json` (which never exists);
+  an absent one fails to open its record and reads
+  `<store>/agent/handshake-dummy.json` (a record-sized file the broker writes
+  at startup, outside `remotes/` so nothing lists it); an invalid id fails the
+  first and reads the second. It MACs against a dummy secret when none was
+  found. Measured medians agree within a few per cent across the three, so the
+  time a refusal takes does not say whether the remote exists.
 - `refused` codes: `auth_failed`, `version_mismatch` (names the fetch URL),
   `bad_frame`, `busy` (past `maxPendingHandshakes`), `timeout` (past
   `timings.handshakeTimeoutMs`).
@@ -192,13 +198,31 @@ its command line and its fds hold no secret, and — non-dumpable — its
 commands included. Needs `os.memfd_create` (Linux 3.17); without it the agent
 refuses to start.
 
-**Limits of that, accepted.** The secret is delivered in the environment, so
-from the agent's exec until its first statements run (`no_dump`, then the
-re-exec) it is in the exec-time environment of a still-dumpable process,
-readable by a same-user process that reads `/proc/<pid>/environ` in that window.
-And where the agent's Python lacks `ctypes`, nothing is made non-dumpable:
-the re-exec still keeps the secret out of the environment, argv and fds, but
-its memory stays readable to the same user.
+**Limits of that, accepted.** Two windows remain in which the secret is
+readable, both ONLY to a process running as the agent's own user (or root) ON
+THE AGENT'S MACHINE. Commands the agent runs cannot reach either: the agent
+runs no command until after the re-exec, the handshake and the welcome, when
+both windows have closed (`tests/agent-e2e.test.mjs` reads the agent's `/proc`
+entries from a command and finds them refused).
+
+- **(a) Before the re-exec.** The secret is delivered in the environment, so
+  from the first process's `execve` until `no_dump()` runs as `main`'s first
+  statement — the whole interpreter start-up and module-import phase — it is
+  in `/proc/<pid>/environ` of a process that is still dumpable. A same-user
+  process can read it there, and can hold that window open indefinitely by
+  SIGSTOPping the agent during it. It closes at `no_dump()` (environ refused)
+  and the secret leaves the process at the `execve` that follows.
+- **(b) After the re-exec.** `execve` resets the dumpable flag, so from the
+  re-exec until `BOOT`'s first statements read the secret and close its memfd,
+  the inherited memfd is open in a dumpable process and readable through
+  `/proc/<pid>/fd` by a same-user process (measured: a scanner did read it).
+  `BOOT` closes it before importing anything but `os` and `sys`, then makes the
+  process non-dumpable.
+
+Where the agent's Python lacks `ctypes`, neither process is made
+non-dumpable: (a) then lasts until the re-exec, and the running agent's memory
+stays readable to the same user — though its environment, argv and fds still
+hold no secret.
 
 ## Accepted limits
 

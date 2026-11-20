@@ -198,6 +198,14 @@ class Startup(unittest.TestCase):
         self.assertEqual(agent.parse_address('[::1]:7420'), ('::1', 7420))
 
 
+def _has_ctypes():
+    try:
+        import ctypes  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 class Bootstrap(unittest.TestCase):
     # PINS how the re-executed agent receives its secret: by the time the
     # agent's own code runs, the secret is in its namespace, NO memfd is still
@@ -239,6 +247,60 @@ class Bootstrap(unittest.TestCase):
         close_at = next(i for i, n in enumerate(stmts) if 'os.close(s)' in ast.get_source_segment(agent.BOOT, n))
         first_other_import = next(i for i, n in enumerate(stmts[1:], 1) if isinstance(n, (ast.Import, ast.Try)))
         self.assertLess(close_at, first_other_import)
+
+
+class FirstProcessNoDump(unittest.TestCase):
+    # PINS that the FIRST process — the one whose exec-time environment holds
+    # the secret — is already non-dumpable by the time main re-executes it.
+    # Forked, so the prctl never touches the test runner.
+    @unittest.skipUnless(_has_ctypes(), 'needs ctypes')
+    def test_main_is_non_dumpable_before_it_reexecs(self):
+        r, w = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            try:
+                os.close(r)
+
+                def report(argv, env, secret):
+                    import ctypes
+                    os.write(w, str(ctypes.CDLL(None).prctl(3, 0, 0, 0, 0)).encode())
+                    os._exit(0)
+                agent.main(['--connect', '127.0.0.1:1', '--remote', 'r'],
+                           env={agent.SECRET_ENV: 'the-secret'}, reexec=report)
+            finally:
+                os._exit(1)
+        os.close(w)
+        got = os.read(r, 16)
+        os.close(r)
+        _, status = os.waitpid(pid, 0)
+        self.assertEqual(os.waitstatus_to_exitcode(status) if hasattr(os, 'waitstatus_to_exitcode') else status >> 8, 0)
+        self.assertEqual(got, b'0')
+
+
+class NoDelay(unittest.TestCase):
+    # PINS that the agent's connection disables Nagle: its frames are small and
+    # interactive (a keystroke, an ack) and must not wait on delayed ACKs.
+    def test_the_connection_sets_tcp_nodelay(self):
+        from unittest import mock
+        calls = []
+
+        class FakeSock(object):
+            def setsockopt(self, *a):
+                calls.append(a)
+
+            def sendall(self, data):
+                raise OSError('refused by the test')
+
+            def settimeout(self, t):
+                pass
+
+            def close(self):
+                pass
+        flags = iter([False, True])
+        with mock.patch.object(agent.socket, 'create_connection', lambda *a, **k: FakeSock()):
+            agent.run_forever(('127.0.0.1', 1), 'r', 's', agent.timings({}), lambda: next(flags, True),
+                              sleep=lambda d: None)
+        self.assertIn((agent.socket.IPPROTO_TCP, agent.socket.TCP_NODELAY, 1), calls)
 
 
 class GroupReuse(unittest.TestCase):

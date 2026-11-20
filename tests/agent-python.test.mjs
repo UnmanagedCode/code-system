@@ -17,6 +17,6 @@ test('the agent\'s Python unit tests pass, and all of them ran', { skip: NEEDS_P
   const skipped = (r.stderr.match(/ \.\.\. skipped/g) ?? []).length;
   // The roster: every test method in the file. Only the stdlib listing may
   // skip, and only on a Python without sys.stdlib_module_names (3.9).
-  assert.equal(ran, 20, r.stderr);
+  assert.equal(ran, 22, r.stderr);
   assert.ok(skipped <= (PY.version === '3.9' ? 1 : 0), r.stderr);
 });
