@@ -1,8 +1,9 @@
 import { LoaderCircleIcon } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import { BrokerStatus } from '@/components/BrokerStatus';
 import { registrationView } from '@/lib/cardState.mjs';
-import type { Registration } from '@/lib/types';
+import type { BrokerStatus as Broker, Registration } from '@/lib/types';
 
 export interface Notice {
   level: 'err' | 'warn';
@@ -13,15 +14,17 @@ export interface Notice {
  * The page's notices: the last card action's failure or warning, and the System registration state.
  * Text from the backend and from cc is shown verbatim: it already names the cause and the fix.
  */
-export function RegistrationPanel({ notice, onDismiss, registration, retrying, onRetry }: {
+export function RegistrationPanel({ notice, onDismiss, registration, retrying, onRetry, broker = null }: {
   notice: Notice | null;
+  /** The agent listener's state; null (and nothing shown) while no agent remote exists. */
+  broker?: Broker | null;
   onDismiss: () => void;
   registration: Registration | null;
   retrying: boolean;
   onRetry: () => void;
 }) {
   const banner = registrationView(registration)?.banner ?? null;
-  if (!notice && !banner) return null;
+  if (!notice && !banner && !broker) return null;
   return (
     <section aria-label="Notices" className="flex flex-col gap-2">
       {notice && (
@@ -33,6 +36,7 @@ export function RegistrationPanel({ notice, onDismiss, registration, retrying, o
           </div>
         </Alert>
       )}
+      <BrokerStatus broker={broker} />
       {banner?.kind === 'muted' && (
         <Alert role="status" className="text-muted-foreground">
           <AlertDescription className="break-words">{banner.text}</AlertDescription>

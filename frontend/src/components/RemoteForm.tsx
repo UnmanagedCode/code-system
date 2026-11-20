@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label';
 import { NativeSelect } from '@/components/ui/native-select';
 import { Textarea } from '@/components/ui/textarea';
 import { HintTip } from '@/components/HintTip';
+import { newSecret } from '@/lib/agentSecret';
 import { advancedSummary, fieldLabel, switchKind } from '@/lib/cardState.mjs';
 import type { ConfigField, Draft, FormMirror, FormMode, KindDescriptor, MirrorDefaults } from '@/lib/types';
 
@@ -66,7 +67,45 @@ export function RemoteForm({ mode, draft, kinds, mirrorDefaults, submitting, err
   // A SECRET field is a password input, never prefilled (the API never returns its value, and the
   // edit draft drops it). When one is stored, the form says so and offers to clear it: blank keeps
   // it, the checkbox removes it.
+  // A GENERATED field (the agent's secret) has no input at all. Create generates it on submit; Edit
+  // offers a new one, which replaces the stored one only when the form is saved.
+  const generatedField = (f: ConfigField) => {
+    const id = `f-${f.name}`;
+    const pending = typeof draft.config[f.name] === 'string' && draft.config[f.name] !== '';
+    return (
+      <Field key={f.name}>
+        {/* No <label for>: there is no input, and a label would rename the button. */}
+        <div className="relative flex items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">{f.label}</span>
+          {f.hint && <HintTip id={`${id}-tip`} name={f.label} text={f.hint} />}
+        </div>
+        {mode === 'create' ? (
+          <p className="text-xs text-muted-foreground">Generated when you create this remote, and shown once on its card.</p>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            <Button
+              type="button"
+              aria-describedby={f.hint ? `${id}-tip` : undefined}
+              variant="outline"
+              size="sm"
+              className="w-fit"
+              onClick={() => set({ config: { ...draft.config, [f.name]: pending ? '' : newSecret() } })}
+            >
+              {pending ? 'Keep the current secret' : 'Generate new secret'}
+            </Button>
+            {pending && (
+              <p role="note" className="text-xs text-muted-foreground">
+                Saving replaces the secret: the agent using the old one is disconnected, and this remote switches off.
+              </p>
+            )}
+          </div>
+        )}
+      </Field>
+    );
+  };
+
   const configField = (f: ConfigField) => {
+    if (f.generated === true) return generatedField(f);
     const id = `f-${f.name}`;
     const secret = f.secret === true;
     const stored = secret && mode === 'edit' && (draft.storedSecrets ?? []).includes(f.name);

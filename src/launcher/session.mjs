@@ -33,8 +33,12 @@ const PLACEHOLDER_CWD = '/';
 export const REAP_DEADLINE_MS = 1500;
 
 // How much of each stream is retained for `classifyFailure`. The transport
-// diagnostics it reads are a single short line arriving before anything else.
+// diagnostics it reads are a single short line arriving before anything else —
+// or, for a transport that can fail MID-COMMAND (`agent`), the last line, which
+// is why stderr also keeps a bounded TAIL of the same size.
 const HEAD_BYTES = 512;
+
+const tailOf = (prev, b) => (prev + b.toString('utf8')).slice(-HEAD_BYTES);
 
 // THE TWO DIAGNOSTIC LINES A BOUND RUN READS BACK, and the only reason they are
 // constants: `tests/conformance-docker.mjs` matches on them to turn admission
@@ -279,6 +283,7 @@ export class Session {
       // an unbounded buffer beside the frames we already streamed.
       head: '',
       errHead: '',
+      errTail: '',
       detached: plan.detached === true,
       config: remote?.config ?? {},
       handle: { pid: child.pid ?? null, token, remoteId: remote?.remoteId ?? null },
@@ -292,6 +297,7 @@ export class Session {
     });
     child.stderr?.on('data', (b) => {
       if (state.errHead.length < HEAD_BYTES) state.errHead = (state.errHead + b.toString('utf8')).slice(0, HEAD_BYTES);
+      state.errTail = tailOf(state.errTail, b);
       if (!state.closed) this.#write({ type: 'stderr', id, seq: state.seq++, dataB64: b.toString('base64') });
     });
     child.on('error', (e) => {
@@ -317,7 +323,9 @@ export class Session {
       // Not consulted for an exec WE killed: that failure is ours, and reading
       // it through the transport's vocabulary could only mislabel it.
       const verdict = code !== 0 && !state.timedOut && !state.terminated
-        ? this.#transport.classifyFailure?.(state.config, { code: code ?? 1, stdout: state.head, stderr: state.errHead })
+        ? this.#transport.classifyFailure?.(state.config, {
+            code: code ?? 1, stdout: state.head, stderr: state.errHead, stderrTail: state.errTail,
+          })
         : null;
       if (verdict) {
         this.#fail(id, verdict.code, verdict.message, {
@@ -389,6 +397,7 @@ export class Session {
       terminated: false,
       head: '',
       errHead: '',
+      errTail: '',
       config: remote?.config ?? {},
       handle: { pid: null, token: req.token, remoteId: remote?.remoteId ?? null },
     };
@@ -420,6 +429,7 @@ export class Session {
     if (state[head].length < HEAD_BYTES) {
       state[head] = (state[head] + b.toString('utf8')).slice(0, HEAD_BYTES);
     }
+    if (type === 'stderr') state.errTail = tailOf(state.errTail, b);
     if (!state.closed) this.#write({ type, id, seq: state.seq++, dataB64: b.toString('base64') });
   }
 
@@ -449,7 +459,7 @@ export class Session {
     // through the transport's vocabulary could only mislabel it.
     const verdict = res.code !== 0 && !state.terminated
       ? this.#transport.classifyFailure?.(state.config, {
-          code: res.code, stdout: state.head, stderr: state.errHead,
+          code: res.code, stdout: state.head, stderr: state.errHead, stderrTail: state.errTail,
         })
       : null;
     if (verdict) {

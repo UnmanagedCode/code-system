@@ -2,7 +2,7 @@
 // `launch` argv (see src/registration.mjs), so it must not move without
 // updating src/paths.mjs — which is the only place it is spelled.
 //
-//   node src/launcher/main.mjs --kind <docker|ssh|host>
+//   node src/launcher/main.mjs --kind <docker|ssh|agent|host>
 //                              [--no-process-group-signal]
 //                              [--no-pty]   (every kind: advertise no
 //                                terminals, and skip the python3 probe)
@@ -33,7 +33,7 @@ const VERSION = '0.1.0';
 // The kinds whose targets come from the store rather than from flags. For them
 // a `--remote` flag would be a lie about where configuration lives, so it is
 // refused rather than ignored.
-const STORE_BACKED = new Set(['docker', 'ssh']);
+const STORE_BACKED = new Set(['docker', 'ssh', 'agent']);
 
 class UsageError extends Error {}
 
@@ -98,7 +98,7 @@ export function parseArgs(argv) {
       throw new UsageError(`unknown launcher option: ${a}`);
     }
   }
-  if (!o.kind) throw new UsageError('--kind <docker|ssh|host> is required');
+  if (!o.kind) throw new UsageError('--kind <docker|ssh|agent|host> is required');
   if (!isKnownKind(o.kind) && o.kind !== 'fake') {
     throw new UsageError(`unknown kind '${o.kind}'`);
   }

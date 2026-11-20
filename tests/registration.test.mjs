@@ -14,11 +14,12 @@ import { REQUEST_TIMEOUT_MS, desiredRows, register } from '../src/registration.m
 const ROWS = desiredRows();
 const DOCKER = ROWS.find(r => r.id === 'docker');
 const SSH = ROWS.find(r => r.id === 'ssh');
+const AGENT = ROWS.find(r => r.id === 'agent');
 
 const systemsBody = (systems) => ({ status: 200, body: { systems } });
 
 test('the launch argv is a function of (install path, kind) only — no config value in it', () => {
-  assert.deepEqual(ROWS.map(r => r.id), ['docker', 'ssh']);
+  assert.deepEqual(ROWS.map(r => r.id), ['docker', 'ssh', 'agent']);
   for (const row of ROWS) {
     assert.deepEqual(row.launch, [process.execPath, LAUNCHER, '--kind', row.id]);
     // A bare "node" would depend on the ORCHESTRATOR's PATH, which we do not
@@ -32,7 +33,7 @@ test('the launch argv is a function of (install path, kind) only — no config v
   assert.deepEqual(desiredRows(), ROWS);
 });
 
-test('a fresh install creates both rows', async (t) => {
+test('a fresh install creates all three rows', async (t) => {
   const cc = await fakeConductor((req) => {
     if (req.method === 'GET') return systemsBody([]);
     if (req.method === 'POST') return { status: 201, body: { added: req.body } };
@@ -42,15 +43,16 @@ test('a fresh install creates both rows', async (t) => {
 
   const state = await register({ conductorUrl: cc.url });
   assert.equal(state.state, 'ok');
-  assert.deepEqual(state.rows.map(r => [r.id, r.state]), [['docker', 'ok'], ['ssh', 'ok']]);
-  assert.deepEqual(cc.requests.map(r => r.method), ['GET', 'POST', 'POST']);
+  assert.deepEqual(state.rows.map(r => [r.id, r.state]), [['docker', 'ok'], ['ssh', 'ok'], ['agent', 'ok']]);
+  assert.deepEqual(cc.requests.map(r => r.method), ['GET', 'POST', 'POST', 'POST']);
   assert.deepEqual(cc.requests[1].body, { id: 'docker', label: DOCKER.label, launch: DOCKER.launch });
   assert.deepEqual(cc.requests[2].body, { id: 'ssh', label: SSH.label, launch: SSH.launch });
+  assert.deepEqual(cc.requests[3].body, { id: 'agent', label: AGENT.label, launch: AGENT.launch });
 });
 
 test('rows that already match send NOTHING beyond the GET', async (t) => {
   const cc = await fakeConductor((req) => {
-    if (req.method === 'GET') return systemsBody([{ ...DOCKER }, { ...SSH }]);
+    if (req.method === 'GET') return systemsBody([{ ...DOCKER }, { ...SSH }, { ...AGENT }]);
     return { status: 500, body: { error: 'should not have been called' } };
   });
   t.after(() => cc.close());
@@ -61,9 +63,9 @@ test('rows that already match send NOTHING beyond the GET', async (t) => {
     'a PATCH here would make cc re-probe on every backend restart');
 });
 
-test('one present, one missing: only the missing one is created', async (t) => {
+test('some present, one missing: only the missing one is created', async (t) => {
   const cc = await fakeConductor((req) => {
-    if (req.method === 'GET') return systemsBody([{ ...DOCKER }]);
+    if (req.method === 'GET') return systemsBody([{ ...DOCKER }, { ...AGENT }]);
     if (req.method === 'POST') return { status: 201, body: {} };
     return null;
   });
@@ -81,6 +83,7 @@ test('argv drift is repaired with a PATCH carrying only the launch', async (t) =
       return systemsBody([
         { ...DOCKER, launch: ['/some/old/node', '/moved/away/main.mjs', '--kind', 'docker'] },
         { ...SSH },
+        { ...AGENT },
       ]);
     }
     if (req.method === 'PATCH') return { status: 200, body: {} };
@@ -152,7 +155,7 @@ test('a 409 is `ok` — another instance won the race', async (t) => {
 
   const state = await register({ conductorUrl: cc.url });
   assert.equal(state.state, 'ok');
-  assert.deepEqual(state.rows.map(r => r.state), ['ok', 'ok']);
+  assert.deepEqual(state.rows.map(r => r.state), ['ok', 'ok', 'ok']);
 });
 
 test('an unrecognised status is `error`, carrying the status and body', async (t) => {
@@ -168,9 +171,17 @@ test('an unrecognised status is `error`, carrying the status and body', async (t
   assert.match(state.rows[0].message, /restarting/);
 });
 
-test('no CONDUCTOR_URL is `skipped`, not a failure — the plugin stays standalone-runnable', async () => {
+// Drives the REAL env fallback (`register()` with no conductorUrl reads
+// process.env.CONDUCTOR_URL) with the variable set by the test itself, and a
+// fetch that fails the test if called at all — so a session whose environment
+// points CONDUCTOR_URL at a live cc can never have its System rows rewritten.
+test('no CONDUCTOR_URL is `skipped`, not a failure — the plugin stays standalone-runnable', async (t) => {
+  const prior = process.env.CONDUCTOR_URL;
+  t.after(() => { if (prior === undefined) delete process.env.CONDUCTOR_URL; else process.env.CONDUCTOR_URL = prior; });
+  const fetchImpl = async (url) => { throw new Error(`register() fetched ${url} with no CONDUCTOR_URL`); };
   for (const url of [undefined, '', '   ']) {
-    const state = await register({ conductorUrl: url });
+    if (url === undefined) delete process.env.CONDUCTOR_URL; else process.env.CONDUCTOR_URL = url;
+    const state = await register({ fetchImpl });
     assert.equal(state.state, 'skipped');
     assert.match(state.detail, /CONDUCTOR_URL/);
     assert.deepEqual(state.rows, []);

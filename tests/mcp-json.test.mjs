@@ -522,3 +522,17 @@ test('the cc schema port rejects what cc rejects', () => {
   assert.equal(errors.length, 1);
   assert.match(errors[0], /unexpected property 'extra'/);
 });
+
+// PINS the json view of a kind with no identifying field: `target: null`, and
+// the secret named in `withheld`, never carried.
+test('an agent remote has target null and its secret in withheld', async (t) => {
+  const { call, store } = await withApi(t);
+  const secret = 'S'.repeat(43);
+  await plant(store, remoteRecord('ag', { kind: 'agent', config: { secret }, enabled: false }));
+  const res = await listRemotes(call, 'json');
+  assert.equal(JSON.stringify(res.body).includes(secret), false);
+  const [r] = res.body.structured.remotes;
+  assert.equal(r.target, null);
+  assert.deepEqual(r.config, {});
+  assert.deepEqual(r.withheld, ['secret']);
+});

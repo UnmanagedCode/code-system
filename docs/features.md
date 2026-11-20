@@ -4,7 +4,8 @@ What the plugin does for a user.
 
 ## Remotes are cards
 
-Each **remote** — one Docker container, or one SSH host — is one card. The card
+Each **remote** — one Docker container, one SSH host, or one machine running the
+dial-in agent — is one card. The card
 UI is where a remote is added, edited and removed — the only place a remote is
 written. cc asks each provider which remotes it is configured for (`listRemotes`,
 which both providers answer — see [`protocol.md`](protocol.md) → "Remote
@@ -221,9 +222,88 @@ Three further differences the mode really has, stated rather than glossed:
 If you need a `cd`, exported variables or a background job to survive, put them
 in a single command, or in a profile file on the target.
 
-## Terminals on a docker or ssh remote
+## An agent remote dials in
 
-A docker or ssh remote also serves **terminals**: an interactive program — your
+An **agent** remote reaches a Linux machine the other way round: a small Python
+program on that machine (the **agent**) connects to code-system, proves it knows
+the remote's secret, and runs the commands cc sends it. Nothing on cc's side
+needs ssh or docker access to the machine — the case this is for is cc running
+in a container and working on the **Docker host** (or any Linux box) it runs on.
+Several agents, one per remote, can be connected at once.
+
+**What the machine needs:** Linux, Python 3.9 or later, and a route to the
+listener's address. The agent is one file using only Python's standard library,
+and runs commands as the user that started it, with that user's environment.
+
+### Creating one
+
+1. **Add remote → Kind: Agent (dial-in)**, an id and a label. There is no secret
+   to type: the page generates one when you press **Create**.
+2. **The card then shows the command that starts the agent**, once:
+
+   ```sh
+   curl -fsS http://<dial>/agent.py | CODE_SYSTEM_AGENT_SECRET='<secret>' python3 - --connect <dial> --remote <id>
+   ```
+
+   and the same from a code-system checkout
+   (`CODE_SYSTEM_AGENT_SECRET='<secret>' make -C <checkout> agent ARGS='--connect <dial> --remote <id>'`).
+   Each has a **Copy** button. The secret travels in the environment, never on
+   the command line, and never crosses the network: the agent and code-system
+   each prove they know it.
+3. **The listener address** above the commands is editable and not stored. It
+   starts as `127.0.0.1:<port>`, which is right when the agent runs on the
+   machine whose port reaches code-system's listener (a Docker host publishing
+   the port). Change it to whatever address the target machine reaches the
+   listener on. The agent fetches itself from the same address (`/agent.py`).
+4. **Run it on the machine.** It connects within a moment and reconnects by
+   itself, with backoff, whenever the connection drops. It can be started before
+   its card exists.
+5. **Connect** the card, as for any remote.
+
+**The secret is shown only then.** It is kept in the page's memory and never
+returned by code-system's API, so after a reload the card cannot show it again.
+To get a command again, **Edit → Generate new secret → Save**: that replaces the
+secret, **disconnects the agent using the old one**, and switches the card off;
+the new command appears on the card.
+
+### What the card shows
+
+- **agent connected** / **no agent connected**, with the agent's host name, pid,
+  Python version and address and since when.
+- **Why an agent was refused**, for that card: `last refused: wrong-secret from
+  <address> at <time>` — an agent started with an old or mistyped secret.
+- **`the session was replaced N time(s) — two agents may be using this secret`**:
+  a second agent with the same secret takes over the connection, and the first
+  keeps redialling, so the two take turns. Stop one of them.
+- **The listener line** at the top of the page, while any agent remote exists:
+  the address it listens on, or why it is not running (for example, the port is
+  in use), and agents refused for a remote id that no card has.
+
+### How it behaves
+
+- **Commands run as the agent's user**, in its environment (its `PATH`, its
+  `HOME`), on its machine. **Not its secret**: the agent re-starts itself once
+  at startup with the secret out of its environment, so no command can read it
+  (not even from the agent's `/proc` entries) — see
+  [`agent-wire.md`](agent-wire.md#the-agent-refuses-to-start).
+- **A command whose background job keeps its output open stays open** until
+  that job ends, as with docker and ssh; each one counts toward the agent's
+  limit on concurrent commands (`maxStreamsPerSession` in `agent/agent.py`'s
+  `PROTOCOL` block), past which a new command is refused by name until one ends.
+  Redirect a background job's output (`job >/dev/null 2>&1 &`) to avoid it.
+- **If the agent's connection drops, the agent ends every command it was running
+  for that connection**, including background jobs left by a command — the
+  in-flight operation fails, and the next one waits for the agent to reconnect.
+  A job started with `setsid` survives. **An agent killed with `kill -9` cannot
+  do this**, and its commands keep running.
+- **Restarting the plugin backend, or cc reconnecting the System, does not
+  disconnect an agent**: the listener runs as its own process.
+- **Disconnect** refuses commands; the agent stays connected.
+- **Delete the last agent remote** and the listener stops by itself.
+
+## Terminals on a docker, ssh or agent remote
+
+A docker, ssh or agent remote also serves **terminals**: an interactive program — your
 login shell when none is named — under a real pseudo-terminal on the target,
 with keystrokes, `^C`, resizes and output flowing both ways. Whatever cc offers
 as a terminal on a project whose *Remote* is one of these runs there.
@@ -253,13 +333,19 @@ as a terminal on a project whose *Remote* is one of these runs there.
 - **Closing the terminal ends the program and the jobs it backgrounded.** A job
   started with `setsid` (or `nohup setsid …`) survives, as it does when a local
   terminal window closes.
-- **A program killed by a signal reports exit code 128+n**, never the signal
-  name — the provider runs it under a small shell on the target, and a shell
-  cannot tell the two apart.
+- **A program killed by a signal reports exit code 128+n** on docker and ssh,
+  never the signal name — the provider runs it under a small shell on the
+  target, and a shell cannot tell the two apart. **On an agent remote it reports
+  the signal** (`SIGINT`, …): the agent itself is the program's parent.
+- **On an agent remote a resize is delivered in order with your typing**: input
+  sent after a resize reaches a program that already sees the new size. Several
+  resizes in a row with no input between them arrive as the last one, as in any
+  terminal.
 - **A paste into a program that is not reading** is accepted until the
   transport's own buffer is full, then the keyboard stalls until it reads:
-  about **2 MiB** on ssh and about **300 KiB** on docker. Nothing is lost; it
-  waits.
+  about **2 MiB** on ssh, about **300 KiB** on docker, and about one chunk
+  (`PROTOCOL.ptyInputWindowBytes` in `agent/agent.py`) on an agent remote.
+  Nothing is lost; it waits.
 - **docker: a lone `ctrl-\` is held until the next key.** docker detaches a
   terminal on a key sequence it cannot be told to ignore, so the provider sets
   one no paste produces — eight control keys starting with `ctrl-\` — and docker
@@ -401,6 +487,7 @@ identity shape is what the store's front door enforces.
 | `CODE_SYSTEM_DOCKER` | a host where the docker CLI needs a prefix. It is the **whole invocation** as a JSON array: `CODE_SYSTEM_DOCKER='["sudo","-n","docker"]'`. When unset, the provider tries bare `docker` and falls back to `sudo -n docker` **only** when `docker` is denied the socket (`permission denied while trying to connect…`); a daemon that is down, a missing binary or a timeout never use `sudo`. **`sudo -n docker` is root-equivalent on the host**: the card's status then reads `… — via \`sudo -n docker\` (root-equivalent on this host)`. A set value is used as-is, with no probe and no fallback, so `["docker"]` is the opt-out. A malformed value makes the provider refuse to start and say so, rather than silently falling back |
 | `CODE_SYSTEM_SSH` | a host where the ssh invocation must differ (a pinned config file, a wrapper). Also the **whole invocation** as a JSON array: `CODE_SYSTEM_SSH='["ssh","-F","/etc/code-system/ssh_config"]'`. Default: `["ssh"]` — your own `~/.ssh/config` and agent. Malformed values refuse the same way |
 | `CODE_SYSTEM_STORE` | where remote records live. Default `<home>/.code-system` |
+| `CODE_SYSTEM_AGENT_LISTEN` | the address the agent listener binds, `host:port` (`[v6]:port` too). Default `127.0.0.1:7420`, loopback only. **A containerised cc** sets `0.0.0.0:7420` and publishes the port to the host (`-p 127.0.0.1:7420:7420`), so an agent on the Docker host dials `127.0.0.1:7420`. A changed value replaces the running listener on the backend's next check |
 
 ## An SSH remote is a Host alias from your own ssh config
 
@@ -512,7 +599,7 @@ A card cannot carry both a password and a key file — saving both is refused.
 
 ## Registration is automatic, and says why when it fails
 
-The plugin registers its two cc System rows — `docker` and `ssh` — on startup,
+The plugin registers its three cc System rows — `docker`, `ssh` and `agent` — on startup,
 creating only what is missing. It never blocks startup and never retries in a
 loop; when it fails, the state and cc's **own message** are shown, with a single
 retry button.

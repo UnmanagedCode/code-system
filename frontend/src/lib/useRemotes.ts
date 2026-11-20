@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './api';
-import type { KindDescriptor, MirrorDefaults, Registration, Remote, RemotesResponse } from './types';
+import type { BrokerStatus, KindDescriptor, MirrorDefaults, Registration, Remote, RemotesResponse } from './types';
 
 // TEN SECONDS, and only while the tab is visible: each refresh costs one
 // `docker inspect` or `ssh -O check` PER REMOTE, each bounded at 5 s. The manual
@@ -13,6 +13,8 @@ export interface RemotesState {
   /** Served by the backend from src/mirror.mjs; `null` until it arrives, and sticky after. */
   mirrorDefaults: MirrorDefaults | null;
   registration: Registration | null;
+  /** The agent listener's state, asked for only while an agent remote exists; null otherwise. */
+  broker: BrokerStatus | null;
   updatedAt: Date | null;
   loadError: string | null;
   /** Whether any refresh has succeeded yet. */
@@ -20,7 +22,7 @@ export interface RemotesState {
 }
 
 const INITIAL: RemotesState = {
-  remotes: [], kinds: [], mirrorDefaults: null, registration: null, updatedAt: null, loadError: null, loaded: false,
+  remotes: [], kinds: [], mirrorDefaults: null, registration: null, broker: null, updatedAt: null, loadError: null, loaded: false,
 };
 
 /**
@@ -41,6 +43,11 @@ export function useRemotes() {
         api<RemotesResponse>('api/remotes'),
         api<Registration>('api/registration'),
       ]);
+      // A page with no agent remote never asks: the listener does not run then, and saying so on
+      // every docker-only page would be noise.
+      const broker = r.remotes.some((x) => !x.broken && x.kind === 'agent')
+        ? await api<BrokerStatus>('api/agent/broker').catch(() => null)
+        : null;
       if (seq < landed.current) return;
       landed.current = seq;
       setState((s) => ({
@@ -48,6 +55,7 @@ export function useRemotes() {
         kinds: r.kinds,
         mirrorDefaults: r.mirrorDefaults ?? s.mirrorDefaults,
         registration,
+        broker,
         updatedAt: new Date(),
         loadError: null,
         loaded: true,

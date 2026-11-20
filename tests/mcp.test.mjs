@@ -674,3 +674,17 @@ test('the cards behind list_remotes never carry an ssh password, on every cardFo
   assert.equal(JSON.stringify(res.body).includes('hunter2'), false);
   assert.match(JSON.stringify(res.body), /10\.0\.0\.5/);
 });
+
+// PINS the target of a kind that DECLARES it has none (`agent`): the text view
+// says `[dials in]` rather than fabricating a field, and the secret is carried
+// by neither the line nor the cards behind it.
+test('an agent remote is listed as [dials in], with its secret withheld', async (t) => {
+  const { call, store } = await withApi(t);
+  const secret = 'S'.repeat(43);
+  await plant(store, remoteRecord('ag', { kind: 'agent', label: 'Host', config: { secret }, enabled: false }));
+  const res = await listRemotes(call);
+  assert.equal(res.body.text, 'disabled  ag  agent  [dials in]  "Host"');
+  for (const card of await remoteCards({ reachability: 'always' })) {
+    assert.equal(JSON.stringify(card).includes(secret), false);
+  }
+});

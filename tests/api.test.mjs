@@ -30,7 +30,7 @@ test('health answers, which is all the conductor asks of it', async (t) => {
   const { call } = await withApi(t);
   const res = await call('GET', '/health');
   assert.equal(res.status, 200);
-  assert.deepEqual(res.body.kinds, ['docker', 'ssh']);
+  assert.deepEqual(res.body.kinds, ['docker', 'ssh', 'agent']);
 });
 
 test('a remote is created, listed, edited and deleted', async (t) => {
@@ -424,7 +424,7 @@ test('GET /kinds serves one descriptor per registered kind, with its form', asyn
   const { call } = await withApi(t);
   const res = await call('GET', '/kinds');
   assert.equal(res.status, 200);
-  assert.deepEqual(res.body.kinds.map(k => k.kind), ['docker', 'ssh']);
+  assert.deepEqual(res.body.kinds.map(k => k.kind), ['docker', 'ssh', 'agent']);
   for (const k of res.body.kinds) {
     assert.ok(k.label, 'a human label');
     assert.ok(Array.isArray(k.configFields) && k.configFields.length > 0);
@@ -444,7 +444,7 @@ test('GET /kinds serves one descriptor per registered kind, with its form', asyn
   assert.equal(docker.mirrorByDefault, true);
   // GET /health keeps its PLAIN kind list: the conductor's liveness probe has
   // no use for descriptors.
-  assert.deepEqual((await call('GET', '/health')).body.kinds, ['docker', 'ssh']);
+  assert.deepEqual((await call('GET', '/health')).body.kinds, ['docker', 'ssh', 'agent']);
 });
 
 // PINS: an unexpected failure answers JSON, not express's HTML page. The
@@ -1169,4 +1169,62 @@ test('a record whose remoteId disagrees with its filename is a broken card under
   assert.deepEqual(after.body.remotes.map(r => [r.remoteId, r.broken?.reason, r.label]), [['off-up', undefined, 'off-up']],
     'deleting the impostor removed only evil.json');
 
+});
+
+// ── the agent kind's secret ──────────────────────────────────────────
+
+const AGENT_SECRET = 'AgEnTsEcReT_-0123456789abcdefghijklmnopqrstu'.slice(0, 43);
+const noAgentSecret = (body) => assert.equal(JSON.stringify(body).includes(AGENT_SECRET), false,
+  `the agent secret leaked into ${JSON.stringify(body).slice(0, 200)}`);
+
+// PINS that an agent remote's secret is the ssh password's kind of secret:
+// stored (0600), never returned by POST, GET or PATCH, named in storedSecrets,
+// and a card with no listener says so instead of failing.
+test('an agent secret is stored but never returned', async (t) => {
+  const { call, store } = await withApi(t);
+  const made = await call('POST', '/remotes', { remoteId: 'ag', kind: 'agent', config: { secret: AGENT_SECRET } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  noAgentSecret(made.body);
+  assert.deepEqual(made.body.remote.storedSecrets, ['secret']);
+  assert.deepEqual(made.body.remote.config, {});
+  assert.equal((await stored(store, 'ag')).config.secret, AGENT_SECRET);
+  assert.equal((await stored(store, 'ag')).enabled, false, 'it starts switched off, like every remote');
+
+  const listed = await call('GET', '/remotes');
+  noAgentSecret(listed.body);
+  const card = listed.body.remotes.find(r => r.remoteId === 'ag');
+  assert.equal(card.reachability.connected, false);
+  assert.match(card.reachability.detail, /listener not running/);
+  noAgentSecret(await call('PATCH', '/remotes/ag', { label: 'renamed' }));
+  noAgentSecret(await call('GET', '/agent/broker'));
+
+  const bad = await call('POST', '/remotes', { remoteId: 'ag2', kind: 'agent', config: { secret: 'short' } });
+  assert.equal(bad.status, 400);
+  assert.equal(bad.body.error.includes('short'), false, 'the refusal does not echo the value');
+});
+
+// PINS rotation as the API sees it: a new secret is a config change, so the
+// gate and the baseline reset; a label-only edit (the form re-sends config
+// without the secret) is not.
+test('rotating an agent secret resets the gate and the baseline; a rename does not', async (t) => {
+  const { call, store } = await withApi(t);
+  await call('POST', '/remotes', { remoteId: 'ag', kind: 'agent', config: { secret: AGENT_SECRET } });
+  const { writeRemote } = await import('../src/store.mjs');
+  const rec = await stored(store, 'ag');
+  await writeRemote({ ...rec, enabled: true, baseline: { state: 'ok', fingerprint: 'agent:ag:s1', missing: [], checkedAt: '2026-09-03T00:00:00.000Z' } });
+
+  const renamed = await call('PATCH', '/remotes/ag', { label: 'x', config: {} });
+  assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
+  assert.equal((await stored(store, 'ag')).enabled, true, 'a kept secret is no config change');
+  assert.equal((await stored(store, 'ag')).config.secret, AGENT_SECRET);
+
+  const NEW = 'N'.repeat(43);
+  const rotated = await call('PATCH', '/remotes/ag', { config: { secret: NEW } });
+  assert.equal(rotated.status, 200);
+  noAgentSecret(rotated.body);
+  assert.equal(JSON.stringify(rotated.body).includes(NEW), false);
+  const after = await stored(store, 'ag');
+  assert.equal(after.config.secret, NEW);
+  assert.equal(after.enabled, false, 'a new secret switches the card off');
+  assert.equal(after.baseline.state, 'unknown', 'and forgets the baseline verdict');
 });

@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { FAKE_TRANSPORT, Launcher, record, tempStore, writeRecord } from './helpers.mjs';
+import { FAKE_TRANSPORT, Launcher, record, safeKill, tempStore, writeRecord } from './helpers.mjs';
 
 function mkfifo(p) {
   return new Promise((resolve, reject) => {
@@ -193,7 +193,7 @@ async function detachable(t, { timeoutMs } = {}) {
   const shellPid = await readPid(shellPidFile);
   assert.ok(jobPid > 0 && shellPid > 0, 'the command recorded its own pid and its background job pid');
   t.after(() => {
-    for (const p of [-shellPid, jobPid]) { try { process.kill(p, 'SIGKILL'); } catch { /* gone */ } }
+    for (const p of [-shellPid, jobPid]) safeKill(p);
   });
   // Positive proof the stream is FLOWING before we detach, so "nothing further
   // arrived" cannot pass by nothing ever having arrived.
@@ -268,7 +268,7 @@ test('`detach` on one id reaps nothing and leaves the other ids reapable at shut
   // The detached id survives shutdown BY DESIGN, so this test has to clean it
   // up itself: capture the launcher's children while it still has them.
   const children = await descendantShells(l.pid);
-  t.after(() => { for (const p of children) { try { process.kill(p, 'SIGKILL'); } catch { /* gone */ } } });
+  t.after(() => { for (const p of children) safeKill(p); });
 
   l.closeStdin();
   await l.exited;
@@ -302,7 +302,7 @@ test('the host-side child really dies — the group goes, not just the direct ch
     assert.equal(await settle(async () => !alive(pid)), true,
       'shutdown killed the whole process group, not just the direct child');
   } finally {
-    try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+    safeKill(pid);
   }
 });
 

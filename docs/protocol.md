@@ -21,13 +21,13 @@ Sent once, before any other frame, in answer to cc's `hello`.
  "capabilities":{"processGroupSignal":false,"remotes":true,"remoteDescriptors":true,"remoteListing":true,"pty":true}}
 ```
 
-| Capability | `docker` | `ssh` | `host` |
-|---|---|---|---|
-| `processGroupSignal` | **`false`, final** — see below | **`false`, final** — same reason | `true` unless `--no-process-group-signal` |
-| `remotes` | `true` always | `true` always | at least one `--remote` |
-| `remoteDescriptors` | `true` always | `true` always | at least one `--mirror`/`--exclude` |
-| `remoteListing` | `true` always | `true` always | at least one `--remote` — derived from `remotes` in `src/launcher/main.mjs` |
-| `pty` | the probe, unless `--no-pty` | the probe, unless `--no-pty` | the probe, unless `--no-pty` |
+| Capability | `docker` | `ssh` | `agent` | `host` |
+|---|---|---|---|---|
+| `processGroupSignal` | **`false`, final** — see below | **`false`, final** — same reason | **`false`, final** — a signal reaches only the bridge | `true` unless `--no-process-group-signal` |
+| `remotes` | `true` always | `true` always | `true` always | at least one `--remote` |
+| `remoteDescriptors` | `true` always | `true` always | `true` always | at least one `--mirror`/`--exclude` |
+| `remoteListing` | `true` always | `true` always | `true` always | at least one `--remote` — derived from `remotes` in `src/launcher/main.mjs` |
+| `pty` | the probe, unless `--no-pty` | the probe, unless `--no-pty` | the probe, unless `--no-pty` | the probe, unless `--no-pty` |
 
 **`pty` is a fact about cc's host, not the target**: `true` iff python3 runs the
 vendored pty helper there, probed once per launcher (`probePtyHelper`,
@@ -67,7 +67,11 @@ known position.
 signal fidelity, i.e. a `Transport.signal` seam relaying into the far host — and
 it is not restated here. `reap` SIGKILLs the far-side subtree either way.
 
-`docker` and `ssh` advertise `remotes`, `remoteDescriptors` **and
+**`agent`'s `false`** has docker's reason and one more: a command runs under a
+bridge process on cc's host, so a signal sent here reaches the bridge, and a
+bridge dying kills nothing on the far side (see [`agent`](#agent--what-goes-on-the-wire)).
+
+`docker`, `ssh` and `agent` advertise `remotes`, `remoteDescriptors` **and
 `remoteListing` as `true` always**, never derived from what is in the store — cc memoises the handshake per
 connection generation, so a capability that flapped as remotes were added, or as
 one gained or lost a mirror, would be memoised wrong. See
@@ -846,6 +850,69 @@ than asserted away:
 
 So the residual is a **bounded, understood cost of not yet paying for `-E`**, not a wall. What the per-line anchor buys today is the reachable half: a chatty command, a mid-line occurrence and a mid-stream occurrence are all refused.
 
+## `agent` — what goes on the wire
+
+A dial-in remote: a Python agent on the target dials the **broker** on cc's host
+and authenticates with the remote's secret. The broker-agent wire, the bridge's
+unix-socket protocol and every constant are in [`agent-wire.md`](agent-wire.md);
+this section is what the kind hands the core.
+
+Every plan runs **`node src/agent/bridge.mjs`** (`process.execPath`, absolute):
+
+| Plan | argv after `bridge.mjs` |
+|---|---|
+| `spawnPlan` | `--socket <store>/agent/broker.sock --remote <id> --key <keyId> --cwd <cwd> [--stdin] [--env CC_REMOTE=<id>] --env CC_EXEC_TOKEN=<token> -- <command>` — `<command>` is `/bin/bash -lc <shell>` for the shell form, argv verbatim otherwise; a frame `env` **replaces** through `env -i -- K=V… <command>` (the `--` stops a key starting `-` becoming an `env` option) |
+| `channelPlan` | `… --cwd / --stdin [--env CC_REMOTE=<id>] -- /bin/sh` — invariant per (remote, secret); a channel op carries its token as its env prefix |
+| `ptyPlan` | `… --cwd / --pty [--env CC_REMOTE=<id>] --env CC_EXEC_TOKEN=<token> -- <trampoline>`; `ptyMode: 'exec'` (the agent is the far parent, so the program leads its session and its exit status, signal included, is exact); `ptyResizeRelay: false` |
+
+- **The secret is in no plan.** `--key` is its key id (`keyIdOf` in
+  `src/agent/protocol.mjs`), which the broker compares with the session's; a
+  session on a previous secret is refused `stale-key`.
+- **`--env` is an overlay on the AGENT's environment** — a command inherits the
+  agent's `PATH`, `HOME` and user, not cc's.
+- **`reachability(config, {remoteId})`** asks the broker over its socket
+  (`status`), bounded at 2 s. `connected` only for a live session whose key id
+  is the current secret's. `detail`: the agent's host, pid, Python and peer
+  address and since when; else `no agent connected` plus the last refusal
+  (`wrong-secret` from `<peer>` at `<time>`) and how many times the session was
+  replaced; else `listener not running: <the broker's startup error>`.
+  `fingerprint` is `agent:<remoteId>:<session>`, so a new session re-probes the
+  baseline.
+- **`connect`** ensures the broker runs (`ensureBroker`) and throws only if it
+  cannot — an agent does **not** have to be connected, because the card comes
+  first. **`disconnect`** is a no-op pass: the gate refuses in the launcher's
+  lookup, and the agent's session stays.
+- **`reap`** runs `kinds/reapscript.mjs`'s script as `/bin/sh -c` through a new
+  bridge, bounded at 1200 ms, and must see `CCREAP ok`. `not-connected` and
+  `broker-down` are **benign**, truthfully: an agent ends every command of a
+  session that ends.
+- **A bridge killed kills nothing far-side** (`close` closes the command's stdin
+  and keeps draining it); the kill is `reap`. **A dropped agent session ends
+  every command it started**, background jobs of detached commands included —
+  see [`agent-wire.md`](agent-wire.md#when-a-session-ends).
+
+### How an agent failure becomes a code
+
+The bridge writes ONE stderr line, `code-system-agent: <tag> <message>`, as the
+last thing it writes and with no trailing newline, and exits 127
+(`never-started`) or 255 (any other tag). `classifyFailure` reads it from the
+head **or the tail** of stderr (`stderrTail`, the last 512 bytes): a session
+lost after much output puts it past the head. The line must be the **last**
+line, with **its** exit status; anything else is the command's own result.
+
+| Tag | Exit | Code | Message |
+|---|---|---|---|
+| `never-started <ERRNO>` | 127 | `<ERRNO>` (`ENOENT`, `EACCES`, `ENOTDIR`, …) | the whole line, which is the whole of stderr — so the streamed stderr and the error message agree, as cc requires of a spawn error |
+| `broker-down` | 255 | `ENOREMOTE` | the listener is not running on cc's host; quotes its startup error when there is one |
+| `not-connected` | 255 | `ENOREMOTE` | no agent is connected for '<id>'; names the last refusal |
+| `stale-key` | 255 | `ENOREMOTE` | the connected agent used a previous secret |
+| `too-many-streams` | 255 | `EUNKNOWN` | the per-session cap |
+| `lost` | 255 | `ETRANSPORT` | the agent disconnected while the command ran, and ends its commands when that happens |
+
+Admin messages carry no standalone errno token
+(`.wiki/gotchas/refusal-message-errno-tokens.md`). A command can forge the line
+on its own stderr; that only mislabels its own failure.
+
 ## `readFile` / `writeFile` — derived over `exec`
 
 Both are derived from `exec` in `src/launcher/fileops.mjs`, **once for every
@@ -1016,9 +1083,10 @@ only and re-derived at every start.
 | `GET /api/health` | any response counts as alive |
 | `GET /api/registration` | `{state, rows:[{id,state,httpStatus,message}], checkedAt}` — `blocked`/`unreachable` messages are rendered verbatim |
 | `POST /api/registration/retry` | the only retry; user-driven |
-| `GET /api/kinds` | `{kinds:[{kind,label,configFields,mirrorByDefault}], mirrorDefaults:{root,exclude}}` — the card UI's form definition, per registered kind, plus the Advanced group's prefill from `src/mirror.mjs`'s `DEFAULT_MIRROR`. **`mirrorByDefault`** is always a boolean, read from the kind's `KIND_META` (`true` for docker and ssh): whether a new remote's create form starts with the mirror box ticked. A `configFields` entry may carry **`advanced: true`** (docker's `user`; ssh's `port`, `password`, `identityFile`): render it in the card's Advanced group instead of the connection block. A field may also carry **`credential: true`** (ssh's `identityFile`, additive on the descriptor): REST still serves it, but the MCP views withhold it. It is otherwise an ordinary config field — same validator, same store, same reset-on-change. `GET /api/health` keeps a **plain** kind-name list: a liveness probe has no use for descriptors or defaults |
+| `GET /api/agent/broker` | the agent listener: `{listen, dialDefault, running, pid?, address?, error?, refusals:[{remoteId, reason, peer, at}]}`. `listen` is `CODE_SYSTEM_AGENT_LISTEN` (or its default); `dialDefault` is `127.0.0.1:<port>`, the port the broker actually holds when it runs; `error` is why it does not (its `broker-error.json`, or no agent remote exists); `refusals` are agents refused for a remote id no agent card has (`unknown-remote`, `not-an-agent-remote`), the last few. Never a secret |
+| `GET /api/kinds` | `{kinds:[{kind,label,configFields,mirrorByDefault}], mirrorDefaults:{root,exclude}}` — the card UI's form definition, per registered kind, plus the Advanced group's prefill from `src/mirror.mjs`'s `DEFAULT_MIRROR`. **`mirrorByDefault`** is always a boolean, read from the kind's `KIND_META` (`true` for docker, ssh and agent): whether a new remote's create form starts with the mirror box ticked. A `configFields` entry may carry **`advanced: true`** (docker's `user`; ssh's `port`, `password`, `identityFile`): render it in the card's Advanced group instead of the connection block. A field may also carry **`credential: true`** (ssh's `identityFile`, additive on the descriptor): REST still serves it, but the MCP views withhold it. It is otherwise an ordinary config field — same validator, same store, same reset-on-change. `GET /api/health` keeps a **plain** kind-name list: a liveness probe has no use for descriptors or defaults |
 | `GET /api/remotes` | every stored remote, each with a live `reachability`, a `baseline` and its `mirror`; a record `readRemote` refuses appears as `{remoteId, broken:{reason,message}}` under its **filename stem**, rather than being hidden; `reason` is one of `unreadable`, `malformed`, `too-deep` (nested past `MAX_RECORD_DEPTH` in `src/store.mjs`), `schema` or `id-mismatch` (the record's `remoteId` is not its filename). A record whose `kind` names no registered kind — including a name inherited from `Object.prototype` such as `constructor` or `__proto__`, which the lookup never falls through to — is listed with `reachability: {connected: false, detail: "unknown kind '<kind>'", fingerprint: null}`, never a 500. Its `kinds` field is the **descriptor array**, the same shape `GET /api/kinds` serves, and it carries the same `mirrorDefaults` |
-| `POST /api/remotes` | create — validates the `remoteId` charset, delegates `config` to the kind, and validates `mirror` with `src/mirror.mjs` (**400**, message quoting the offending value and an exclude entry's index). An **absent** `mirror` stores `DEFAULT_MIRROR` for a kind with `mirrorByDefault` (docker, ssh) and `null` otherwise; an explicit `mirror: null` stores `null`. The default applies at creation only: a `PATCH` that omits `mirror` keeps the stored value, and no stored record is re-defaulted. Created **`enabled: false`**. 400 / 409 |
+| `POST /api/remotes` | create — validates the `remoteId` charset, delegates `config` to the kind, and validates `mirror` with `src/mirror.mjs` (**400**, message quoting the offending value and an exclude entry's index). An **absent** `mirror` stores `DEFAULT_MIRROR` for a kind with `mirrorByDefault` (docker, ssh, agent) and `null` otherwise; an explicit `mirror: null` stores `null`. The default applies at creation only: a `PATCH` that omits `mirror` keeps the stored value, and no stored record is re-defaulted. Created **`enabled: false`**. 400 / 409 |
 | `PATCH /api/remotes/:id` | edit everything **except** `remoteId`; a changed `config` resets `baseline` to `unknown` **and `enabled` to `false`**; a label-only edit preserves both. **A `mirror` change resets neither** — it names the same target — and an omitted `mirror` preserves the stored one. An invalid `mirror` is a 400 and writes nothing. A `config` on a record whose stored kind no transport answers to is **409** `{error: "unknown kind '<k>'"}` and writes nothing. The Advanced group is **not** uniformly reset-free: an Advanced-rendered *config* field (docker `user`) is a config change and resets both |
 | `POST /api/remotes/:id/connect` | 200 `{remote}` — the kind's `connect` **first**, then the gate. 404 absent / 409 unreadable / **409** `{error: "unknown kind '<k>'"}` for a stored kind no transport answers to (gate left off) / **502** `{error, remote}` on a transport refusal |
 | `POST /api/remotes/:id/disconnect` | 200 `{remote, warning?}` — the gate **first**, then the kind's `disconnect`. 404 / 409 as above. An unknown stored kind still switches the gate off, with `warning: "unknown kind '<k>'"` |
@@ -1032,8 +1100,14 @@ it to the card UI; neither MCP view carries it. `withheldFieldsFor` in
 `src/launcher/kinds/index.mjs` is the one funnel: every `secret` field is
 withheld from MCP too, with no second flag.
 
+**Generated config fields.** `generated: true` (the agent's `secret`, also
+`secret: true`) marks a field the card generates and never shows an input for:
+32 random bytes as unpadded base64url, made in the browser
+(`frontend/src/lib/agentSecret.ts`) and sent like any secret. The agent kind's
+`validateConfig` accepts exactly that shape.
+
 **Secret config fields.** A `configFields` entry may carry **`secret: true`**
-(ssh's `password`). No response — `GET /remotes`, `POST`, `PATCH`, connect,
+(ssh's `password`, the agent's `secret`). No response — `GET /remotes`, `POST`, `PATCH`, connect,
 disconnect, or the connect-502 card — contains a secret's value; each remote
 carries **`storedSecrets: [<field names>]`** instead, and its `config` omits
 them. On `POST`, a `null` secret means none. On `PATCH`, per secret field:
@@ -1216,8 +1290,8 @@ view summarises; the json view carries the rest of each record. No `mirror`, no
 |---|---|
 | status | a word from the derivation below |
 | `remoteId` | what a cc project's *Remote* field takes |
-| kind | the raw token (`docker` / `ssh`) — what `POST /api/remotes` accepts, not `KIND_META.label` |
-| target | `<field>=<value>`, the field named by the kind's `KIND_META.identityField` (`container` for docker, `host` for ssh). A record whose kind has none — never accepted by `POST /api/remotes`, but reachable in a hand-written record file — renders the literal `[unregistered kind]`, bracketed so it cannot be read as a field named `unregistered` |
+| kind | the raw token (`docker` / `ssh` / `agent`) — what `POST /api/remotes` accepts, not `KIND_META.label` |
+| target | `<field>=<value>`, the field named by the kind's `KIND_META.identityField` (`container` for docker, `host` for ssh). A kind that DECLARES `identityField: null` (`agent`: the target is whichever machine dials in) renders the literal `[dials in]`, and the json view's `target` is `null`. A record whose kind has none — never accepted by `POST /api/remotes`, but reachable in a hand-written record file — renders the literal `[unregistered kind]`, bracketed so it cannot be read as a field named `unregistered` |
 | label | the only **quoted** field: surrounding double quotes, with any double quote inside escaped, so a reader can see where the label ends |
 
 #### One row per line, and what guarantees it
