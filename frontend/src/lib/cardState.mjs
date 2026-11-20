@@ -500,15 +500,16 @@ export function generatedSent(body, descriptor) {
 const shq = (s) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, `'\\''`)}'`);
 
 /**
- * The two ways to start an agent, as copyable commands. The secret is single-
- * quoted and travels in the environment, never in the agent's argv. `dial` is
+ * The two ways to start an agent, as copyable commands. Every variable part is
+ * a quoted shell word, the secret included; it travels in the environment,
+ * never in the agent's argv. `dial` is
  * the address the TARGET machine reaches the listener on — operator-editable,
  * so it is quoted like everything else.
  * @param {{dial:string, remoteId:string, secret:string}} o
  * @returns {{curl:string, checkout:string}}
  */
 export function agentCommands({ dial, remoteId, secret }) {
-  const env = `CODE_SYSTEM_AGENT_SECRET='${secret}'`;
+  const env = `CODE_SYSTEM_AGENT_SECRET=${shq(secret)}`;
   const args = `--connect ${shq(dial)} --remote ${shq(remoteId)}`;
   return {
     curl: `curl -fsS ${shq(`http://${dial}/agent.py`)} | ${env} python3 - ${args}`,

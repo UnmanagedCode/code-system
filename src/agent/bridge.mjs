@@ -25,9 +25,37 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { readBrokerError } from './client.mjs';
+import { fileURLToPath } from 'node:url';
 import {
-  BRIDGE_EXIT_NEVER_STARTED, BRIDGE_EXIT_OWN, BRIDGE_TAGS, LineDecoder, MARKER_PREFIX, PROTOCOL, encode,
+  BRIDGE_EXIT_NEVER_STARTED, BRIDGE_EXIT_OWN, BRIDGE_TAGS, LineDecoder, MARKER_PREFIX, PROTOCOL, decodeLine, encode,
 } from './protocol.mjs';
+
+/**
+ * ONE STDIN CHUNK AS FRAMES, in the order they must leave: a `resize` FIRST
+ * when the terminal's live size differs from the last one sent — the launcher
+ * resizes the host terminal before it writes the input that follows, so
+ * reading the size before forwarding that input keeps the two in order — then
+ * the chunk as `in` frames of at most `chunkBytes`.
+ * @param {Buffer} chunk
+ * @param {{cols:number, rows:number}|null} size  the last size sent; null when not a terminal
+ * @param {() => [number, number]} getWindowSize
+ * @returns {{frames:object[], size:{cols:number, rows:number}|null}}
+ */
+export function inputFrames(chunk, size, getWindowSize) {
+  const frames = [];
+  let next = size;
+  if (size) {
+    const [cols, rows] = getWindowSize();
+    if (cols !== size.cols || rows !== size.rows) {
+      next = { cols, rows };
+      frames.push({ t: 'resize', cols, rows });
+    }
+  }
+  for (let i = 0; i < chunk.length; i += PROTOCOL.chunkBytes) {
+    frames.push({ t: 'in', b64: chunk.subarray(i, i + PROTOCOL.chunkBytes).toString('base64') });
+  }
+  return { frames, size: next };
+}
 
 function parseArgs(argv) {
   const o = { socket: null, remote: null, key: null, cwd: null, stdin: false, pty: false, env: {}, argv: [] };
@@ -50,6 +78,8 @@ function parseArgs(argv) {
 }
 
 let finishing = false;
+// The last byte relayed to stderr, so the marker always starts a line of its own.
+let lastErrByte = null;
 
 // The marker is the LAST thing written and carries NO trailing newline: for a
 // command that never started it is the whole of stderr, and cc requires the
@@ -58,7 +88,8 @@ function finish(code, marker = null) {
   if (finishing) return;
   finishing = true;
   const out = () => {
-    if (marker) process.stderr.write(`${MARKER_PREFIX}${marker}`, () => process.exit(code));
+    const sep = lastErrByte !== null && lastErrByte !== 10 ? '\n' : '';
+    if (marker) process.stderr.write(`${sep}${MARKER_PREFIX}${marker}`, () => process.exit(code));
     else process.exit(code);
   };
   // Every `out` already relayed must reach the launcher before the exit does.
@@ -100,27 +131,40 @@ async function main() {
   // A resize always goes out BEFORE the input that follows it: the launcher
   // sets the host terminal's size before it writes the next input, so reading
   // the live size before forwarding each chunk preserves that order.
+  const getWindowSize = () => process.stdout.getWindowSize();
   const checkSize = () => {
-    if (!o.pty) return;
-    const [cols, rows] = process.stdout.getWindowSize();
-    if (cols !== size.cols || rows !== size.rows) {
-      size = { cols, rows };
-      send({ t: 'resize', cols, rows });
+    const r = inputFrames(Buffer.alloc(0), size, getWindowSize);
+    size = r.size;
+    for (const f of r.frames) send(f);
+  };
+
+  // NEVER PAST THE CREDIT: a read can hand over more than is left, so what
+  // does not fit is held (with stdin paused) until an ack makes room — the
+  // broker ends a stream whose bridge overruns it. `eof` waits for the held
+  // bytes, so it is never sent ahead of input.
+  let held = Buffer.alloc(0);
+  let eofPending = false;
+  const flushInput = () => {
+    while (held.length > 0 && credit > 0) {
+      const part = held.subarray(0, Math.min(credit, held.length));
+      held = held.subarray(part.length);
+      const r = inputFrames(part, size, getWindowSize);
+      size = r.size;
+      for (const f of r.frames) send(f);
+      credit -= part.length;
     }
+    if (held.length > 0 || credit <= 0) process.stdin.pause();
+    else if (!eofPending) process.stdin.resume();
+    if (eofPending && held.length === 0) { eofPending = false; send({ t: 'eof' }); }
   };
 
   const pumpStdin = () => {
     if (!(o.stdin || o.pty)) return;
     process.stdin.on('data', (chunk) => {
-      checkSize();
-      for (let i = 0; i < chunk.length; i += PROTOCOL.chunkBytes) {
-        const part = chunk.subarray(i, i + PROTOCOL.chunkBytes);
-        credit -= part.length;
-        send({ t: 'in', b64: part.toString('base64') });
-      }
-      if (credit <= 0) process.stdin.pause();
+      held = held.length ? Buffer.concat([held, chunk]) : chunk;
+      flushInput();
     });
-    process.stdin.on('end', () => { if (!o.pty) send({ t: 'eof' }); });
+    process.stdin.on('end', () => { if (!o.pty) { eofPending = true; flushInput(); } });
     process.stdin.on('error', () => {});
     if (o.pty) process.on('SIGWINCH', checkSize);
   };
@@ -134,15 +178,21 @@ async function main() {
       case 'out': {
         const data = Buffer.from(f.b64, 'base64');
         const dest = f.fd === 2 ? process.stderr : process.stdout;
+        if (f.fd === 2 && data.length) lastErrByte = data[data.length - 1];
         // CREDIT IS RETURNED ONLY ONCE THE BYTES ARE WRITTEN, so a launcher that
         // stops reading stops the far process, through every buffer between.
-        dest.write(data, () => send({ t: 'ack', fd: f.fd, n: data.length }));
+        // And this process holds no more than the socket's own buffer: while a
+        // destination is backed up, the socket is not read.
+        if (!dest.write(data, () => send({ t: 'ack', fd: f.fd, n: data.length }))) {
+          conn.pause();
+          dest.once('drain', () => conn.resume());
+        }
         return;
       }
       case 'ack':
         if (f.fd === 0) {
           credit += f.n;
-          if (credit > 0 && started) process.stdin.resume();
+          if (started) flushInput();
         }
         return;
       case 'exit':
@@ -161,9 +211,6 @@ async function main() {
         ended = true;
         finish(BRIDGE_EXIT_OWN, `${f.tag} ${f.message}`);
         return;
-      default:
-        ended = true;
-        finish(BRIDGE_EXIT_OWN, `${BRIDGE_TAGS.lost} the agent listener sent '${f.t}', which it never sends`);
     }
   };
 
@@ -180,8 +227,8 @@ async function main() {
     for (const line of lines) {
       if (ended) return;
       let f;
-      try { f = JSON.parse(line.toString('utf8')); }
-      catch { ended = true; finish(BRIDGE_EXIT_OWN, `${BRIDGE_TAGS.lost} the agent listener sent a line that is not JSON`); return; }
+      try { f = decodeLine(line, PROTOCOL.toBridge); }
+      catch (e) { ended = true; finish(BRIDGE_EXIT_OWN, `${BRIDGE_TAGS.lost} the agent listener sent a bad frame: ${e.message}`); return; }
       onFrame(f);
     }
   });
@@ -213,4 +260,4 @@ function reraise(signal) {
   });
 }
 
-await main();
+if (process.argv[1] === fileURLToPath(import.meta.url)) await main();

@@ -11,7 +11,7 @@ import { promises as fs, readFileSync, readdirSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { Launcher, writeRecord } from './helpers.mjs';
+import { Launcher, safeKill, writeRecord } from './helpers.mjs';
 import {
   BRIDGE, NEEDS_PYTHON, agentEnv, agentRecord, agentStore, agentWorld, alive, connected, newSecret,
   startAgent, startBroker, status, waitFor,
@@ -51,7 +51,9 @@ function bridgesOf(pid) {
   });
 }
 
-const killLater = (t, pid) => t.after(() => { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } });
+// The pid came from the far command's own output: data, so it is only killed
+// if it is still a `sleep` (safeKill refuses pid 1, this process and its ancestors).
+const killLater = (t, pid) => t.after(() => { safeKill(pid, 'SIGKILL', { expect: 'sleep' }); });
 
 test('exec relays stdout, stderr and the exit code, with CC_REMOTE set', { skip }, async (t) => {
   const w = await agentWorld(t);

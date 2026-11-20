@@ -24,6 +24,7 @@ import fcntl
 import hashlib
 import hmac
 import json
+import marshal
 import os
 import platform
 import random
@@ -66,7 +67,7 @@ PROTOCOL_JSON = r'''
     "backoffStableMs": 10000
   },
   "refusalCodes": ["auth_failed", "version_mismatch", "bad_frame", "busy", "timeout"],
-  "byeCodes": ["replaced", "stale-key", "shutdown", "keepalive"],
+  "byeCodes": ["replaced", "stale-key", "shutdown", "keepalive", "credit"],
   "wire": {
     "hello": {"v": "int", "remoteId": "str", "nonce": "hex"},
     "challenge": {"nonce": "hex"},
@@ -74,7 +75,7 @@ PROTOCOL_JSON = r'''
     "welcome": {"session": "hex", "mac": "hex"},
     "refused": {"code": "str", "message": "str"},
     "info": {"host": "str", "python": "str", "pid": "int", "agentVersion": "str"},
-    "open": {"s": "int", "argv": "strlist", "cwd": "str", "env": "strmap", "stdin": "bool", "pty?": "size"},
+    "open": {"s": "int", "argv": "argv", "cwd": "str", "env": "strmap", "stdin": "bool", "pty?": "size"},
     "started": {"s": "int", "pid": "int"},
     "failed": {"s": "int", "errno": "str", "message": "str"},
     "out": {"s": "int", "fd": "int", "b64": "b64"},
@@ -89,7 +90,7 @@ PROTOCOL_JSON = r'''
     "bye": {"code": "str", "message": "str"}
   },
   "control": {
-    "open": {"remoteId": "str", "keyId": "hex", "argv": "strlist", "cwd": "str", "env": "strmap", "stdin": "bool", "pty?": "size"},
+    "open": {"remoteId": "str", "keyId": "hex", "argv": "argv", "cwd": "str", "env": "strmap", "stdin": "bool", "pty?": "size"},
     "status": {"remoteId": "str"},
     "ping": {},
     "stop": {},
@@ -98,13 +99,29 @@ PROTOCOL_JSON = r'''
     "eof": {},
     "ack": {"fd": "int", "n": "int"},
     "resize": {"cols": "int", "rows": "int"}
+  },
+  "toBridge": {
+    "started": {"pid": "int"},
+    "failed": {"errno": "str", "message": "str"},
+    "out": {"fd": "int", "b64": "b64"},
+    "ack": {"fd": "int", "n": "int"},
+    "exit": {"code": "int|null", "signal": "str|null"},
+    "lost": {"tag": "str", "message": "str"},
+    "refused": {"tag": "str", "message": "str"}
   }
 }
 '''
 # END PROTOCOL
 PROTOCOL = json.loads(PROTOCOL_JSON)
 
+# This module's own code object, so the agent can re-execute ITSELF even when it
+# was read from stdin (`curl … | python3 -`) and no file holds its source.
+_MODULE_CODE = sys._getframe().f_code
+
 SECRET_ENV = 'CODE_SYSTEM_AGENT_SECRET'
+# INTERNAL: the agent re-executes itself once at startup (see `reexec_without_secret`)
+# and finds the secret on this inherited fd instead of in its environment.
+INHERITED_FD_FLAG = '--inherited-fd'
 TIMINGS_ENV = 'CODE_SYSTEM_AGENT_TIMINGS'
 AGENT_VERSION = str(PROTOCOL['version'])
 TAG = 'code-system-agent'
@@ -182,6 +199,8 @@ def _check_value(v, typ):
         return isinstance(v, bool)
     if typ == 'strlist':
         return isinstance(v, list) and all(isinstance(x, str) for x in v)
+    if typ == 'argv':
+        return isinstance(v, list) and len(v) > 0 and all(isinstance(x, str) for x in v)
     if typ == 'strmap':
         return isinstance(v, dict) and all(isinstance(k, str) and isinstance(x, str) for k, x in v.items())
     if typ == 'b64':
@@ -269,8 +288,9 @@ class Backoff(object):
     attempt; a delay is drawn uniformly from [min(base, ceiling), ceiling]. It
     returns to `base` only after a session that lived at least `stable`
     seconds, so an agent that connects and is dropped at once cannot reconnect
-    in a tight loop. A refusal (wrong secret, wrong version) jumps straight to
-    the cap: retrying sooner cannot succeed.
+    in a tight loop. A refusal (wrong secret, wrong version) waits AT LEAST
+    the cap, jittered upward to at most a quarter more: retrying sooner cannot
+    succeed.
     """
 
     def __init__(self, base, cap, stable, rng=None, clock=None):
@@ -284,8 +304,6 @@ class Backoff(object):
         self.refused = False
 
     def ceiling(self):
-        if self.refused:
-            return self.cap
         return min(self.cap, self.base * (2 ** self.attempt))
 
     def session_started(self):
@@ -300,6 +318,9 @@ class Backoff(object):
         self.refused = True
 
     def next_delay(self):
+        if self.refused:
+            self.refused = False
+            return self.cap * (1 + 0.25 * self.rng())
         top = self.ceiling()
         low = min(self.base, top)
         delay = low + (top - low) * self.rng()
@@ -326,12 +347,17 @@ def platform_refusal(plat=None, version=None):
 
 
 def parse_args(argv):
-    out = {'connect': None, 'remote': None, 'help': False}
+    out = {'connect': None, 'remote': None, 'help': False, 'fd': None}
     i = 0
     while i < len(argv):
         a = argv[i]
         if a in ('--help', '-h'):
             out['help'] = True
+        elif a == INHERITED_FD_FLAG:
+            if i + 1 >= len(argv) or not argv[i + 1].isdigit():
+                raise UsageError('%s is internal and needs a file descriptor' % a)
+            out['fd'] = int(argv[i + 1])
+            i += 1
         elif a == '--connect' or a == '--remote':
             if i + 1 >= len(argv):
                 raise UsageError('%s needs a value' % a)
@@ -398,6 +424,9 @@ class Stream(object):
         self.signal = None
         self.reaped = False
         self.done = False
+        # The leader's start time, which tells our process group from a later
+        # one that reused its id.
+        self.started = proc_starttime(proc.pid)
 
 
 def _signal_name(n):
@@ -405,6 +434,41 @@ def _signal_name(n):
         return signal.Signals(n).name
     except ValueError:
         return 'SIG%d' % n
+
+
+def proc_starttime(pid):
+    """Field 22 of /proc/<pid>/stat (clock ticks since boot), or None."""
+    try:
+        with open('/proc/%d/stat' % pid, 'rb') as f:
+            stat = f.read()
+    except OSError:
+        return None
+    try:
+        return int(stat[stat.rindex(b')') + 2:].split()[19])
+    except (ValueError, IndexError):
+        return None
+
+
+def group_is_ours(pgid, started, starttime=proc_starttime, killpg=os.killpg):
+    """Whether process group `pgid` is still the one we started.
+
+    A pid in use as a process group id is never handed out again, so: a live
+    process with pid == pgid is our leader only if its start time is the one
+    we recorded; with no such process, a group that still has members is ours
+    (its leader died, its background jobs did not).
+    """
+    if not isinstance(pgid, int) or pgid <= 1 or pgid == os.getpgrp():
+        return False
+    now = starttime(pgid)
+    if now is not None:
+        return now == started
+    try:
+        killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def _set_nonblocking(fd):
@@ -438,8 +502,7 @@ class Session(object):
         # Every process group this session started, while it may still have
         # members — including groups whose leader has exited, which is where a
         # detached command's background jobs live.
-        self.groups = set()
-        self.dying = []
+        self.groups = {}
         now = time.monotonic()
         self.last_rx = now
         self.next_ping = now + tim['pingIntervalMs'] / 1000.0
@@ -524,8 +587,23 @@ class Session(object):
             return
         env = dict(os.environ)
         env.update(f['env'])
-        pty = f.get('pty')
+        try:
+            self._spawn(s, f, env, f.get('pty'))
+        except (Shutdown, Lost):
+            raise
+        except Exception as e:  # noqa: BLE001 — one stream's failure is never the agent's
+            if isinstance(e, OSError) and e.errno:
+                name = errno.errorcode.get(e.errno, 'EUNKNOWN')
+            elif isinstance(e, OSError):
+                name = 'EUNKNOWN'
+            else:
+                name = 'EINVAL'
+            self.send({'t': 'failed', 's': s, 'errno': name, 'message': str(e) or type(e).__name__})
+
+    def _spawn(self, s, f, env, pty):
+        """Start one stream, or raise; nothing it opened outlives a raise."""
         master = slave = None
+        proc = None
         try:
             if pty is not None:
                 master, slave = os.openpty()
@@ -538,34 +616,39 @@ class Session(object):
                     f['argv'], cwd=f['cwd'], env=env,
                     stdin=subprocess.PIPE if f['stdin'] else subprocess.DEVNULL,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
-        except OSError as e:
+            st = Stream(s, proc, master)
+            if master is not None:
+                os.close(slave)
+                slave = None
+                _set_nonblocking(master)
+                st.outs[1] = master
+                st.stdin_fd = master
+            else:
+                st.outs[1] = proc.stdout.fileno()
+                st.outs[2] = proc.stderr.fileno()
+                _set_nonblocking(st.outs[1])
+                _set_nonblocking(st.outs[2])
+                if proc.stdin is not None:
+                    st.stdin_fd = proc.stdin.fileno()
+                    _set_nonblocking(st.stdin_fd)
+        except BaseException:
             for fd in (master, slave):
                 if fd is not None:
-                    os.close(fd)
-            name = errno.errorcode.get(e.errno, 'EUNKNOWN') if e.errno else 'EUNKNOWN'
-            self.send({'t': 'failed', 's': s, 'errno': name, 'message': str(e)})
-            return
-        except (ValueError, TypeError) as e:
-            for fd in (master, slave):
-                if fd is not None:
-                    os.close(fd)
-            self.send({'t': 'failed', 's': s, 'errno': 'EINVAL', 'message': str(e)})
-            return
-        st = Stream(s, proc, master)
-        self.groups.add(proc.pid)
-        if master is not None:
-            os.close(slave)
-            _set_nonblocking(master)
-            st.outs[1] = master
-            st.stdin_fd = master
-        else:
-            st.outs[1] = proc.stdout.fileno()
-            st.outs[2] = proc.stderr.fileno()
-            _set_nonblocking(st.outs[1])
-            _set_nonblocking(st.outs[2])
-            if proc.stdin is not None:
-                st.stdin_fd = proc.stdin.fileno()
-                _set_nonblocking(st.stdin_fd)
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+            if proc is not None:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                try:
+                    proc.wait(timeout=1)
+                except Exception:  # noqa: BLE001
+                    pass
+            raise
+        self.groups[proc.pid] = st.started
         self.streams[s] = st
         self.send({'t': 'started', 's': s, 'pid': proc.pid})
         self._interest(st)
@@ -735,21 +818,31 @@ class Session(object):
             self.send({'t': 'out', 's': st.s, 'fd': num, 'b64': base64.b64encode(data).decode('ascii')})
         self._interest(st)
 
+    def _reap(self, st):
+        """Reap the direct child as soon as it exits: no zombie waits on EOF."""
+        if st.reaped:
+            return True
+        rc = st.proc.poll()
+        if rc is None:
+            return False
+        st.reaped = True
+        if rc < 0:
+            st.code, st.signal = None, _signal_name(-rc)
+        else:
+            st.code, st.signal = rc, None
+        return True
+
     def _settle(self, st):
-        """Send `exit` once the process is reaped AND its output is drained."""
+        """Send `exit` once the process is reaped AND its output is drained.
+
+        A background job still holding the output keeps the stream open (and
+        counting toward maxStreamsPerSession) after its parent is reaped, as a
+        docker or ssh client would stay; `exit` waits for the output to close.
+        """
         if st.done:
             return
-        if st.outs:
+        if not self._reap(st) or st.outs:
             return
-        if not st.reaped:
-            rc = st.proc.poll()
-            if rc is None:
-                return
-            st.reaped = True
-            if rc < 0:
-                st.code, st.signal = None, _signal_name(-rc)
-            else:
-                st.code, st.signal = rc, None
         st.done = True
         self._close_stdin(st)
         if st.master is not None:
@@ -773,12 +866,16 @@ class Session(object):
         left its group and survives; nothing here can find it.
         """
         for st in list(self.streams.values()):
-            if st.master is not None:
+            if st.master is not None and group_is_ours(st.pgid, st.started):
                 try:
                     os.killpg(st.pgid, signal.SIGHUP)
                 except OSError:
                     pass
-        for pgid in list(self.groups):
+        for pgid, started in list(self.groups.items()):
+            # Checked immediately before the signal: a group id whose group
+            # emptied may have been reused by an unrelated process.
+            if not group_is_ours(pgid, started):
+                continue
             try:
                 os.killpg(pgid, signal.SIGKILL)
             except OSError:
@@ -792,18 +889,14 @@ class Session(object):
             except Exception:
                 pass
         self.streams = {}
-        self.groups = set()
+        self.groups = {}
 
     def _prune_groups(self):
-        for pgid in list(self.groups):
+        for pgid, started in list(self.groups.items()):
             if any(st.pgid == pgid for st in self.streams.values()):
                 continue
-            try:
-                os.killpg(pgid, 0)
-            except ProcessLookupError:
-                self.groups.discard(pgid)
-            except OSError:
-                pass
+            if not group_is_ours(pgid, started):
+                del self.groups[pgid]
 
     def run(self, stop_flag):
         last_prune = time.monotonic()
@@ -814,15 +907,21 @@ class Session(object):
             # A process that exited with its output already drained is noticed
             # by polling; one still holding its output open is settled on EOF.
             waiting = [st for st in self.streams.values() if not st.outs and not st.done]
+            unreaped = [st for st in self.streams.values() if not st.reaped]
             timeout = max(0.0, min(self.next_ping, self.last_rx + keepalive) - now)
             if waiting:
                 timeout = min(timeout, 0.02)
+            elif unreaped:
+                timeout = min(timeout, 0.25)
             for key, mask in self.sel.select(timeout):
                 kind, st = key.data
                 if kind == 'sock':
                     self._on_sock(mask)
                 elif self.streams.get(st.s) is st:
                     self._on_fd(st, key.fd, mask)
+            for st in unreaped:
+                if self.streams.get(st.s) is st:
+                    self._reap(st)
             for st in waiting:
                 if self.streams.get(st.s) is st:
                     self._settle(st)
@@ -948,6 +1047,51 @@ def run_forever(address, remote_id, secret, tim, stop_flag, sleep=time.sleep):
             sleep(min(0.1, max(0.0, end - time.monotonic())))
 
 
+# The bootstrap the agent re-executes into: the code object from one inherited
+# memfd, the secret's fd number passed on to `main`. Python's -c argv is
+# ['-c', <code fd>, <secret fd>, <the agent's own arguments>...].
+BOOT = (
+    'import marshal,os,sys\n'
+    'c=int(sys.argv[1]);code=marshal.loads(os.pread(c,os.fstat(c).st_size,0));os.close(c)\n'
+    "sys.argv=['agent.py','%s',sys.argv[2]]+sys.argv[3:]\n"
+    "exec(code,{'__name__':'__main__','__builtins__':__builtins__})\n" % INHERITED_FD_FLAG
+)
+
+
+def reexec_without_secret(argv, env, secret):
+    """Replace this process with one whose environment never held the secret.
+
+    Removing the variable from os.environ is not enough: /proc/<pid>/environ
+    shows the environment block the process was EXECUTED with, and every
+    command this agent runs, as the same user, can read its parent's. So the
+    agent puts the secret (and its own code, which may have come from stdin)
+    into two memfds — anonymous files, never on disk — and execve()s the same
+    interpreter with a clean environment, the fds inherited and only their
+    numbers on the command line. The new process reads the secret and closes
+    the fd before it connects. Never returns.
+    """
+    if not hasattr(os, 'memfd_create'):
+        raise UsageError('this Python has no os.memfd_create, which the agent needs to keep its secret'
+                         ' out of its environment (Linux 3.17 or later)')
+    code_fd = os.memfd_create('code-system-agent-code', 0)
+    os.write(code_fd, marshal.dumps(_MODULE_CODE))
+    secret_fd = os.memfd_create('code-system-agent-secret', 0)
+    os.write(secret_fd, secret.encode('utf-8'))
+    for fd in (code_fd, secret_fd):
+        os.set_inheritable(fd, True)
+    clean = {k: v for k, v in env.items() if k != SECRET_ENV}
+    sys.stderr.flush()
+    os.execve(sys.executable, [sys.executable, '-I', '-c', BOOT, str(code_fd), str(secret_fd)] + list(argv), clean)
+
+
+def read_inherited_secret(fd):
+    try:
+        data = os.pread(fd, 1 << 16, 0)
+    finally:
+        os.close(fd)
+    return data.decode('utf-8')
+
+
 def main(argv, env=None):
     env = os.environ if env is None else env
     refusal = platform_refusal()
@@ -963,13 +1107,22 @@ def main(argv, env=None):
     if opts['help']:
         sys.stdout.write(USAGE)
         return 0
-    secret = env.get(SECRET_ENV, '')
+    if opts['fd'] is not None:
+        secret = read_inherited_secret(opts['fd'])
+    else:
+        secret = env.get(SECRET_ENV, '')
+        if not secret:
+            log('%s is not set - the remote\'s secret is read from it and never from the command line'
+                % SECRET_ENV)
+            return 2
+        try:
+            reexec_without_secret(argv, env, secret)
+        except (UsageError, OSError) as e:
+            log('cannot start without the secret in the environment: %s' % e)
+            return 2
     if not secret:
-        log('%s is not set - the remote\'s secret is read from it and never from the command line'
-            % SECRET_ENV)
+        log('the inherited secret is empty')
         return 2
-    # Out of the environment every command inherits, before any command runs.
-    env.pop(SECRET_ENV, None)
     try:
         tim = timings(env)
     except ValueError as e:

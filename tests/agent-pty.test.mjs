@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Launcher } from './helpers.mjs';
+import { Launcher, safeKill } from './helpers.mjs';
 import { NEEDS_PYTHON, PY, agentEnv, agentWorld, alive, waitFor } from './agentFixture.mjs';
 import { probePtyHelper } from '../src/launcher/ptyhost.mjs';
 
@@ -123,7 +123,7 @@ test('close hangs the terminal up and reaps its session', { skip }, async (t) =>
   open(l, 't1', cwd, ['/bin/sh', '-c', 'trap "" HUP; echo $$; exec sleep 30']);
   await until(l, 't1', /^\d+\r\n/);
   const pid = Number(/^(\d+)/.exec(outOf(l, 't1'))[1]);
-  t.after(() => { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } });
+  t.after(() => { safeKill(pid, 'SIGKILL', { expect: 'sleep' }); });
   assert.equal(alive(pid), true);
   l.send({ type: 'close', id: 't1' });
   await waitFor(() => !alive(pid), { what: 'the terminal\'s program to be reaped' });

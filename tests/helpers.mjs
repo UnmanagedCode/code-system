@@ -2,7 +2,7 @@
 // every store is a fresh mkdtemp so tests pass in any order.
 
 import { spawn } from 'node:child_process';
-import { promises as fs } from 'node:fs';
+import { promises as fs, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +23,37 @@ export const FAKE_TRANSPORT = path.join(REPO, 'tests', 'fakeTransport.mjs');
 // Dialog's injected <style>.
 export const PINNED_CSP = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self';"
   + " connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'";
+
+/**
+ * SIGNAL A PID THAT CAME FROM DATA — a pid file, a command's output, a frame —
+ * only if it cannot be one that takes the machine down: never pid 0/1 (or a
+ * negative pgid of them, `kill(-1)` being every process this user owns), never
+ * this test process or any of its ancestors (the test runner, cc), and, when
+ * `expect` is given, only a process whose command line contains it. Answers
+ * whether it signalled. A pid this code spawned itself needs none of this.
+ * @param {number} target  a pid, or a negative pgid
+ * @param {string} [sig]
+ * @param {{expect?:string}} [o]
+ */
+export function safeKill(target, sig = 'SIGKILL', { expect } = {}) {
+  const pid = Math.abs(Number(target));
+  if (!Number.isSafeInteger(pid) || pid <= 1) return false;
+  const lineage = new Set([process.pid]);
+  for (let p = process.pid, i = 0; i < 64 && p > 1; i++) {
+    try {
+      const st = readFileSync(`/proc/${p}/stat`, 'latin1');
+      p = Number(st.slice(st.lastIndexOf(')') + 2).split(' ')[1]);
+    } catch { break; }
+    lineage.add(p);
+  }
+  if (lineage.has(pid)) return false;
+  if (expect !== undefined) {
+    let cmd;
+    try { cmd = readFileSync(`/proc/${pid}/cmdline`, 'latin1').replaceAll('\0', ' '); } catch { return false; }
+    if (!cmd.includes(expect)) return false;
+  }
+  try { process.kill(target, sig); return true; } catch { return false; }
+}
 
 export async function tempStore() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'code-system-test-'));
@@ -103,7 +134,12 @@ export class Launcher {
 export async function writeRecord(storeDir, record) {
   const dir = path.join(storeDir, 'remotes');
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, `${record.remoteId}.json`), `${JSON.stringify(record, null, 2)}\n`);
+  // ATOMIC (write, then rename), as the store writes: a reader polling the
+  // directory — the agent broker's tick — must never see a half-written file.
+  const file = path.join(dir, `${record.remoteId}.json`);
+  const tmp = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
+  await fs.writeFile(tmp, `${JSON.stringify(record, null, 2)}\n`);
+  await fs.rename(tmp, file);
   return record;
 }
 

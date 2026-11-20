@@ -8,10 +8,11 @@
 // by cc's child would be bound to cc's lifetime decisions.
 
 import { spawn } from 'node:child_process';
-import { openSync, closeSync, statSync, truncateSync } from 'node:fs';
+import { openSync, closeSync, readFileSync, statSync, truncateSync } from 'node:fs';
+import path from 'node:path';
 import { listRemotes } from '../store.mjs';
 import {
-  BROKER_MAIN, agentDir, agentLogPath, agentSocketPath, socketPathDefect,
+  BROKER_MAIN, agentDir, agentLogPath, agentSocketPath, socketPathDefect, storeRoot,
 } from '../paths.mjs';
 import { BrokerDown, ensureAgentDir, queryBroker, readBrokerError } from './client.mjs';
 import { buildId, desiredListen, parseListen } from './protocol.mjs';
@@ -40,7 +41,9 @@ function startDetached(spawnImpl, listen) {
   try { if (statSync(logPath).size > LOG_MAX_BYTES) truncateSync(logPath, 0); } catch { /* absent */ }
   const fd = openSync(logPath, 'a', 0o600);
   try {
-    const child = spawnImpl(process.execPath, [BROKER_MAIN, '--listen', listen], {
+    // `--store` is on the command line so /proc/<pid>/cmdline PROVES which
+    // store a broker serves before anything signals it (`brokerPidDefect`).
+    const child = spawnImpl(process.execPath, [BROKER_MAIN, '--listen', listen, '--store', storeRoot()], {
       detached: true, stdio: ['ignore', fd, fd], env: process.env,
     });
     child.unref?.();
@@ -55,7 +58,7 @@ let chain = Promise.resolve();
  * a card's Connect may all ask at once, and two concurrent starts would race
  * for the port.
  *
- * @param {{spawnImpl?:typeof spawn, listen?:string}} [o]
+ * @param {{spawnImpl?:typeof spawn, listen?:string, killImpl?:typeof process.kill}} [o]
  * @returns {Promise<{running:boolean, pid?:number, address?:string, error?:string, spawned?:boolean}>}
  */
 export function ensureBroker(o = {}) {
@@ -64,7 +67,79 @@ export function ensureBroker(o = {}) {
   return run;
 }
 
-async function ensureOnce({ spawnImpl = spawn, listen = desiredListen() } = {}) {
+const readProc = (pid, file) => readFileSync(`/proc/${pid}/${file}`, 'latin1');
+
+// This process and every ancestor up to (and including) pid 1.
+function ancestry(self = process.pid) {
+  const out = new Set([self]);
+  let p = self;
+  for (let i = 0; i < 64 && p > 1; i++) {
+    try {
+      const st = readProc(p, 'stat');
+      p = Number(st.slice(st.lastIndexOf(')') + 2).split(' ')[1]);
+    } catch { break; }
+    out.add(p);
+  }
+  return out;
+}
+
+/**
+ * Why `pid` must NOT be signalled as this store's broker, or null.
+ *
+ * A pid that arrives as DATA — a `pong` on the socket — is never trusted: the
+ * socket may answer for anything (a fake, a stale file, a test). Only a live
+ * process that is provably `node <BROKER_MAIN> … --store <this store>`, and is
+ * neither pid 1 nor this process nor any of its ancestors, may be signalled.
+ */
+export function brokerPidDefect(pid, { store = storeRoot(), self = process.pid } = {}) {
+  if (!Number.isSafeInteger(pid) || pid <= 1) return `pid ${JSON.stringify(pid)} is not a process this plugin started`;
+  if (ancestry(self).has(pid)) return `pid ${pid} is this process or one of its ancestors`;
+  let argv;
+  try { argv = readProc(pid, 'cmdline').split('\0'); }
+  catch { return `pid ${pid} is not running`; }
+  const at = argv.indexOf('--store');
+  if (!path.basename(argv[0] ?? '').startsWith('node') || argv[1] !== BROKER_MAIN
+    || at < 0 || argv[at + 1] !== store) {
+    return `pid ${pid} is not this store's agent broker (its command line is ${JSON.stringify(argv.join(' ').trim().slice(0, 120))})`;
+  }
+  return null;
+}
+
+// A zombie answers kill(pid, 0) but holds no port and no socket: gone.
+const isAlive = (pid) => {
+  try { process.kill(pid, 0); } catch (e) { return e.code === 'EPERM'; }
+  try { return !/\) Z /.test(readProc(pid, 'stat')); } catch { return false; }
+};
+
+/**
+ * Stop the broker at `pid`: `stop` on the socket, then SIGTERM, then SIGKILL,
+ * each given time to land — and ONLY after `defectOf(pid)` proves it is this
+ * store's broker, re-proved before every signal (a pid that stops being one
+ * has exited, and may already belong to someone else). `killImpl`, `defectOf`
+ * and `aliveImpl` are seams for tests, which must never pass a real kill
+ * toward a fabricated pid.
+ * @returns {Promise<{gone:boolean, refused?:string}>}
+ */
+export async function retire(sock, pid, {
+  killImpl = process.kill, defectOf = brokerPidDefect, aliveImpl = isAlive, budgetMs = START_BUDGET_MS,
+} = {}) {
+  const refused = defectOf(pid);
+  if (refused) return { gone: false, refused };
+  try { await queryBroker(sock, { t: 'stop' }, { timeoutMs: 1000 }); } catch { /* it may already be going */ }
+  for (const sig of [null, 'SIGTERM', 'SIGKILL']) {
+    if (sig) {
+      if (!aliveImpl(pid) || defectOf(pid)) return { gone: true };
+      try { killImpl(pid, sig); } catch { /* gone */ }
+    }
+    for (let waited = 0; waited < budgetMs; waited += POLL_MS) {
+      if (!aliveImpl(pid)) return { gone: true };
+      await sleep(POLL_MS);
+    }
+  }
+  return { gone: !aliveImpl(pid) };
+}
+
+async function ensureOnce({ spawnImpl = spawn, listen = desiredListen(), killImpl = process.kill } = {}) {
   if (!(await hasAgentRecords())) return { running: false, error: 'no agent remote exists' };
   try { parseListen(listen); } catch (e) { return { running: false, error: e.message }; }
   const dir = agentDir();
@@ -80,10 +155,23 @@ async function ensureOnce({ spawnImpl = spawn, listen = desiredListen() } = {}) 
     return { running: true, pid: pong.pid, address: pong.address };
   }
   if (pong) {
-    // A broker on another address or older code: stop it and start ours.
-    try { await queryBroker(sock, { t: 'stop' }, { timeoutMs: 1000 }); } catch { /* it may already be going */ }
-    for (let waited = 0; waited < START_BUDGET_MS && (await ping(sock).catch(() => null)) !== null; waited += POLL_MS) {
-      await sleep(POLL_MS);
+    // A broker on another address or older code: stop it, and START NOTHING
+    // until it is confirmed gone — a second broker beside it would hold the
+    // old address open, or lose the port and look like a failure.
+    const r = await retire(sock, pong.pid, { killImpl });
+    if (r.refused) {
+      return {
+        running: false,
+        error: `the agent listener answering on ${sock} reported pid ${pong.pid}, which was not signalled`
+          + ` or replaced: ${r.refused}`,
+      };
+    }
+    if (!r.gone) {
+      return {
+        running: false,
+        error: `the agent listener (pid ${pong.pid}) on ${pong.listen} would not stop, so it was not replaced`
+          + ` with one on ${listen}`,
+      };
     }
   }
 
@@ -96,6 +184,10 @@ async function ensureOnce({ spawnImpl = spawn, listen = desiredListen() } = {}) 
     if (p) return { running: true, pid: p.pid, address: p.address, spawned: true };
     if (exited) break;
   }
+  // Ours may have exited because ANOTHER broker won the port: that is a
+  // running listener, not a failure, whatever an error file says.
+  const winner = await ping(sock).catch(() => null);
+  if (winner) return { running: true, pid: winner.pid, address: winner.address };
   const recorded = await readBrokerError(dir);
   return {
     running: false,

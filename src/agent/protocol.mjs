@@ -133,6 +133,7 @@ const CHECKS = {
   int: isInt,
   bool: v => typeof v === 'boolean',
   strlist: v => Array.isArray(v) && v.every(x => typeof x === 'string'),
+  argv: v => Array.isArray(v) && v.length > 0 && v.every(x => typeof x === 'string'),
   strmap: v => isPlain(v) && Object.values(v).every(x => typeof x === 'string'),
   b64: v => typeof v === 'string' && v.length % 4 === 0 && B64_RE.test(v)
     && Buffer.from(v, 'base64').toString('base64') === v,

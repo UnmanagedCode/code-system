@@ -118,7 +118,7 @@ async function main() {
   delete env.CONDUCTOR_URL;
 
   const brokerLog = path.join(store, 'broker.log');
-  const broker = await startDetached(process.execPath, [BROKER_MAIN, '--listen', '127.0.0.1:0'], env, brokerLog);
+  const broker = await startDetached(process.execPath, [BROKER_MAIN, '--listen', '127.0.0.1:0', '--store', store], env, brokerLog);
   const sock = agentSocketPath();
   cleanups.push(async () => {
     await queryBroker(sock, { t: 'stop' }).catch(() => {});

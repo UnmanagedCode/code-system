@@ -2,9 +2,12 @@
 // connection, the keepalive, and the three ways a session ends (replaced by a
 // newer one, dropped for a stale key, lost).
 //
-// The broker relays; it does not buffer. Every `out` and `in` is bounded by the
-// per-stream credit the two END POINTS exchange (agent ⇄ bridge), and this
-// module only rewrites the stream id on the way through.
+// The broker relays; it does not buffer past one window per stream per
+// direction, and it ENFORCES that rather than trusting the end points: it
+// counts the bytes it has relayed and not yet seen acknowledged, and an agent
+// that sends output past its credit ends its session (`bye credit`), a bridge
+// that sends input past its credit ends its stream. So what one remote can
+// make this process hold is bounded, whatever its agent does.
 
 import { BRIDGE_TAGS, BYE, BadFrame, LineDecoder, PROTOCOL, decodeLine, encode } from './protocol.mjs';
 
@@ -12,6 +15,9 @@ const WIRE = PROTOCOL.wire;
 
 // Frames a stream link receives, with `s` removed.
 const TO_BRIDGE = new Set(['started', 'failed', 'out', 'exit', 'ack']);
+
+// Decoded size of canonical base64, without decoding it.
+const b64Bytes = b64 => (b64.length / 4) * 3 - (b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0);
 
 export class AgentSession {
   /**
@@ -104,11 +110,21 @@ export class AgentSession {
   }
 
   #toBridge(f) {
-    const link = this.streams.get(f.s);
-    if (!link) return;
+    const entry = this.streams.get(f.s);
+    if (!entry) return;
     const { s, ...rest } = f;
+    if (f.t === 'out') {
+      entry.out += b64Bytes(f.b64);
+      if (entry.out > PROTOCOL.windowBytes) {
+        this.end(BYE.credit, `the agent sent ${entry.out} unacknowledged output bytes on one command,`
+          + ` past its credit of ${PROTOCOL.windowBytes}`);
+        return;
+      }
+    } else if (f.t === 'ack' && f.fd === 0) {
+      entry.in = Math.max(0, entry.in - f.n);
+    }
     if (f.t === 'exit' || f.t === 'failed') this.streams.delete(s);
-    link.deliver(rest);
+    entry.link.deliver(rest);
   }
 
   get full() { return this.streams.size >= PROTOCOL.maxStreamsPerSession; }
@@ -121,15 +137,28 @@ export class AgentSession {
    */
   openStream(link, { argv, cwd, env, stdin, pty }) {
     const s = this.#nextS++;
-    this.streams.set(s, link);
+    // `out`/`in`: bytes relayed in each direction and not yet acknowledged.
+    this.streams.set(s, { link, out: 0, in: 0 });
     this.send({ t: 'open', s, argv, cwd, env, stdin, ...(pty ? { pty } : {}) });
     return s;
   }
 
   /** A frame from a bridge (in/eof/ack/resize), for stream `s`. */
+  /**
+   * A frame from a bridge (in/eof/ack/resize), for stream `s`. Answers false
+   * when the bridge overran its input credit; the caller ends that stream.
+   */
   fromBridge(s, frame) {
-    if (!this.streams.has(s)) return;
+    const entry = this.streams.get(s);
+    if (!entry) return true;
+    if (frame.t === 'in') {
+      entry.in += b64Bytes(frame.b64);
+      if (entry.in > PROTOCOL.windowBytes) return false;
+    } else if (frame.t === 'ack' && frame.fd !== 0) {
+      entry.out = Math.max(0, entry.out - frame.n);
+    }
     this.send({ ...frame, s });
+    return true;
   }
 
   /** The bridge went away: tell the agent, which closes stdin and kills nothing. */
@@ -157,7 +186,7 @@ export class AgentSession {
       ? `the secret of remote '${this.remoteId}' changed, so its agent was disconnected`
       : `the agent for remote '${this.remoteId}' disconnected while the command ran (${message})`
         + ' — the agent ends its commands when that happens';
-    for (const link of this.streams.values()) link.lost(code === BYE.staleKey ? BRIDGE_TAGS.staleKey : BRIDGE_TAGS.lost, why);
+    for (const { link } of this.streams.values()) link.lost(code === BYE.staleKey ? BRIDGE_TAGS.staleKey : BRIDGE_TAGS.lost, why);
     this.streams.clear();
     this.#onEnd(this);
   }

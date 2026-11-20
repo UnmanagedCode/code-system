@@ -24,13 +24,13 @@ export function createControlServer({ broker, log }) {
     conn.on('data', (chunk) => {
       let lines;
       try { lines = decoder.push(chunk); }
-      catch (e) { reply({ t: 'error', message: e.message }); conn.destroy(); return; }
+      catch (e) { reply({ t: 'refused', tag: 'bad-frame', message: e.message }); conn.destroy(); return; }
       for (const line of lines) {
         let f;
         try { f = decodeLine(line, CONTROL); }
         catch (e) {
           if (stream) stream.abort(`bad frame from the bridge: ${e.message}`);
-          else reply({ t: 'error', message: e.message });
+          else reply({ t: 'refused', tag: 'bad-frame', message: e.message });
           return;
         }
         if (stream) {
@@ -44,7 +44,7 @@ export function createControlServer({ broker, log }) {
           case 'refusals': reply({ t: 'refusals', items: broker.refusals() }); return;
           case 'stop': reply({ t: 'stopping' }); broker.stop(); return;
           case 'open': stream = openStream(conn, f, broker, log); if (!stream) return; continue;
-          default: reply({ t: 'error', message: `'${f.t}' cannot open a control connection` }); return;
+          default: reply({ t: 'refused', tag: 'bad-frame', message: `'${f.t}' cannot open a control connection` }); return;
         }
       }
     });
@@ -98,7 +98,12 @@ function openStream(conn, f, broker, log) {
     }
   });
   return {
-    fromBridge(frame) { if (!finished) session.fromBridge(s, frame); },
+    fromBridge(frame) {
+      if (finished) return;
+      if (!session.fromBridge(s, frame)) {
+        this.abort(`the bridge sent input past its credit of ${PROTOCOL.windowBytes} bytes`);
+      }
+    },
     abort(message) {
       log(`stream ${s} for '${f.remoteId}': ${message}`);
       if (!finished) { finished = true; session.closeStream(s); }

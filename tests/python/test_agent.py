@@ -119,10 +119,15 @@ class BackoffSchedule(unittest.TestCase):
         b.session_ended()
         self.assertEqual(b.next_delay(), 0.5, 'a stable one does')
 
-    def test_a_refusal_jumps_to_the_cap_once(self):
-        b, _ = self.make(lambda: 1.0)
-        b.refusal()
-        self.assertEqual(b.next_delay(), 30.0)
+    def test_a_refusal_waits_at_least_the_cap_whatever_the_jitter(self):
+        # rng 0.0 is the case that matters: a draw from [base, cap] would retry
+        # after base.
+        for r, want in ((0.0, 30.0), (0.5, 33.75), (1.0, 37.5)):
+            b, _ = self.make(lambda r=r: r)
+            b.next_delay()
+            b.refusal()
+            self.assertEqual(b.next_delay(), want)
+            self.assertEqual(b.next_delay(), 0.5 + 0.5 * r, 'and only once: the schedule resumes where it was')
 
 
 class Startup(unittest.TestCase):

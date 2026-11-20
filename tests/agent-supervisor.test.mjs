@@ -7,12 +7,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { promises as fs, existsSync } from 'node:fs';
+import { promises as fs, existsSync, readFileSync } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { pinTestEnv, withApi, writeRecord } from './helpers.mjs';
 import { FAST, agentRecord, newSecret, removeRecord, waitFor } from './agentFixture.mjs';
-import { ensureBroker, stopBroker } from '../src/agent/supervisor.mjs';
+import { brokerPidDefect, ensureBroker, retire, stopBroker } from '../src/agent/supervisor.mjs';
 import { queryBroker } from '../src/agent/client.mjs';
 import { createAgentTransport } from '../src/launcher/kinds/agent.mjs';
 
@@ -21,13 +21,30 @@ const sockIn = store => path.join(store.dir, 'agent', 'broker.sock');
 const ping = store => queryBroker(sockIn(store), { t: 'ping' }, { timeoutMs: 500 });
 const gone = pid => { try { process.kill(pid, 0); return false; } catch { return true; } };
 
-// Stop whatever broker this test left, and wait until it is gone.
-function cleanup(t) {
+// A pid no process can have: above the kernel's pid_max. Signalling it could
+// reach nothing, and the tests below assert nothing tries.
+const IMPOSSIBLE_PID = Number(readFileSync('/proc/sys/kernel/pid_max', 'utf8').trim()) + 1;
+
+// A kill that records and never signals: the only kind a test hands to code
+// that signals a pid it was TOLD.
+function recordingKill() {
+  const calls = [];
+  const fn = (pid, sig) => { calls.push([pid, sig]); };
+  fn.calls = calls;
+  return fn;
+}
+
+// Stop whatever broker this test left, and wait until it is gone. A pid here
+// came from a `pong` — data — so it is SIGKILLed only if it is provably this
+// store's broker.
+function cleanup(t, storeDir) {
   const pids = new Set();
   t.after(async () => {
     await stopBroker();
     for (const pid of pids) {
-      await waitFor(() => gone(pid), { what: `broker ${pid} to exit` }).catch(() => { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } });
+      await waitFor(() => gone(pid), { what: `broker ${pid} to exit` }).catch(() => {
+        if (brokerPidDefect(pid, { store: storeDir }) === null) process.kill(pid, 'SIGKILL');
+      });
     }
   });
   return pid => { pids.add(pid); return pid; };
@@ -52,7 +69,7 @@ test('no agent record: nothing is started', async (t) => {
 // matching one is adopted with no second spawn.
 test('a dead socket starts a detached broker; a live, matching one is adopted', async (t) => {
   const store = await pinTestEnv(t, ENV);
-  const track = cleanup(t);
+  const track = cleanup(t, store.dir);
   await writeRecord(store.dir, agentRecord('a', newSecret()));
   const s = spy();
   const first = await ensureBroker({ spawnImpl: s });
@@ -70,7 +87,7 @@ test('a dead socket starts a detached broker; a live, matching one is adopted', 
 // PINS: a broker on a different listen address is stopped and replaced.
 test('a broker listening elsewhere is stopped and replaced', async (t) => {
   const store = await pinTestEnv(t, ENV);
-  const track = cleanup(t);
+  const track = cleanup(t, store.dir);
   await writeRecord(store.dir, agentRecord('a', newSecret()));
   const old = await ensureBroker({ listen: 'localhost:0' });
   track(old.pid);
@@ -82,11 +99,12 @@ test('a broker listening elsewhere is stopped and replaced', async (t) => {
   assert.equal((await ping(store)).listen, '127.0.0.1:0');
 });
 
-// PINS: a broker running different code (a stale build) is asked to stop and
-// replaced. A fake control socket stands in for the old broker.
-test('a broker with a different build is told to stop, then replaced', async (t) => {
+// PINS that a pid which arrives as DATA is never signalled: a socket answering
+// `pong` for a pid that is not provably this store's broker is neither told to
+// stop nor signalled nor replaced, and the error names the pid and why. The
+// fake reports a pid no process can have, and the kill only records.
+test('a stale broker whose pid is not provably ours is refused, never signalled or replaced', async (t) => {
   const store = await pinTestEnv(t, ENV);
-  const track = cleanup(t);
   await writeRecord(store.dir, agentRecord('a', newSecret()));
   await fs.mkdir(path.join(store.dir, 'agent'), { mode: 0o700 });
   const seen = [];
@@ -94,21 +112,60 @@ test('a broker with a different build is told to stop, then replaced', async (t)
     c.on('data', (b) => {
       const f = JSON.parse(String(b).trim());
       seen.push(f.t);
-      if (f.t === 'ping') c.end(`${JSON.stringify({ t: 'pong', pid: 1, listen: '127.0.0.1:0', build: 'stale', address: 'x' })}\n`);
-      if (f.t === 'stop') { c.end(`${JSON.stringify({ t: 'stopping' })}\n`); fake.close(); }
+      if (f.t === 'ping') c.end(`${JSON.stringify({ t: 'pong', pid: IMPOSSIBLE_PID, listen: '127.0.0.1:0', build: 'stale', address: 'x' })}\n`);
+      if (f.t === 'stop') c.end(`${JSON.stringify({ t: 'stopping' })}\n`);
     });
   });
   await new Promise(r => fake.listen(sockIn(store), r));
-  const r = await ensureBroker();
-  track(r.pid);
-  assert.ok(seen.includes('stop'), `the stale broker was told to stop: ${seen}`);
-  assert.equal(r.running, true, r.error);
-  assert.notEqual((await ping(store)).build, 'stale');
+  t.after(() => new Promise(r => fake.close(r)));
+  const kill = recordingKill();
+  const s = spy();
+  const r = await ensureBroker({ killImpl: kill, spawnImpl: s });
+  assert.equal(r.running, false);
+  assert.match(r.error, new RegExp(`pid ${IMPOSSIBLE_PID}`));
+  assert.match(r.error, /not running/);
+  assert.deepEqual(kill.calls, [], 'no signal was sent');
+  assert.equal(seen.includes('stop'), false, 'and no stop either');
+  assert.equal(s.calls.length, 0, 'and no replacement was started');
+});
+
+// PINS the guard itself: pid 1 (the container's init), this process, its
+// parent, and a live process that is not a broker are each refused before any
+// signal — with a recording kill, so nothing real is ever sent.
+test('retire refuses pid 1, this process, its parent and a live non-broker', async (t) => {
+  const store = await pinTestEnv(t, ENV);
+  const other = spawn('sleep', ['30'], { stdio: 'ignore' });
+  t.after(() => other.kill('SIGKILL'));
+  await new Promise(r => other.once('spawn', r));
+  for (const pid of [1, process.pid, process.ppid, other.pid, 0, -1, IMPOSSIBLE_PID]) {
+    const kill = recordingKill();
+    const r = await retire(sockIn(store), pid, { killImpl: kill, budgetMs: 50 });
+    assert.equal(r.gone, false, `pid ${pid}`);
+    assert.match(r.refused, /pid/, `pid ${pid}: ${r.refused}`);
+    assert.deepEqual(kill.calls, [], `pid ${pid}: no signal`);
+  }
+  assert.match(brokerPidDefect(other.pid), /not this store's agent broker/);
+  assert.match(brokerPidDefect(process.ppid), /ancestors/);
+});
+
+// PINS A8's escalation, on a SIMULATED process (every seam injected, nothing
+// real signalled): a broker ignoring `stop` gets SIGTERM, one ignoring that
+// gets SIGKILL, and one that survives everything is reported not gone.
+test('retire escalates stop → SIGTERM → SIGKILL, and reports a survivor', async () => {
+  const run = async (diesOn) => {
+    const kill = recordingKill();
+    const aliveImpl = () => !kill.calls.some(([, sig]) => sig === diesOn);
+    const r = await retire('/nonexistent.sock', 4242, { killImpl: kill, defectOf: () => null, aliveImpl, budgetMs: 60 });
+    return { r, sigs: kill.calls.map(([pid, sig]) => `${pid}:${sig}`) };
+  };
+  assert.deepEqual(await run('SIGTERM'), { r: { gone: true }, sigs: ['4242:SIGTERM'] });
+  assert.deepEqual(await run('SIGKILL'), { r: { gone: true }, sigs: ['4242:SIGTERM', '4242:SIGKILL'] });
+  assert.deepEqual(await run('never'), { r: { gone: false }, sigs: ['4242:SIGTERM', '4242:SIGKILL'] });
 });
 
 test('a stale socket file is reclaimed', async (t) => {
   const store = await pinTestEnv(t, ENV);
-  const track = cleanup(t);
+  const track = cleanup(t, store.dir);
   await writeRecord(store.dir, agentRecord('a', newSecret()));
   await fs.mkdir(path.join(store.dir, 'agent'), { mode: 0o700 });
   await fs.writeFile(sockIn(store), 'not a socket');
@@ -163,7 +220,7 @@ test('a port in use is named by ensure, by the card\'s probe and by GET /agent/b
 // itself, on its tick, and removes its socket.
 test('the broker exits by itself once the last agent remote is deleted', async (t) => {
   const store = await pinTestEnv(t, ENV);
-  const track = cleanup(t);
+  const track = cleanup(t, store.dir);
   await writeRecord(store.dir, agentRecord('a', newSecret()));
   const r = await ensureBroker();
   track(r.pid);
@@ -174,7 +231,7 @@ test('the broker exits by itself once the last agent remote is deleted', async (
 
 test('GET /agent/broker reports a running listener, its dial default and unknown-remote refusals', async (t) => {
   const { call, store } = await withApi(t, {}, ENV);
-  const track = cleanup(t);
+  const track = cleanup(t, store.dir);
   await writeRecord(store.dir, agentRecord('a', newSecret()));
   const r = await ensureBroker();
   track(r.pid);

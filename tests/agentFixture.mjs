@@ -110,7 +110,7 @@ export async function agentStore(t) {
  */
 export async function startBroker(t, store, { listen = '127.0.0.1:0', env = {} } = {}) {
   let log = '';
-  const child = track(t, spawn(process.execPath, [BROKER, '--listen', listen], {
+  const child = track(t, spawn(process.execPath, [BROKER, '--listen', listen, '--store', store], {
     env: agentEnv(store, env), stdio: ['ignore', 'pipe', 'pipe'], detached: true,
   }));
   child.stdout.on('data', b => { log += b; });

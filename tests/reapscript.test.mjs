@@ -10,6 +10,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { REAP_TAG, TOKEN_VAR, buildSessionReapScript } from '../src/launcher/kinds/reapscript.mjs';
 import { settle } from './dockerFixture.mjs';
+import { safeKill } from './helpers.mjs';
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const state = (pid) => { try { return readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1][0]; } catch { return null; } };
@@ -37,7 +38,7 @@ test('the session reap kills the token holders in the session and spares one tha
   const token = randomBytes(12).toString('hex');
   const s = session(token);
   const { bg, ss, lead } = await s.pids();
-  t.after(() => { for (const p of [bg, ss, lead]) { try { process.kill(p, 'SIGKILL'); } catch { /* gone */ } } });
+  t.after(() => { for (const p of [bg, ss, lead]) safeKill(p); });
   // The negative control: everything is alive before the reap.
   assert.ok(alive(bg) && alive(ss) && alive(lead), 'all three run before the reap');
 
@@ -55,7 +56,7 @@ test('the session reap ignores a token holder in that session it was not asked a
   const b = session(other);
   const pa = await a.pids();
   const pb = await b.pids();
-  t.after(() => { for (const p of [...Object.values(pa), ...Object.values(pb)]) { try { process.kill(p, 'SIGKILL'); } catch { /* gone */ } } });
+  t.after(() => { for (const p of [...Object.values(pa), ...Object.values(pb)]) safeKill(p); });
   // `mine`'s token, but the OTHER session's sid: nothing carries both.
   const r = spawnSync('/bin/sh', ['-c', buildSessionReapScript(mine, pb.lead)], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);

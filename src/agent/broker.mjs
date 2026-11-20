@@ -11,24 +11,33 @@
 // both hold the port, so whoever holds it may safely replace a stale socket
 // file, and no pid or lock file exists.
 //
-//   node broker.mjs --listen <host:port>
+//   node broker.mjs --listen <host:port> --store <store root>
 
 import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { readRemote, listRemotes, isValidRemoteId } from '../store.mjs';
 import { agentDir, agentErrorPath, agentSocketPath, socketPathDefect } from '../paths.mjs';
-import { ensureAgentDir } from './client.mjs';
+import { lineSafe } from '../lineSafe.mjs';
+import { ensureAgentDir, queryBroker } from './client.mjs';
 import { createControlServer } from './control.mjs';
 import { createListener } from './listener.mjs';
-import { AGENT_SOURCE, BYE, buildId, keyIdOf, parseListen, timings } from './protocol.mjs';
+import { AGENT_SOURCE, BYE, LABELS, buildId, keyIdOf, parseListen, timings, verifyMac } from './protocol.mjs';
 
 // Unknown-remote refusals the page lists, newest last.
 const REFUSALS_KEPT = 10;
 const AGENT_KIND = 'agent';
 
+// One line per entry, whatever a peer put in it (a remote id from an
+// unauthenticated hello can carry a newline).
 const log = (msg) => {
-  try { process.stderr.write(`${new Date().toISOString()} broker[${process.pid}]: ${msg}\n`); } catch { /* no log */ }
+  try { process.stderr.write(`${new Date().toISOString()} broker[${process.pid}]: ${lineSafe(msg)}\n`); } catch { /* no log */ }
 };
+
+// Read for an id that cannot name a record, so the unknown-remote path does the
+// same store read as the others (see `lookupSecret`).
+const DUMMY_REMOTE_ID = '0-no-such-remote';
+// MAC'd against when no secret was found, so every refusal costs one HMAC.
+const DUMMY_SECRET = 'x'.repeat(43);
 
 export class Broker {
   constructor({ listen, address, build, tim }) {
@@ -46,19 +55,33 @@ export class Broker {
 
   // ── what the listener asks ──
 
+  /**
+   * The secret to verify a handshake against, or why there is none. EVERY path
+   * does one store read — an id that cannot name a record reads a dummy one —
+   * and the caller MACs against a dummy secret when none is found, so the time
+   * a refusal takes does not say whether the remote exists.
+   */
   async lookupSecret(remoteId) {
-    if (!isValidRemoteId(remoteId)) return { reason: 'unknown-remote' };
-    const r = await readRemote(remoteId);
-    if (!r.ok) return { reason: 'unknown-remote' };
+    const valid = isValidRemoteId(remoteId);
+    const r = await readRemote(valid ? remoteId : DUMMY_REMOTE_ID);
+    if (!valid || !r.ok) return { reason: 'unknown-remote' };
     if (r.record.kind !== AGENT_KIND) return { reason: 'not-an-agent-remote' };
     const secret = r.record.config?.secret;
     if (typeof secret !== 'string' || secret === '') return { reason: 'no-secret' };
     return { secret };
   }
 
+  /** Verify an `auth` MAC: always exactly one HMAC, found secret or not. */
+  async authenticate({ remoteId, nb, na, mac: got }, verify = verifyMac) {
+    const found = await this.lookupSecret(remoteId);
+    const ok = verify('secret' in found ? found.secret : DUMMY_SECRET, [LABELS.agent, remoteId, nb, na], got);
+    return 'secret' in found && ok ? { ok: true, secret: found.secret } : { ok: false, reason: 'secret' in found ? 'wrong-secret' : found.reason };
+  }
+
   recordRefusal({ remoteId, reason, peer }) {
     const at = new Date().toISOString();
-    const id = String(remoteId).slice(0, 64);
+    // A peer chose the id: escaped before it is kept, shown or logged.
+    const id = lineSafe(String(remoteId).slice(0, 64));
     log(`refused an agent for '${id}' from ${peer}: ${reason}`);
     if (reason === 'wrong-secret' || reason === 'no-secret') {
       this.lastRefusal.set(remoteId, { reason, peer, at });
@@ -123,29 +146,43 @@ export class Broker {
    */
   async tick() {
     const records = new Map();
+    // A record that cannot be read RIGHT NOW (a writer mid-rename, a hand edit)
+    // may be an agent record: it neither ends its session nor lets the broker
+    // decide no agent remote is left.
+    const unreadable = new Set();
     for (const e of await listRemotes()) {
-      if (e.ok && e.record.kind === AGENT_KIND) records.set(e.record.remoteId, e.record);
+      if (!e.ok) unreadable.add(e.remoteId);
+      else if (e.record.kind === AGENT_KIND) records.set(e.record.remoteId, e.record);
     }
     for (const s of [...this.sessions.values()]) {
+      if (unreadable.has(s.remoteId)) continue;
       const rec = records.get(s.remoteId);
       const secret = rec?.config?.secret;
       if (typeof secret !== 'string' || keyIdOf(secret) !== s.keyId) {
         s.end(BYE.staleKey, rec ? 'the remote\'s secret changed' : 'the remote was removed');
       }
     }
-    for (const id of [...this.lastRefusal.keys()]) if (!records.has(id)) this.lastRefusal.delete(id);
-    return records.size > 0;
+    for (const id of [...this.lastRefusal.keys()]) {
+      if (!records.has(id) && !unreadable.has(id)) this.lastRefusal.delete(id);
+    }
+    return records.size > 0 || unreadable.size > 0;
   }
 }
 
 function parseArgs(argv) {
   let listen = null;
+  let store = null;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--listen') listen = argv[++i] ?? '';
+    else if (argv[i] === '--store') store = argv[++i] ?? '';
     else throw new Error(`unknown broker option: ${argv[i]}`);
   }
   if (!listen) throw new Error('--listen <host:port> is required');
-  return { listen };
+  // REQUIRED, and on the command line rather than only in the environment: it
+  // is what lets a supervisor prove a pid is this store's broker before it
+  // signals it (supervisor.mjs `brokerPidDefect`).
+  if (!store || !store.startsWith('/')) throw new Error('--store <absolute store root> is required');
+  return { listen, store };
 }
 
 async function writeError(dir, message) {
@@ -155,18 +192,27 @@ async function writeError(dir, message) {
   } catch { /* the log still says it */ }
 }
 
+async function anotherBrokerAnswers(sock) {
+  for (let i = 0; i < 40; i++) {
+    try { await queryBroker(sock, { t: 'ping' }, { timeoutMs: 250 }); return true; }
+    catch { await new Promise(r => setTimeout(r, 50)); }
+  }
+  return false;
+}
+
 const listenOn = (server, opts) => new Promise((resolve, reject) => {
   server.once('error', reject);
   server.listen(opts, () => { server.off('error', reject); resolve(); });
 });
 
 export async function runBroker(argv) {
+  let opts;
+  try { opts = parseArgs(argv); }
+  catch (e) { log(e.message); process.exit(2); }
+  process.env.CODE_SYSTEM_STORE = opts.store;
   const dir = agentDir();
   const dirDefect = await ensureAgentDir(dir);
   if (dirDefect) { log(dirDefect); process.exit(1); }
-  let opts;
-  try { opts = parseArgs(argv); }
-  catch (e) { log(e.message); await writeError(dir, e.message); process.exit(2); }
   const sockPath = agentSocketPath(dir);
   const pathDefect = socketPathDefect(sockPath);
   if (pathDefect) { log(pathDefect); await writeError(dir, pathDefect); process.exit(1); }
@@ -182,6 +228,12 @@ export async function runBroker(argv) {
   const tcp = createListener({ broker, tim, log });
   try { await listenOn(tcp, { host: where.host, port: where.port }); }
   catch (e) {
+    // LOST A RACE, not a failure: another broker took the port. If one answers
+    // on our socket within the start budget, leave no error file behind it.
+    if (e.code === 'EADDRINUSE' && await anotherBrokerAnswers(agentSocketPath(dir))) {
+      log(`another broker already listens on ${opts.listen}; exiting`);
+      process.exit(0);
+    }
     const message = `cannot listen on ${opts.listen}: ${e.code === 'EADDRINUSE'
       ? 'the port is already in use by another process' : e.message}`;
     log(message);

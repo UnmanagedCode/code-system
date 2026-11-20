@@ -9,7 +9,7 @@
 import net from 'node:net';
 import { AgentSession } from './session.mjs';
 import {
-  LABELS, LineDecoder, PROTOCOL, REFUSAL, decodeLine, encode, keyIdOf, mac, newNonce, newSessionId, verifyMac,
+  LABELS, LineDecoder, PROTOCOL, REFUSAL, decodeLine, encode, keyIdOf, mac, newNonce, newSessionId,
 } from './protocol.mjs';
 
 const WIRE = PROTOCOL.wire;
@@ -17,7 +17,8 @@ const REQUEST_LINE_RE = /^([A-Z]+) (\S+) HTTP\/1\.[01]\r?$/;
 const GENERIC_AUTH_FAILURE = 'authentication failed — check the remote id and its secret on the card';
 
 /**
- * @param {{broker:{lookupSecret(id:string):Promise<{secret:string}|{reason:string}>,
+ * @param {{broker:{authenticate(a:{remoteId:string, nb:string, na:string, mac:string}):
+ *          Promise<{ok:true, secret:string}|{ok:false, reason:string}>,
  *          recordRefusal(r:{remoteId:string, reason:string, peer:string}):void,
  *          adopt(s:AgentSession):void, agentBytes:Buffer}, tim:object, log:(m:string)=>void}} o
  */
@@ -138,14 +139,13 @@ export function createListener({ broker, tim, log }) {
         // RE-READ ON EVERY HANDSHAKE, never cached: a rotated secret takes
         // effect for the next agent that dials.
         socket.pause();
-        const found = await broker.lookupSecret(remoteId);
+        const found = await broker.authenticate({ remoteId, nb, na, mac: f.mac });
         socket.resume();
         if (state === 'done') return;
-        const ok = 'secret' in found && verifyMac(found.secret, [LABELS.agent, remoteId, nb, na], f.mac);
-        if (!ok) {
+        if (!found.ok) {
           // ONE ANSWER ON THE WIRE for all three causes; the true one is kept
           // locally, where the card and the page can show it.
-          broker.recordRefusal({ remoteId, reason: 'secret' in found ? 'wrong-secret' : found.reason, peer });
+          broker.recordRefusal({ remoteId, reason: found.reason, peer });
           fail(REFUSAL.authFailed, GENERIC_AUTH_FAILURE);
           return;
         }
