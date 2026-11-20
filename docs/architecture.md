@@ -26,10 +26,10 @@ an absolute path — which is what forces the store location below.
 
 | Path | Owns |
 |---|---|
-| `src/paths.mjs` | the store root and the launcher entry path — the only place either is spelled |
+| `src/paths.mjs` | the store root, the launcher entry path and the agent kind's files (`agent.py`, the broker and bridge entries, the agent directory, socket, error file and log) — the only place each is spelled |
 | `src/store.mjs` | the per-`remoteId` record: read fresh, atomic write, charset |
 | `src/migrate.mjs` | the one-shot idempotent startup migration |
-| `src/registration.mjs` | auto-registration of the two cc System rows |
+| `src/registration.mjs` | auto-registration of one cc System row per registered kind |
 | `src/baseline.mjs` | the tooling-baseline probe and its fingerprint cache |
 | `src/cards.mjs` | the card view — a record plus a live reachability, composed once for both read surfaces |
 | `src/http.mjs` | the HTTP app: headers, the API mount, the built UI or its 503, the plain-text 404/500 tail ("Serving and headers" below) |
@@ -42,7 +42,16 @@ an absolute path — which is what forces the store location below.
 | `src/launcher/fileops.mjs` | `readFile`/`writeFile`, derived over `exec`, once for every kind |
 | `src/launcher/run.mjs` | run one script on a target — shared by fileops and the probe |
 | `src/launcher/remotes.mjs` | `RemoteSource`: store-backed (production) and flag-backed (conformance) — `lookup` resolves a named target, `list` answers its configured set (`listRemotes`), both from one configuration predicate |
-| `src/launcher/kinds/` | one file per kind, plus the registry, the kill-relay script (`reapscript.mjs`) shared by `docker` and `ssh`, and the terminal trampoline (`ptyscript.mjs`) shared by all three |
+| `src/launcher/kinds/` | one file per kind, plus the registry, the kill-relay script (`reapscript.mjs`) shared by `docker`, `ssh` and `agent`, and the terminal trampoline (`ptyscript.mjs`) shared by every kind |
+| `agent/agent.py` | the dial-in agent, one stdlib-only Python file; its `PROTOCOL` block is the agent wire's single source of truth |
+| `src/agent/protocol.mjs` | that block, read from `agent.py`; the codec, MACs, key ids, the timings seam, the build id, the bridge's outcome tags |
+| `src/agent/broker.mjs` | the broker process: bind order, signals, the tick ("The agent broker" below) |
+| `src/agent/listener.mjs` | the broker's TCP port before authentication: pre-auth caps, the `GET /agent.py` sniff, the handshake |
+| `src/agent/session.mjs` | one authenticated agent: stream mux, keepalive, replace / stale-key / lost |
+| `src/agent/control.mjs` | the broker's unix socket: a bridge's stream, and `status`/`ping`/`stop`/`refusals` |
+| `src/agent/bridge.mjs` | one far-side command as a host process the launcher spawns |
+| `src/agent/client.mjs` | asking the broker (`queryBroker`), its error file, the agent directory check |
+| `src/agent/supervisor.mjs` | the backend's starter: `ensureBroker`, `stopBroker`, `brokerStatus`, `initAgentBroker` |
 
 ## The `Transport` seam
 
@@ -56,9 +65,12 @@ Two properties earn their keep:
   spawns it. That makes every kind's command assertable in a unit test with no
   docker and no ssh (`tests/capabilities.test.mjs`).
 - **`reachability` reads a host-side artifact only** — a `docker inspect` daemon
-  query, an ssh ControlPath socket's existence — never in-memory state, so the
-  backend and the launcher can each ask independently and get the same answer.
-  It returns a `fingerprint` the baseline cache keys on.
+  query, an ssh ControlPath socket's existence, the agent broker's answer on its
+  socket — never in-memory state, so the backend and the launcher can each ask
+  independently and get the same answer. It returns a `fingerprint` the
+  baseline cache keys on. Its second argument, `{remoteId}`, is passed at its one
+  call site (`src/cards.mjs`): `agent` needs it, because its config names
+  nothing about its target; `docker` and `ssh` ignore it.
 
 **Adding a kind is one file under `kinds/` plus one line in `kinds/index.mjs`.**
 Nothing in `registration.mjs` or `store.mjs` changes.
@@ -85,12 +97,13 @@ there rather than here.
 `channelPlan(config, {remoteId})` is **optional** and, like `spawnPlan`, **pure**
 — it builds the argv of **one long-lived shell** on the target which
 `src/launcher/channel.mjs` holds open and writes framed commands into, instead
-of paying a process + daemon + container-exec setup per frame. Only `docker`
-implements it; `ssh` and `host` do not, and every call site treats its absence as
+of paying a process + daemon + container-exec setup per frame. `docker` and
+`agent` implement it (for `agent` the saved cost is a bridge's node startup);
+`ssh` and `host` do not, and every call site treats its absence as
 "no channel offered", so those kinds are unchanged. See
 "The held-open channel" below.
 
-`classifyFailure(config, {code, stdout, stderr})` is **optional** and reads the
+`classifyFailure(config, {code, stdout, stderr, stderrTail})` is **optional** and reads the
 *transport's* own error vocabulary — a docker daemon response — turning a
 non-zero exit into a named protocol failure instead of an `exit` frame. Only the
 kind can own it: for a stopped container the store record exists, so
@@ -98,7 +111,9 @@ kind can own it: for a stopped container the store record exists, so
 non-zero exit of the docker CLI. It is consulted on **both** exec paths, so one
 implementation covers `exec`, `readFile`/`writeFile` and the baseline probe:
 `session.mjs`'s child-`close` handler (which keeps a bounded 512-byte head of
-each stream for it), and `run.mjs`'s single funnel. Returning `null` — the common
+each stream for it, and a bounded 512-byte TAIL of stderr), and `run.mjs`'s
+single funnel. The tail exists for `agent`, whose own diagnostic (a session lost
+mid-command) comes AFTER the command's output; the other kinds ignore it. Returning `null` — the common
 case, and every kind without the member — leaves behaviour exactly as it was.
 
 `ptyPlan(config, {command, token, remoteId})` is **optional** and **pure**, with
@@ -442,6 +457,31 @@ transports:**
    against both live targets, and accepted rather than hardened: see
    `docs/protocol.md` → "What `exclusive` does and does not guarantee".
 
+#### The agent bound run
+
+```sh
+CC_CHECKOUT=/path/to/code-conductor npm run conformance:agent
+```
+
+`tests/conformance-agent.mjs` starts a broker on `127.0.0.1:0` over a scratch
+store, a real `agent.py` on this machine, seeds an enabled `agent` record, waits
+for it to read connected, probes the tooling baseline through it, then runs
+cc's suite through `--kind agent` on both channel arms. Because the agent runs
+locally, filesystem identity and the PID namespace are shared **by
+construction** — nothing to prove, unlike the docker rig. It **refuses to run
+as root** (cc's EACCES rows) and fails if the agent session did not survive the
+whole run.
+
+Its manifest, `tests/agentConformanceExpectations.mjs`, was **filled from a
+measured run**: each entry quotes the assertion that failed and cites the code
+forcing it, checked by the same `validateExpectations` / `compareOutcomes` /
+`checkTotal` as docker's, and `tests/boundconformance.test.mjs` pins it against
+the captured report (`tests/fixtures/agentSpecReport.txt`). The outcome table is
+identical on both arms. Against docker's manifest it differs by three passing
+rows, each the kind's own doing: the terminal's exit signal (`ptyMode: 'exec'`),
+`exec NEVER rejects` (the never-started message is the streamed stderr) and
+input credit (`PROTOCOL.ptyInputWindowBytes`).
+
 ## The config store
 
 **Location:** `$CODE_SYSTEM_STORE`, else `<os.homedir()>/.code-system`.
@@ -767,7 +807,8 @@ grep -rn 'os\.tmpdir()' src/
 **Three kinds of hit the probes surface that are NOT rows**, and the reason is
 the same each time — they are not how this plugin is configured. `PATH` is read
 only to *compose a child's* environment; `CC_REMOTE` and `CC_EXEC_TOKEN` are
-variables we *write into the far side's*; `CC_TEST_FILE_KILL_MS` is cc's, named
+variables we *write into the far side's*, and `CODE_SYSTEM_SSH_PASSWORD` one we
+write into ssh's askpass child's; `CC_TEST_FILE_KILL_MS` is cc's, named
 here only to say we never set it. Separately, and not a named read either:
 `execEnv`'s `base` defaults to `process.env`, which is the REPLACE branch's
 baseline — see "`exec` env across a boundary" in the wiki.
@@ -779,7 +820,10 @@ surfaces.
 
 | Variable | Read by | Effect |
 |---|---|---|
-| `CODE_SYSTEM_STORE` | `src/paths.mjs` | store root; else `<homedir>/.code-system`. Test isolation |
+| `CODE_SYSTEM_STORE` | `src/paths.mjs` | store root; else `<homedir>/.code-system`. Test isolation. The agent broker's directory lives under it, so its socket path must stay within `SOCKET_PATH_MAX` |
+| `CODE_SYSTEM_AGENT_LISTEN` | `src/agent/protocol.mjs` → `desiredListen`, read by the supervisor and `brokerStatus` | the agent listener's `host:port`. Default `DEFAULT_LISTEN` (loopback). A malformed value is reported as the broker's error, and no broker starts |
+| `CODE_SYSTEM_AGENT_TIMINGS` | `src/agent/protocol.mjs` → `timings`, and `agent/agent.py` → `timings` | JSON overriding any `PROTOCOL.timings` key, for the broker, the bridge and the agent alike. Tests only |
+| `CODE_SYSTEM_AGENT_SECRET` | `agent/agent.py` | the agent side only: the remote's secret, removed from the agent's environment before any command starts. Never read on cc's host |
 | `CONDUCTOR_URL` | `src/registration.mjs` → `register`, `src/api.mjs` → `projectsNaming` | cc's base URL. **Unset is a normal state, not a failure**: registration reports `skipped` and `projectsNaming` answers `[]`, because standalone-runnable is a plugin-compliance requirement |
 | `PORT` | `server.mjs` | the backend's listen port, conductor-allocated. Default `4310`, for the same standalone-runnable reason |
 | `PLUGIN_BACKEND` | `frontend/vite.config.ts` | `npm run dev` only: the backend the Vite dev server proxies `/api` to. Default `http://127.0.0.1:4310` |
@@ -790,8 +834,11 @@ surfaces.
 | `CODE_SYSTEM_FAKE_TRANSPORT` | `main.mjs` | module path for `--kind fake`. Tests only |
 | `CODE_SYSTEM_FAKE_REAP_LOG` | `tests/fakeTransport.mjs` | file the fake transport appends each `reap` to, so the shutdown tests can prove the relay ran. Tests only |
 | `CODE_SYSTEM_CHANNEL` | `launcher/channel.mjs` → `channelEnabled`, read in `main.mjs` | `=0` removes the held-open channel pool **entirely** — the operator's escape hatch, and the arm `tests/conformance-docker.mjs` runs second. Any other value (including unset) is the shipped behaviour |
+| `CODE_SYSTEM_FAKE_PTY` | `tests/fakeTransport.mjs` | `=1` gives `--kind fake` a `ptyPlan`, so terminals are drivable with no docker. Tests only |
+| `CODE_SYSTEM_FAKE_PTY_GATE` / `CODE_SYSTEM_FAKE_PTY_RELAY` / `CODE_SYSTEM_FAKE_RELAY_GATE` | `tests/fakeTransport.mjs` | the fake terminal's seams: hold the trampoline until a file exists; turn on the resize relay; hold the relay's `stty` until a file exists. Tests only |
 | `CODE_SYSTEM_FAKE_CHANNEL` | `tests/fakeTransport.mjs` | `=1` gives `--kind fake` a `channelPlan` over the local `/bin/sh`, so the channel's wiring is drivable with no docker. Tests only; without it every existing fake-kind test is byte-identical |
-| `CC_CHECKOUT` | `tests/ccCheckout.mjs` | gates both conformance runs |
+| `CC_CHECKOUT` | `tests/ccCheckout.mjs` | gates every conformance run |
+| `CODE_SYSTEM_PYTHON` | `launcher/ptyhost.mjs` → `pythonName`; `tests/agentFixture.mjs`, `tests/conformance-agent.mjs` | the python3 that runs the pty helper; in tests, also the one that runs `agent.py` (the agent suites skip loudly, naming it, without a Python ≥ 3.9) |
 | `CODE_SYSTEM_ALLOW_UNSHARED_PID` | `tests/conformance-docker.mjs` | `=1` permits the bound run when the daemon refuses `--pid=container:`. **Refused by default**: cc's suite SIGKILLs a far-side pid in this namespace, and an unoccupied low pid range is luck, not a guard |
 | `TMPDIR` | `kinds/ssh.mjs` → `controlDir`, via `os.tmpdir()` | the ControlPath's parent directory; `controlPathFor` refuses rather than truncates past the ceiling. Also **set** by `tests/conformance-docker.mjs`, to redirect cc's own fixture roots |
 
@@ -857,7 +904,61 @@ A launcher that meets a record at another schema refuses **that remote** with
 It does not attempt a read-time upgrade and it does not fail the connection — a
 launcher can legitimately be spawned before the backend has ever run.
 
-## The held-open channel (`docker` only)
+## The agent broker
+
+The `agent` kind's far side dials IN, so something on cc's host must hold a TCP
+listener and every agent's session for longer than any launcher lives. That is
+the **broker** (`src/agent/broker.mjs`), a separate detached process — the same
+reason an ssh ControlMaster is one. The locked ownership split holds: the
+launcher still owns the System protocol, the broker carries bytes for one
+transport (as the docker daemon or an ssh master does), and the backend never
+proxies a frame. Decision record: `.wiki/decisions/agent-broker.md`.
+
+```
+cc ──stdio──▶ launcher (--kind agent) ──spawn per exec──▶ bridge.mjs ─┐ unix socket <store>/agent/broker.sock
+backend ──ensureBroker / status ─────────────────────────────────────▶ broker.mjs (detached)
+                                                                       │ TCP CODE_SYSTEM_AGENT_LISTEN (sessions + GET /agent.py)
+                                                        target:  agent.py ──▶ far-side commands (own session/pgid each)
+```
+
+**Lifetime.**
+
+| Event | What happens |
+|---|---|
+| start | ONLY the backend starts it (`ensureBroker`, `src/agent/supervisor.mjs`): at startup, on a tick, and from the kind's `connect` — and only while the store holds an `agent` record. Spawned `detached` (its own process group: cc kills a plugin backend by process group) with its stdout/stderr appended to `<store>/agent/broker.log`. The launcher never starts one: its plans are pure |
+| adopt | a broker answering `ping` with the wanted `listen` and `build` is left alone — a restarted backend adopts it |
+| replace | a different `listen` or `build` (sha256 over `agent.py` and `src/agent/*.mjs`, `buildId`): `stop`, wait for the socket to die, start ours |
+| bind | **TCP first, then the unix socket**: the port is the mutex, so whoever holds it may remove a stale socket file. No pid or lock file |
+| cannot start | writes `<store>/agent/broker-error.json` `{at, message}` and exits 1; read ONLY when the socket does not answer (card probe, bridge, `GET /api/agent/broker`, Connect's 502). The next successful start deletes it |
+| tick (`timings.brokerTickMs`) | re-reads the store: drops a session whose record is gone or whose secret changed (`bye stale-key`); **exits** once no `agent` record remains |
+| stop | `stop` on the socket, SIGTERM or SIGINT: `bye shutdown` to every agent, close, unlink the socket only if its inode is still ours, exit 0 |
+
+**Why `reachability` asks the socket rather than reading a file**: a status file
+written by a broker later SIGKILLed would still say "connected"; a socket that
+answers cannot outlive its listener.
+
+**The agent directory** (`<store>/agent`) is 0700 and **refused, not repaired**,
+when its owner or mode is wrong (`ensureAgentDir`): it is where a socket
+impersonating the broker would be planted.
+
+**Killing.** `processGroupSignal: false`: a signal reaches the bridge only, and a
+bridge dying kills nothing far-side (`close` closes the command's stdin and
+keeps draining). The kill is `reap` — `kinds/reapscript.mjs` over a new bridge —
+as on docker. Separately, **an agent ends every process group of a session that
+ends** (TCP loss, keepalive, replacement, rotation, broker stop, its own
+SIGTERM), which is what makes `reap`'s `not-connected` verdict benign and an
+in-flight op's `ETRANSPORT` honest.
+
+**Terminals.** The core's pty helper runs a `--pty` bridge on a host pty; the
+bridge makes that tty raw (input and output), opens a far pty through the agent
+and reads the live window size before forwarding each input chunk and on
+SIGWINCH, so a resize precedes the input that follows it with no `stty -F`
+relay (`ptyResizeRelay: false`). The agent is the program's far parent, so
+`ptyMode: 'exec'` gives exact exit codes and signals. A terminal bridge keeps
+`PROTOCOL.ptyInputWindowBytes` of stdin in flight, not a full window, because cc
+credits terminal input as it reaches the host pty.
+
+## The held-open channel (`docker` and `agent`)
 
 Every frame used to cost one `docker exec`. Measured through the shipped
 launcher against a live container with `node tests/bench-channel.mjs`
@@ -1507,6 +1608,27 @@ global.
   framing desync. `CODE_SYSTEM_FAKE_CHANNEL=1` gives `--kind fake` the same
   plan, so the launcher's wiring and its two diagnostic lines are drivable end
   to end (`tests/channel-observability.test.mjs`).
+
+### The agent suites
+
+Real `python3 agent/agent.py` and real `broker.mjs` subprocesses on loopback,
+over a fresh store each, with every deadline shrunk through
+`CODE_SYSTEM_AGENT_TIMINGS` (`tests/agentFixture.mjs`). Without a Python ≥ 3.9
+they skip loudly, naming `CODE_SYSTEM_PYTHON`; `tests/agent-python.test.mjs`
+proves by count that the Python unit tests (`tests/python/test_agent.py`) ran.
+
+- **Auth from outside src/** — `tests/broker-auth.test.mjs` drives the broker
+  with a protocol peer written in the test (labels and MAC restated on purpose)
+  and captures a whole real session through a proxy to prove the secret never
+  crosses the wire.
+- **Kill semantics with a negative control** — `tests/agent-e2e.test.mjs` first
+  shows SIGKILL on a bridge leaves the far process alive, so every "reaped"
+  after it is the reap's doing; a link cut through an in-test TCP proxy proves
+  `ETRANSPORT` and the dead far group together.
+- **Survival as cc kills** — `tests/broker-survival.test.mjs` SIGKILLs a real
+  `server.mjs`'s whole process group and checks the broker pid and session id.
+- **The fixture stops agents with SIGTERM first**: a SIGKILLed agent strands its
+  commands (the documented hole).
 
 ### The gated conformance run
 
