@@ -20,7 +20,7 @@ const walk = (rel) => {
 if (built) walk('');
 const html = built ? readFileSync(indexPath, 'utf8') : '';
 const read = (rel) => readFileSync(path.join(DEFAULT_DIST, rel), 'utf8');
-const HOST = ['/pluginBridge.js', '/pluginTheme.css'];
+const HOST = ['../../pluginBridge.js', '../../pluginTheme.css'];
 const refs = () => [...html.matchAll(/\s(?:src|href)="([^"]*)"/g)].map((m) => m[1]);
 
 // Invariant: the UI is built (by `npm install`).
@@ -50,7 +50,7 @@ test('built index.html: no inline script/style, relative URLs, head order kept',
     assert.ok(!/^(?:\/|[a-z][a-z0-9+.-]*:)/i.test(u), `not relative: ${u}`);
   }
   const order = headUrls(html);
-  assert.deepEqual(order.slice(0, 3), ['/pluginBridge.js', '/pluginTheme.css', 'theme-init.js']);
+  assert.deepEqual(order.slice(0, 3), ['../../pluginBridge.js', '../../pluginTheme.css', 'theme-init.js']);
   assert.match(order[3], /^\.\/assets\/index-[A-Za-z0-9_-]+\.js$/);
 });
 
