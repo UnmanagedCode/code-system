@@ -585,7 +585,7 @@ serves that build ("Serving and headers" below).
 
 | Path (under `frontend/`) | Owns |
 |---|---|
-| `index.html` | the shell. `<head>` order: `/pluginBridge.js` (blocking, first), `/pluginTheme.css`, `theme-init.js`, `./src/main.tsx` |
+| `index.html` | the shell. `<head>` order: `../../pluginBridge.js` (blocking, first), `../../pluginTheme.css`, `theme-init.js`, `./src/main.tsx`. The two host links are relative (page served at `/plugins/<id>/`), so they resolve under any URL prefix cc is served from |
 | `public/theme-init.js` | standalone only: follow the OS theme. Returns at once when the bridge has set `data-cc-theme` |
 | `src/index.css` | Tailwind, cc's `@theme inline` block verbatim, the safe-area padding, and the identity-stripe set (`--cs-stripe-N`, `.stripe-N`) |
 | `src/cc-theme-fallback.css` | a one-time snapshot of cc's `web/src/themeTokens.css` inside `@layer base`, so the page is legible standalone. Embedded, cc's unlayered `/pluginTheme.css` wins. Never re-synced |

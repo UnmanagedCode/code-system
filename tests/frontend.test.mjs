@@ -14,37 +14,38 @@ const html = files.find(([n]) => n === 'index.html')[1];
 // Invariant: <head> loads the bridge first as a blocking classic script, then
 // the host theme, then theme-init.js, then the module entry — each exactly once.
 test('index.html head order: bridge (blocking, first), theme, theme-init, entry — each once', () => {
-  assert.deepEqual(headUrls(html), ['/pluginBridge.js', '/pluginTheme.css', 'theme-init.js', './src/main.tsx']);
+  assert.deepEqual(headUrls(html), ['../../pluginBridge.js', '../../pluginTheme.css', 'theme-init.js', './src/main.tsx']);
   const tags = headTags(html);
-  const bridge = tags.find((t) => t.attrs.includes('/pluginBridge.js'));
+  const bridge = tags.find((t) => t.attrs.includes('../../pluginBridge.js'));
   assert.equal(tags.filter((t) => t.tag === 'script' || t.tag === 'link')[0], bridge, 'the bridge is the first script or link');
   assert.doesNotMatch(bridge.attrs, /\b(?:defer|async|type=)/, 'blocking and classic');
-  for (const u of ['/pluginBridge.js', '/pluginTheme.css', 'theme-init.js', 'main.tsx']) {
+  for (const u of ['../../pluginBridge.js', '../../pluginTheme.css', 'theme-init.js', 'main.tsx']) {
     assert.equal(html.split(u).length - 1, 1, `${u} appears exactly once`);
   }
   assert.match(tags.find((t) => t.attrs.includes('main.tsx')).attrs, /type="module"/);
 });
 
-// Invariant: every non-host URL index.html names is relative and names a real
-// file (theme-init.js is served from public/).
+// Invariant: every URL index.html names is relative and every non-host one names
+// a real file (theme-init.js is served from public/). The host URLs are checked
+// by the head-order test above, and they point outside the build, so not on disk.
+const HOST = ['../../pluginBridge.js', '../../pluginTheme.css'];
 test('index.html: the non-host refs are relative and exist', () => {
-  for (const u of headUrls(html).filter((x) => !x.startsWith('/'))) {
+  for (const u of headUrls(html).filter((x) => !HOST.includes(x))) {
     assert.doesNotMatch(u, /^[a-z][a-z0-9+.-]*:/i, u);
     const onDisk = u === 'theme-init.js' ? path.join(FRONTEND, 'public', u) : path.join(FRONTEND, u);
     assert.ok(existsSync(onDisk), `${u} resolves to ${onDisk}`);
   }
 });
 
-// Invariant: every URL is relative (cc mounts the page under /plugins/code-system/),
-// except the two host URLs in index.html.
+// Invariant: every URL is relative (cc mounts the page under /plugins/code-system/,
+// and under whatever URL prefix cc itself is served from), host URLs included.
 test('frontend uses no root-relative URLs', () => {
   const rootRel = /(?:src|href)\s*=\s*["']\/|['"`]\/api|fetch\(\s*['"`]\//g;
-  const HOST = new Set(['src="/pluginBridge.js"', 'href="/pluginTheme.css"']);
   assert.ok(files.length > 10, 'scanned the UI sources');
   for (const [n, src] of files) {
     for (const m of src.matchAll(rootRel)) {
       const at = src.slice(m.index).match(/^(?:src|href)\s*=\s*"[^"]*"/)?.[0];
-      assert.ok(n === 'index.html' && HOST.has(at), `${n}: ${at ?? m[0]}`);
+      assert.fail(`${n}: ${at ?? m[0]}`);
     }
   }
 });
